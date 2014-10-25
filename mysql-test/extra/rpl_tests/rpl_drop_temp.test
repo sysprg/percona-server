@@ -5,10 +5,6 @@
 # Purpose: According to TU in 16552 This is how
 # to work around NDB's issue with temp tables
 ##############################################
---source include/not_gtid_enabled.inc
-source include/master-slave.inc;
-source include/have_myisam.inc;
-source include/have_binlog_format_mixed_or_statement.inc;
 
 --disable_warnings
 create database if not exists mysqltest;
@@ -38,9 +34,9 @@ sync_slave_with_master;
 
 #
 # Bug#49137
-# This test verifies if DROP MULTI TEMPORARY TABLE 
-# will cause different errors on master and slave, 
-# when one or more of these tables do not exist. 
+# This test verifies if DROP MULTI TEMPORARY TABLE
+# will cause different errors on master and slave,
+# when one or more of these tables do not exist.
 #
 
 connection master;
@@ -96,4 +92,3 @@ SHOW STATUS LIKE 'Slave_open_temp_tables';
 DROP TABLE t1;
 
 # End of 4.1 tests
---source include/rpl_end.inc
