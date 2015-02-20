@@ -963,12 +963,66 @@ log_block_checksum_is_ok_or_old_format(
 /*===================================*/
 	const byte*	block)	/*!< in: pointer to a log block */
 {
-	if (log_block_calc_checksum(block) == log_block_get_checksum(block)) {
+	ulint block_checksum = log_block_get_checksum(block);
+
+	if (UNIV_LIKELY(log_block_calc_checksum(block) == block_checksum) ||
+	    srv_log_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_NONE) {
 
 		return(TRUE);
 	}
 
-	if (log_block_get_hdr_no(block) == log_block_get_checksum(block)) {
+	if (srv_log_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_STRICT_CRC32 ||
+	    srv_log_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_STRICT_INNODB ||
+	    srv_log_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_STRICT_NONE) {
+
+		const char*	algo = NULL;
+
+		ib::error() << "log block checksum mismatch: expected "
+			<< block_checksum << ", calculated checksum "
+			<< log_block_calc_checksum(block);
+
+		if (block_checksum == LOG_NO_CHECKSUM_MAGIC) {
+
+			algo = "none";
+		} else if (block_checksum ==
+			   log_block_calc_checksum_crc32(block)) {
+
+			algo = "crc32";
+		} else if (block_checksum ==
+			   log_block_calc_checksum_innodb(block)) {
+
+			algo = "innodb";
+		}
+
+		if (algo) {
+
+			const char*	current_algo;
+
+			current_algo = buf_checksum_algorithm_name(
+				static_cast<srv_checksum_algorithm_t>
+					(srv_log_checksum_algorithm));
+
+			ib::error() << "current InnoDB log checksum type: "
+				    << current_algo
+				    << ", detected log checksum type: "
+				    << algo;
+		}
+
+		ib::fatal() << "STRICT method was specified for "
+			"innodb_log_checksum, so we intentionally assert here.";
+	}
+
+	ut_ad(srv_log_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_CRC32 ||
+	      srv_log_checksum_algorithm == SRV_CHECKSUM_ALGORITHM_INNODB);
+
+	if (block_checksum == log_block_calc_checksum_none(block) ||
+	    block_checksum == log_block_calc_checksum_crc32(block) ||
+	    block_checksum == log_block_calc_checksum_innodb(block)) {
+
+		return(TRUE);
+	}
+
+	if (log_block_get_hdr_no(block) == block_checksum) {
 
 		/* We assume the log block is in the format of
 		InnoDB version < 3.23.52 and the block is ok */
