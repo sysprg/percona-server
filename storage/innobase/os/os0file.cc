@@ -2285,6 +2285,9 @@ os_file_fsync(
 			failures++;
 
 			retry = true;
+		} else if (ret == -1 && errno == EINTR) {
+			/* Handle signal interruptions correctly */
+			retry = true;
 		} else {
 
 			retry = false;
