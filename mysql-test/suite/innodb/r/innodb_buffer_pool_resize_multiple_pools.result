@@ -1,0 +1,3 @@
+set @old_innodb_buffer_pool_size = @@innodb_buffer_pool_size;
+SET @@GLOBAL.innodb_buffer_pool_size = 1207959552;
+set global innodb_buffer_pool_size = @old_innodb_buffer_pool_size;

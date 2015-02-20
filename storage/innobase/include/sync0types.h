@@ -186,7 +186,7 @@ V
 Search system mutex
 |
 V
-Buffer pool mutex
+Buffer pool mutexes
 |
 V
 Log mutex
@@ -217,11 +217,13 @@ enum latch_level_t {
 	SYNC_DOUBLEWRITE,
 
 	SYNC_BUF_FLUSH_LIST,
-
+	SYNC_BUF_FLUSH_STATE,
+	SYNC_BUF_ZIP_HASH,
+	SYNC_BUF_FREE_LIST,
+	SYNC_BUF_ZIP_FREE,
 	SYNC_BUF_BLOCK,
 	SYNC_BUF_PAGE_HASH,
-
-	SYNC_BUF_POOL,
+	SYNC_BUF_LRU_LIST,
 
 	SYNC_POOL,
 	SYNC_POOL_MANAGER,

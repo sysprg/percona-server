@@ -294,12 +294,9 @@ void
 btr_search_enable(void)
 /*====================*/
 {
-	buf_pool_mutex_enter_all();
-	if (srv_buf_pool_old_size != srv_buf_pool_size) {
-		buf_pool_mutex_exit_all();
+	os_rmb;
+	if (srv_buf_pool_old_size != srv_buf_pool_size)
 		return;
-	}
-	buf_pool_mutex_exit_all();
 
 	rw_lock_x_lock(&btr_search_latch);
 
@@ -1036,11 +1033,6 @@ btr_search_guess_on_hash(
 #ifdef UNIV_SEARCH_PERF_STAT
 	btr_search_n_succ++;
 #endif
-	if (!has_search_latch && buf_page_peek_if_too_old(&block->page)) {
-
-		buf_page_make_young(&block->page);
-	}
-
 	/* Increment the page get statistics though we did not really
 	fix the page: for user info only */
 
@@ -1883,7 +1875,6 @@ btr_search_validate(void)
 	rec_offs_init(offsets_);
 
 	rw_lock_x_lock(&btr_search_latch);
-	buf_pool_mutex_enter_all();
 
 	cell_count = hash_get_n_cells(btr_search_sys->hash_index);
 
@@ -1891,11 +1882,9 @@ btr_search_validate(void)
 		/* We release btr_search_latch every once in a while to
 		give other queries a chance to run. */
 		if ((i != 0) && ((i % chunk_size) == 0)) {
-			buf_pool_mutex_exit_all();
 			rw_lock_x_unlock(&btr_search_latch);
 			os_thread_yield();
 			rw_lock_x_lock(&btr_search_latch);
-			buf_pool_mutex_enter_all();
 
 			if (cell_count != hash_get_n_cells(
 				btr_search_sys->hash_index)) {
@@ -1913,13 +1902,16 @@ btr_search_validate(void)
 			hash_get_nth_cell(btr_search_sys->hash_index, i)->node;
 
 		for (; node != NULL; node = node->next) {
-			const buf_block_t*	block
+			buf_block_t*	block
 				= buf_block_align((byte*) node->data);
 			const buf_block_t*	hash_block;
 			buf_pool_t*		buf_pool;
 			index_id_t		page_index_id;
 
 			buf_pool = buf_pool_from_bpage((buf_page_t*) block);
+			/* Prevent BUF_BLOCK_FILE_PAGE -> BUF_BLOCK_REMOVE_HASH
+			transition until we lock the block mutex */
+			mutex_enter(&buf_pool->LRU_list_mutex);
 
 			if (UNIV_LIKELY(buf_block_get_state(block)
 					== BUF_BLOCK_FILE_PAGE)) {
@@ -1952,6 +1944,9 @@ btr_search_validate(void)
 				ut_a(buf_block_get_state(block)
 				     == BUF_BLOCK_REMOVE_HASH);
 			}
+
+			mutex_enter(&block->mutex);
+			mutex_exit(&buf_pool->LRU_list_mutex);
 
 			ut_a(!dict_index_is_ibuf(block->index));
 			ut_ad(block->page.id.space() == block->index->space);
@@ -2001,6 +1996,8 @@ btr_search_validate(void)
 					n_page_dumps++;
 				}
 			}
+
+			mutex_exit(&block->mutex);
 		}
 	}
 
@@ -2008,11 +2005,9 @@ btr_search_validate(void)
 		/* We release btr_search_latch every once in a while to
 		give other queries a chance to run. */
 		if (i != 0) {
-			buf_pool_mutex_exit_all();
 			rw_lock_x_unlock(&btr_search_latch);
 			os_thread_yield();
 			rw_lock_x_lock(&btr_search_latch);
-			buf_pool_mutex_enter_all();
 
 			if (cell_count != hash_get_n_cells(
 				btr_search_sys->hash_index)) {
@@ -2033,7 +2028,6 @@ btr_search_validate(void)
 		}
 	}
 
-	buf_pool_mutex_exit_all();
 	rw_lock_x_unlock(&btr_search_latch);
 	if (UNIV_LIKELY_NULL(heap)) {
 		mem_heap_free(heap);

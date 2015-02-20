@@ -2095,7 +2095,7 @@ i_s_cmpmem_fill_low(
 
 		buf_pool = buf_pool_from_array(i);
 
-		buf_pool_mutex_enter(buf_pool);
+		mutex_enter(&buf_pool->zip_free_mutex);
 
 		for (uint x = 0; x <= BUF_BUDDY_SIZES; x++) {
 			buf_buddy_stat_t*	buddy_stat;
@@ -2104,6 +2104,7 @@ i_s_cmpmem_fill_low(
 
 			table->field[0]->store(BUF_BUDDY_LOW << x);
 			table->field[1]->store(static_cast<double>(i));
+			os_rmb;
 			table->field[2]->store(static_cast<double>(
 				buddy_stat->used));
 			table->field[3]->store(static_cast<double>(
@@ -2116,7 +2117,8 @@ i_s_cmpmem_fill_low(
 				static_cast<double>(buddy_stat->relocated_usec / 1000000));
 
 			if (reset) {
-				/* This is protected by buf_pool->mutex. */
+				/* This is protected by
+				buf_pool->zip_free_mutex. */
 				buddy_stat->relocated = 0;
 				buddy_stat->relocated_usec = 0;
 			}
@@ -2127,7 +2129,7 @@ i_s_cmpmem_fill_low(
 			}
 		}
 
-		buf_pool_mutex_exit(buf_pool);
+		mutex_exit(&buf_pool->zip_free_mutex);
 
 		if (status) {
 			break;
@@ -5424,11 +5426,15 @@ i_s_innodb_buffer_page_get_info(
 					out: structure filled with scanned
 					info */
 {
+	BPageMutex*	mutex = buf_page_get_mutex(bpage);
+
 	ut_ad(pool_id < MAX_BUFFER_POOLS);
 
 	page_info->pool_id = pool_id;
 
 	page_info->block_id = pos;
+
+	mutex_enter(mutex);
 
 	page_info->page_state = buf_page_get_state(bpage);
 
@@ -5468,6 +5474,7 @@ i_s_innodb_buffer_page_get_info(
 			break;
 		case BUF_IO_READ:
 			page_info->page_type = I_S_PAGE_TYPE_UNKNOWN;
+			mutex_exit(mutex);
 			return;
 		}
 
@@ -5488,6 +5495,8 @@ i_s_innodb_buffer_page_get_info(
 	} else {
 		page_info->page_type = I_S_PAGE_TYPE_UNKNOWN;
 	}
+
+	mutex_exit(mutex);
 }
 
 /*******************************************************************//**
@@ -5537,15 +5546,9 @@ i_s_innodb_fill_buffer_pool(
 
 			/* For each chunk, we'll pre-allocate information
 			structures to cache the page information read from
-			the buffer pool. Doing so before obtain any mutex */
+			the buffer pool */
 			info_buffer = (buf_page_info_t*) mem_heap_zalloc(
 				heap, mem_size);
-
-			/* Obtain appropriate mutexes. Since this is diagnostic
-			buffer pool info printout, we are not required to
-			preserve the overall consistency, so we can
-			release mutex periodically */
-			buf_pool_mutex_enter(buf_pool);
 
 			/* GO through each block in the chunk */
 			for (n_blocks = num_to_process; n_blocks--; block++) {
@@ -5555,8 +5558,6 @@ i_s_innodb_fill_buffer_pool(
 				block_id++;
 				num_page++;
 			}
-
-			buf_pool_mutex_exit(buf_pool);
 
 			/* Fill in information schema table with information
 			just collected from the buffer chunk scan */
@@ -6084,9 +6085,9 @@ i_s_innodb_fill_buffer_lru(
 
 	DBUG_ENTER("i_s_innodb_fill_buffer_lru");
 
-	/* Obtain buf_pool mutex before allocate info_buffer, since
+	/* Obtain buf_pool->LRU_list_mutex before allocate info_buffer, since
 	UT_LIST_GET_LEN(buf_pool->LRU) could change */
-	buf_pool_mutex_enter(buf_pool);
+	mutex_enter(&buf_pool->LRU_list_mutex);
 
 	lru_len = UT_LIST_GET_LEN(buf_pool->LRU);
 
@@ -6120,7 +6121,7 @@ i_s_innodb_fill_buffer_lru(
 	ut_ad(lru_pos == UT_LIST_GET_LEN(buf_pool->LRU));
 
 exit:
-	buf_pool_mutex_exit(buf_pool);
+	mutex_exit(&buf_pool->LRU_list_mutex);
 
 	if (info_buffer) {
 		status = i_s_innodb_buf_page_lru_fill(

@@ -1,0 +1,20 @@
+# Test InnoDB online buffer pool resize with multiple buffer pool instances
+
+--source include/have_innodb.inc
+# Marked as a big test because of a 1.2GB buffer pool
+--source include/big_test.inc
+--source include/have_multiple_buffer_pools.inc
+
+let $wait_timeout = 180;
+let $wait_condition =
+  SELECT SUBSTR(variable_value, 1, 34) = 'Completed resizing buffer pool at '
+  FROM information_schema.global_status
+  WHERE LOWER(variable_name) = 'innodb_buffer_pool_resize_status';
+
+set @old_innodb_buffer_pool_size = @@innodb_buffer_pool_size;
+
+SET @@GLOBAL.innodb_buffer_pool_size = 1207959552;
+--source include/wait_condition.inc
+
+set global innodb_buffer_pool_size = @old_innodb_buffer_pool_size;
+--source include/wait_condition.inc

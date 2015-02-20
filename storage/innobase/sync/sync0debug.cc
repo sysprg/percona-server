@@ -638,7 +638,11 @@ SyncDebug::check_order(const latch_t* latch)
 		break;
 
 	case SYNC_BUF_FLUSH_LIST:
-	case SYNC_BUF_POOL:
+	case SYNC_BUF_LRU_LIST:
+	case SYNC_BUF_FREE_LIST:
+	case SYNC_BUF_ZIP_FREE:
+	case SYNC_BUF_ZIP_HASH:
+	case SYNC_BUF_FLUSH_STATE:
 
 		/* We can have multiple mutexes of this type therefore we
 		can only check whether the greater than condition holds. */
@@ -647,22 +651,10 @@ SyncDebug::check_order(const latch_t* latch)
 		break;
 
 	case SYNC_BUF_PAGE_HASH:
-
-		/* Multiple page_hash locks are only allowed during
-		buf_validate and that is where buf_pool mutex is already
-		held. */
-
-		/* Fall through */
-
 	case SYNC_BUF_BLOCK:
-
-		/* Either the thread must own the (buffer pool) buf_pool->mutex
-		or it is allowed to latch only ONE of (buffer block)
-		block->mutex or buf_pool->zip_mutex. */
 
 		if (less(latches, latch->m_level) != 0) {
 			basic_check(latches, latch->m_level - 1);
-			ut_a(find(latches, SYNC_BUF_POOL) != 0);
 		}
 		break;
 
@@ -886,9 +878,25 @@ sync_latch_meta_init()
 		  buffer_block_mutex_key);
 #endif /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
 
-	LATCH_ADD(SrvLatches, "buf_pool",
-		  SYNC_BUF_POOL,
-		  buf_pool_mutex_key);
+	LATCH_ADD(SrvLatches, "buf_pool_lru_list",
+		  SYNC_BUF_LRU_LIST,
+		  buf_pool_LRU_list_mutex_key);
+
+	LATCH_ADD(SrvLatches, "buf_pool_free_list",
+		  SYNC_BUF_FREE_LIST,
+		  buf_pool_free_list_mutex_key);
+
+	LATCH_ADD(SrvLatches, "buf_pool_zip_free",
+		  SYNC_BUF_ZIP_FREE,
+		  buf_pool_zip_free_mutex_key);
+
+	LATCH_ADD(SrvLatches, "buf_pool_zip_hash",
+		  SYNC_BUF_ZIP_HASH,
+		  buf_pool_zip_free_mutex_key);
+
+	LATCH_ADD(SrvLatches, "buf_pool_flush_state",
+		  SYNC_BUF_FLUSH_STATE,
+		  buf_pool_flush_state_mutex_key);
 
 	LATCH_ADD(SrvLatches, "buf_pool_zip",
 		  SYNC_BUF_BLOCK,

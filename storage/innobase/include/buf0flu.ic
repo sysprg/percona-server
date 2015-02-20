@@ -75,7 +75,6 @@ buf_flush_note_modification(
 
 		buf_pool_t*	buf_pool = buf_pool_from_block(block);
 
-		ut_ad(!buf_pool_mutex_own(buf_pool));
 		ut_ad(!buf_flush_list_mutex_own(buf_pool));
 	}
 #endif /* UNIV_DEBUG */
@@ -118,7 +117,6 @@ buf_flush_recv_note_modification(
 
 		buf_pool_t*	buf_pool = buf_pool_from_block(block);
 
-		ut_ad(!buf_pool_mutex_own(buf_pool));
 		ut_ad(!buf_flush_list_mutex_own(buf_pool));
 
 		ut_ad(start_lsn != 0);

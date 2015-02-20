@@ -119,8 +119,7 @@ this must be equal to UNIV_PAGE_SIZE */
 
 #ifndef UNIV_INNOCHECKSUM
 typedef ib_mutex_t BPageMutex;
-typedef ib_mutex_t BufPoolMutex;
-typedef ib_mutex_t FlushListMutex;
+typedef ib_mutex_t BufListMutex;
 #endif /* !UNIV_INNOCHECKSUM */
 
 #endif /* buf0types.h */

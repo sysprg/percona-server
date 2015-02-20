@@ -568,9 +568,7 @@ PageBulk::release()
 #endif /* UNIV_DEBUG */
 
 	/* We fix the block because we will re-pin it soon. */
-	buf_page_mutex_enter(m_block);
 	buf_block_buf_fix_inc(m_block, __FILE__, __LINE__);
-	buf_page_mutex_exit(m_block);
 
 	mtr_commit(m_mtr);
 }
@@ -598,9 +596,7 @@ PageBulk::latch()
 		ut_ad(m_block != NULL);
 	}
 
-	buf_page_mutex_enter(m_block);
 	buf_block_buf_fix_dec(m_block);
-	buf_page_mutex_exit(m_block);
 
 #ifdef UNIV_DEBUG
 	page_header_set_ptr(m_page, NULL, PAGE_HEAP_TOP,
