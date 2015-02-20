@@ -2451,7 +2451,7 @@ buf_flush_page_cleaner_close(void)
 
 /**
 Requests for all slots to flush all buffer pool instances.
-@param min_n	wished minimum mumber of blocks flushed
+@param min_n	wished minimum mumber of flush list blocks flushed
 		(it is not guaranteed that the actual number is that big)
 @param lsn_limit in the case BUF_FLUSH_LIST all blocks whose
 		oldest_modification is smaller than this should be flushed
@@ -2627,6 +2627,60 @@ pc_wait_finished(
 	return(all_succeeded);
 }
 
+/**
+Uses all available threads on all buffer pool instances to flush LRU up to max
+scan depth and to flush the flush lists according to the input args. If both
+input args are zero, only LRU flush is performed.
+@param[in]	min_n	wished minimum number of flush list blocks flushed (it
+                        is not guaranteed that the actual number is that big)
+@param[in]	lsn_limit all blocks on flush lists whose oldest_modification
+                        is smaller than this should be flushed (if their number
+                        does not exceed min_n), otherwise ignored
+@param[out]	n_processed_lru number of processed (flushed and evicted)
+                        blocks on LRU lists
+@param[out]	n_flushed_list number of flushed blocks on flust lists
+*/
+static
+void
+pc_flush(
+	ulint	min_n,
+	ulint	lsn_limit,
+	ulint*  n_processed_lru,
+	ulint*  n_flushed_list)
+{
+	/* Request flushing for threads */
+	pc_request(min_n, lsn_limit);
+
+	/* Coordinator also treats requests */
+	while (pc_flush_slot() > 0) {}
+
+	/* Wait for all slots to be finished */
+	*n_processed_lru = 0;
+	*n_flushed_list = 0;
+	pc_wait_finished(n_processed_lru, n_flushed_list);
+	ut_ad((min_n && lsn_limit) || (*n_flushed_list == 0));
+
+	if (*n_flushed_list || *n_processed_lru) {
+		buf_flush_stats(*n_flushed_list, *n_processed_lru);
+	}
+
+	if (*n_processed_lru) {
+		MONITOR_INC_VALUE_CUMULATIVE(
+			MONITOR_LRU_BATCH_FLUSH_TOTAL_PAGE,
+			MONITOR_LRU_BATCH_FLUSH_COUNT,
+			MONITOR_LRU_BATCH_FLUSH_PAGES,
+			*n_processed_lru);
+	}
+
+	if (*n_flushed_list) {
+		MONITOR_INC_VALUE_CUMULATIVE(
+			MONITOR_FLUSH_ADAPTIVE_TOTAL_PAGE,
+			MONITOR_FLUSH_ADAPTIVE_COUNT,
+			MONITOR_FLUSH_ADAPTIVE_PAGES,
+			*n_flushed_list);
+	}
+}
+
 /******************************************************************//**
 page_cleaner thread tasked with flushing dirty pages from the buffer
 pools. As of now we'll have only one coordinator.
@@ -2725,7 +2779,16 @@ DECLARE_THREAD(buf_flush_page_cleaner_coordinator)(
 			next_loop_time = ut_time_ms() + 1000;
 		}
 
-		if (srv_check_activity(last_activity)) {
+		ulint	n_processed_lru = 0;
+		ulint	n_flushed_list = 0;
+		pc_flush(0, 0, &n_processed_lru, &n_flushed_list);
+		ut_ad(n_flushed_list == 0);
+
+		n_flushed = n_processed_lru;
+
+		if (ut_time_ms() > next_loop_time) {
+			ret_sleep = OS_SYNC_TIME_EXCEEDED;
+		} else if (srv_check_activity(last_activity)) {
 			ulint	n_to_flush;
 			lsn_t	lsn_limit = 0;
 
@@ -2739,42 +2802,14 @@ DECLARE_THREAD(buf_flush_page_cleaner_coordinator)(
 				n_to_flush = 0;
 			}
 
-			/* Request flushing for threads */
-			pc_request(n_to_flush, lsn_limit);
-
-			/* Coordinator also treats requests */
-			while (pc_flush_slot() > 0) {}
-
-			/* Wait for all slots to be finished */
-			ulint	n_flushed_lru = 0;
-			ulint	n_flushed_list = 0;
-			pc_wait_finished(&n_flushed_lru, &n_flushed_list);
-
-			if (n_flushed_list || n_flushed_lru) {
-				buf_flush_stats(n_flushed_list, n_flushed_lru);
-			}
+			pc_flush(n_to_flush, lsn_limit, &n_processed_lru,
+				 &n_flushed_list);
 
 			if (ret_sleep == OS_SYNC_TIME_EXCEEDED) {
 				last_pages = n_flushed_list;
 			}
 
-			n_flushed = n_flushed_lru + n_flushed_list;
-
-			if (n_flushed_lru) {
-				MONITOR_INC_VALUE_CUMULATIVE(
-					MONITOR_LRU_BATCH_FLUSH_TOTAL_PAGE,
-					MONITOR_LRU_BATCH_FLUSH_COUNT,
-					MONITOR_LRU_BATCH_FLUSH_PAGES,
-					n_flushed_lru);
-			}
-
-			if (n_flushed_list) {
-				MONITOR_INC_VALUE_CUMULATIVE(
-					MONITOR_FLUSH_ADAPTIVE_TOTAL_PAGE,
-					MONITOR_FLUSH_ADAPTIVE_COUNT,
-					MONITOR_FLUSH_ADAPTIVE_PAGES,
-					n_flushed_list);
-			}
+			n_flushed += n_processed_lru + n_flushed_list;
 		} else if (ret_sleep == OS_SYNC_TIME_EXCEEDED) {
 			/* no activity, slept enough */
 			buf_flush_lists(PCT_IO(100), LSN_MAX, &n_flushed);
@@ -2788,7 +2823,6 @@ DECLARE_THREAD(buf_flush_page_cleaner_coordinator)(
 			}
 		} else {
 			/* no activity, but woken up by event */
-			n_flushed = 0;
 		}
 	}
 
