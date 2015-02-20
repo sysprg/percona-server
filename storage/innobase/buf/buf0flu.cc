@@ -95,8 +95,9 @@ struct page_cleaner_slot_t {
 	and commited with state==PAGE_CLEANER_STATE_FINISHED.
 	The consistency is protected by the 'state' */
 	ulint			n_flushed_lru;
-					/*!< number of flushed pages
-					by LRU scan flushing */
+					/*!< number of flushed and evicted
+					pages by LRU scan flushing */
+
 	ulint			n_flushed_list;
 					/*!< number of flushed pages
 					by flush_list flushing */
@@ -1465,6 +1466,14 @@ buf_free_from_unzip_LRU_list_batch(
 
 	ut_ad(buf_pool_mutex_own(buf_pool));
 
+	if (count) {
+		MONITOR_INC_VALUE_CUMULATIVE(
+			MONITOR_LRU_BATCH_EVICT_TOTAL_PAGE,
+			MONITOR_LRU_BATCH_EVICT_COUNT,
+			MONITOR_LRU_BATCH_EVICT_PAGES,
+			count);
+	}
+
 	if (scanned) {
 		MONITOR_INC_VALUE_CUMULATIVE(
 			MONITOR_LRU_BATCH_SCANNED,
@@ -1482,9 +1491,11 @@ The calling thread is not allowed to own any latches on pages!
 It attempts to make 'max' blocks available in the free list. Note that
 it is a best effort attempt and it is not guaranteed that after a call
 to this function there will be 'max' blocks in the free list.
-@return number of blocks for which the write request was queued. */
+@return pair of numbers where first number is the blocks for which
+flush request is queued and second is the number of blocks that were
+clean and simply evicted from the LRU. */
 static
-ulint
+std::pair<ulint, ulint>
 buf_flush_LRU_list_batch(
 /*=====================*/
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
@@ -1574,34 +1585,40 @@ buf_flush_LRU_list_batch(
 			scanned);
 	}
 
-	return(count);
+	return(std::make_pair(count, evict_count));
 }
 
 /*******************************************************************//**
 Flush and move pages from LRU or unzip_LRU list to the free list.
 Whether LRU or unzip_LRU is used depends on the state of the system.
-@return number of blocks for which either the write request was queued
-or in case of unzip_LRU the number of blocks actually moved to the
-free list */
+@return pair of numbers where first number is the blocks for which
+flush request is queued and second is the number of blocks that were
+uncompressed frames in unzip_LRU and were simply evicted or blocks
+that were part of LRU and were clean and simply evicted from the LRU. */
 static
-ulint
+std::pair<ulint, ulint>
 buf_do_LRU_batch(
 /*=============*/
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
 	ulint		max)		/*!< in: desired number of
 					blocks in the free_list */
 {
-	ulint	count = 0;
+	ulint			count = 0;
+	std::pair<ulint, ulint> res;
 
 	if (buf_LRU_evict_from_unzip_LRU(buf_pool)) {
-		count += buf_free_from_unzip_LRU_list_batch(buf_pool, max);
+		count = buf_free_from_unzip_LRU_list_batch(buf_pool, max);
 	}
 
 	if (max > count) {
-		count += buf_flush_LRU_list_batch(buf_pool, max - count);
+		res = buf_flush_LRU_list_batch(buf_pool, max - count);
 	}
 
-	return(count);
+	/* Add evicted pages from unzip_LRU to the evicted pages from
+	the simple LRU. */
+	res.second += count;
+
+	return(res);
 }
 
 /*******************************************************************//**
@@ -1698,9 +1715,15 @@ NOTE 1: in the case of an LRU flush the calling thread may own latches to
 pages: to avoid deadlocks, this function must be written so that it cannot
 end up waiting for these latches! NOTE 2: in the case of a flush list flush,
 the calling thread is not allowed to own any latches on pages!
-@return number of blocks for which the write request was queued */
+@return pair of numbers:
+  In case of LRU list:
+    First number = pages flushed
+    Second number = pages evicted
+  In case of flush list:
+    First number = pages flushed
+    Second number = 0 */
 static
-ulint
+std::pair<ulint, ulint>
 buf_flush_batch(
 /*============*/
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
@@ -1717,7 +1740,7 @@ buf_flush_batch(
 					(if their number does not exceed
 					min_n), otherwise ignored */
 {
-	ulint		count	= 0;
+	std::pair<ulint, ulint> res;
 
 	ut_ad(flush_type == BUF_FLUSH_LRU || flush_type == BUF_FLUSH_LIST);
 
@@ -1734,10 +1757,11 @@ buf_flush_batch(
 	the flush functions. */
 	switch (flush_type) {
 	case BUF_FLUSH_LRU:
-		count = buf_do_LRU_batch(buf_pool, min_n);
+		res = buf_do_LRU_batch(buf_pool, min_n);
 		break;
 	case BUF_FLUSH_LIST:
-		count = buf_do_flush_list_batch(buf_pool, min_n, lsn_limit);
+		res.first = buf_do_flush_list_batch(buf_pool, min_n, lsn_limit);
+		res.second = 0;
 		break;
 	default:
 		ut_error;
@@ -1745,10 +1769,12 @@ buf_flush_batch(
 
 	buf_pool_mutex_exit(buf_pool);
 
-	DBUG_PRINT("ib_buf", ("flush %u completed, %u pages",
-			      unsigned(flush_type), unsigned(count)));
+	DBUG_PRINT("ib_buf",
+		   ("flush %u completed, flushed %u pages, evicted %u pages",
+		   unsigned(flush_type), unsigned(res.first),
+		   unsigned(res.second)));
 
-	return(count);
+	return(res);
 }
 
 /******************************************************************//**
@@ -1811,8 +1837,10 @@ void
 buf_flush_end(
 /*==========*/
 	buf_pool_t*	buf_pool,	/*!< buffer pool instance */
-	buf_flush_t	flush_type)	/*!< in: BUF_FLUSH_LRU
+	buf_flush_t	flush_type,	/*!< in: BUF_FLUSH_LRU
 					or BUF_FLUSH_LIST */
+	ulint		flushed_page_count)/*!< in: flushed (not evicted!)
+                                        page count */
 {
 	buf_pool_mutex_enter(buf_pool);
 
@@ -1829,7 +1857,7 @@ buf_flush_end(
 
 	buf_pool_mutex_exit(buf_pool);
 
-	if (!srv_read_only_mode) {
+	if (!srv_read_only_mode && flushed_page_count) {
 		buf_dblwr_flush_buffered_writes();
 	} else {
 		os_aio_simulated_wake_handler_threads();
@@ -1889,8 +1917,6 @@ buf_flush_do_batch(
 	lsn_t		lsn_limit,
 	ulint*		n_processed)
 {
-	ulint		page_count;
-
 	ut_ad(type == BUF_FLUSH_LRU || type == BUF_FLUSH_LIST);
 
 	if (n_processed) {
@@ -1901,12 +1927,13 @@ buf_flush_do_batch(
 		return(false);
 	}
 
-	page_count = buf_flush_batch(buf_pool, type, min_n, lsn_limit);
+	std::pair<ulint, ulint> res
+		= buf_flush_batch(buf_pool, type, min_n, lsn_limit);
 
-	buf_flush_end(buf_pool, type);
+	buf_flush_end(buf_pool, type, res.first);
 
 	if (n_processed) {
-		*n_processed = page_count;
+		*n_processed = res.first + res.second;
 	}
 
 	return(true);
@@ -2094,7 +2121,7 @@ Clears up tail of the LRU list of a given buffer pool instance:
 The depth to which we scan each buffer pool is controlled by dynamic
 config parameter innodb_LRU_scan_depth.
 @param buf_pool buffer pool instance
-@return total pages flushed */
+@return total pages flushed and evicted */
 static
 ulint
 buf_flush_LRU_list(
@@ -2131,32 +2158,6 @@ buf_flush_LRU_list(
 	last iteration is still running, */
 	buf_flush_do_batch(buf_pool, BUF_FLUSH_LRU, scan_depth,
 			   0, &n_flushed);
-
-	return(n_flushed);
-}
-
-/*********************************************************************//**
-Clears up tail of the LRU lists:
-* Put replaceable pages at the tail of LRU to the free list
-* Flush dirty pages at the tail of LRU to the disk
-The depth to which we scan each buffer pool is controlled by dynamic
-config parameter innodb_LRU_scan_depth.
-@return total pages flushed */
-
-ulint
-buf_flush_LRU_lists(void)
-/*=====================*/
-{
-	ulint	n_flushed = 0;
-
-	for (ulint i = 0; i < srv_buf_pool_instances; i++) {
-
-		n_flushed += buf_flush_LRU_list(buf_pool_from_array(i));
-	}
-
-	if (n_flushed) {
-		buf_flush_stats(0, n_flushed);
-	}
 
 	return(n_flushed);
 }
@@ -2581,7 +2582,8 @@ finish_mutex:
 
 /**
 Wait until all flush requests are finished.
-@param n_flushed_lru	number of pages flushed from the end of the LRU list.
+@param n_flushed_lru	number of pages flushed and evicted from the end of the
+                        LRU list.
 @param n_flushed_list	number of pages flushed from the end of the
 			flush_list.
 @return			true if all flush_list flushing batch were success. */

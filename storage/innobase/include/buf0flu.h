@@ -228,17 +228,6 @@ void
 buf_flush_page_cleaner_init(void);
 /*=============================*/
 /*********************************************************************//**
-Clears up tail of the LRU lists:
-* Put replaceable pages at the tail of LRU to the free list
-* Flush dirty pages at the tail of LRU to the disk
-The depth to which we scan each buffer pool is controlled by dynamic
-config parameter innodb_LRU_scan_depth.
-@return total pages flushed */
-
-ulint
-buf_flush_LRU_lists(void);
-/*=====================*/
-/*********************************************************************//**
 Wait for any possible LRU flushes that are in progress to end. */
 
 void
