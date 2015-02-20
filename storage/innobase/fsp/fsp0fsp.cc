@@ -2868,7 +2868,7 @@ fsp_reserve_free_pages(
 	ulint	n_used;
 
 	ut_a(!is_system_tablespace(space));
-	ut_a(size < FSP_EXTENT_SIZE / 2);
+	ut_a(size < FSP_EXTENT_SIZE);
 
 	descr = xdes_get_descriptor_with_space_hdr(space_header, space, 0,
 						   mtr);
@@ -2949,7 +2949,7 @@ fsp_reserve_free_extents(
 try_again:
 	size = mtr_read_ulint(space_header + FSP_SIZE, MLOG_4BYTES, mtr);
 
-	if (alloc_type != FSP_BLOB && size < FSP_EXTENT_SIZE / 2) {
+	if (alloc_type != FSP_BLOB && size < FSP_EXTENT_SIZE) {
 		/* Use different rules for small single-table tablespaces */
 		*n_reserved = 0;
 		return(fsp_reserve_free_pages(space, space_header, size, mtr));
@@ -2964,7 +2964,12 @@ try_again:
 	some of them will contain extent descriptor pages, and therefore
 	will not be free extents */
 
-	n_free_up = (size - free_limit) / FSP_EXTENT_SIZE;
+	if (size >= free_limit) {
+		n_free_up = (size - free_limit) / FSP_EXTENT_SIZE;
+	} else {
+		ut_ad(alloc_type == FSP_BLOB);
+		n_free_up = 0;
+	}
 
 	if (n_free_up > 0) {
 		n_free_up--;
@@ -3122,6 +3127,7 @@ fsp_get_available_space_in_free_extents(
 	some of them will contain extent descriptor pages, and therefore
 	will not be free extents */
 
+	ut_ad(size >= free_limit);
 	n_free_up = (size - free_limit) / FSP_EXTENT_SIZE;
 
 	if (n_free_up > 0) {
