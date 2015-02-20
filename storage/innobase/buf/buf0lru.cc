@@ -1081,8 +1081,6 @@ buf_LRU_buf_pool_running_out(void)
 
 		buf_pool = buf_pool_from_array(i);
 
-		buf_pool_mutex_enter(buf_pool);
-
 		if (!recv_recovery_is_on()
 		    && UT_LIST_GET_LEN(buf_pool->free)
 		       + UT_LIST_GET_LEN(buf_pool->LRU)
@@ -1091,8 +1089,6 @@ buf_LRU_buf_pool_running_out(void)
 
 			ret = TRUE;
 		}
-
-		buf_pool_mutex_exit(buf_pool);
 	}
 
 	return(ret);
