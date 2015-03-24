@@ -507,6 +507,7 @@ mkdir debug
            -DWITH_EMBEDDED_SERVER=OFF \
            -DWITH_INNODB_MEMCACHED=ON \
            -DWITH_SSL=system -DWITH_PAM=ON \
+           -DWITH_READLINE=system \
            -DINSTALL_MYSQLSHAREDIR=share/percona-server \
            -DINSTALL_SUPPORTFILESDIR=share/percona-server \
            -DMYSQL_UNIX_ADDR="/var/lib/mysql/mysql.sock" \
@@ -528,6 +529,7 @@ mkdir release
            -DWITH_EMBEDDED_SERVER=OFF \
            -DWITH_INNODB_MEMCACHED=ON \
            -DWITH_SSL=system -DWITH_PAM=ON \
+           -DWITH_READLINE=system \
            -DINSTALL_MYSQLSHAREDIR=share/percona-server \
            -DINSTALL_SUPPORTFILESDIR=share/percona-server \
            -DMYSQL_UNIX_ADDR="/var/lib/mysql/mysql.sock" \

@@ -238,6 +238,7 @@ fi
         -DFEATURE_SET=community \
         -DENABLE_DTRACE=OFF \
         -DWITH_SSL="$WITH_SSL_TYPE" \
+        -DWITH_READLINE=system \
         -DCMAKE_INSTALL_PREFIX="/usr/local/$PRODUCT_FULL" \
         -DMYSQL_DATADIR="/usr/local/$PRODUCT_FULL/data" \
         -DCOMPILATION_COMMENT="$COMMENT" \
