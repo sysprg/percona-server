@@ -219,8 +219,8 @@ MACRO (FIND_SYSTEM_READLINE)
     #include <readline.h>
     int main(int argc, char **argv)
     {
-      char res= *(*rl_completion_entry_function)(0,0);
-      completion_matches(0,0);
+      CPPFunction *func1= (CPPFunction*)0;
+      rl_compentry_func_t *func2= (rl_compentry_func_t*)0;
     }"
     READLINE_USE_LIBEDIT_INTERFACE)
 
