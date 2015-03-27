@@ -281,19 +281,13 @@ my_bool my_thread_init()
     size_t         stack_size;
 
     if (pthread_attr_init(&attr) ||
-        pthread_getattr_np(tmp->pthread_self, &attr) ||
+        pthread_getattr_np(pthread_self(), &attr) ||
         pthread_attr_getstack(&attr, (void**)&stack_addr, &stack_size))
-    {
-      error= 1;
-      goto end;
-    }
+      return TRUE;
     tmp->stack_ends_here= stack_addr;
 
     if (pthread_attr_destroy(&attr))
-    {
-      error= 1;
-      goto end;
-    }
+      return TRUE;
   }
 #else  //defined(_GNU_SOURCE) && (_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600)
   /* assuming tmp is located within the first page of the stack */
