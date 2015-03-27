@@ -28,6 +28,7 @@ Created 2/16/1997 Heikki Tuuri
 
 #include <algorithm>
 
+#include "mem0mem.h"
 #include "trx0types.h"
 
 // Friend declaration
@@ -229,6 +230,15 @@ public:
 		return(m_ids.empty());
 	}
 
+	/**
+	Clones a read view object. This function will allocate space for two
+	read views contiguously, one identical in size and content to this view
+	(starting at returned pointer) and another view immediately following
+	the trx_ids array. The second view will have space for an extra
+	trx_id_t element. <- TODO laurynas
+	@return	read view struct */
+	ReadView* clone() const;
+
 #ifdef UNIV_DEBUG
 	/**
 	@param rhs		view to compare with
@@ -243,6 +253,18 @@ public:
 		return(m_up_limit_id);
 	}
 #endif /* UNIV_DEBUG */
+
+	void print(FILE* file) const
+	{
+		fprintf(file, "Read view low limit trx n:o " TRX_ID_FMT "\n",
+			low_limit_no());
+		print_limits(file);
+		fprintf(file, "Read view individually stored trx ids:\n");
+		for (ulint i = 0; i < m_ids.size(); i++) {
+			fprintf(file, "Read view trx id " TRX_ID_FMT "\n",
+				m_ids.data()[i]);
+		}
+	}
 private:
 	/**
 	Copy the transaction ids from the source vector */

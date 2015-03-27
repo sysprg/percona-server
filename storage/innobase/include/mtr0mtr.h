@@ -309,9 +309,9 @@ struct mtr_t {
 	@param lock	rw-lock
 	@param file	file name from where called
 	@param line	line number in file */
-	inline void x_lock(rw_lock_t* lock, const char*	file, ulint line);
+	inline void x_lock(rw_lock_t* lock, const char* file, ulint line);
 
-	/** Locks a rw-latch in X mode.
+	/** Locks a rw-latch in X mode. todo laurynas prio?
 	NOTE: use mtr_sx_lock().
 	@param lock	rw-lock
 	@param file	file name from where called

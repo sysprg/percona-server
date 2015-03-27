@@ -43,6 +43,11 @@ public:
 	Free all the views in the m_free list */
 	~MVCC();
 
+	/** Insert the view in the proper order into the view list. It is
+	ordered by TODO laurynas in descending order.
+	@param	view	view to add */
+	void view_add(const ReadView* view);
+
 	/**
 	Allocate and create a view.
 	@param view		view owned by this class created for the
@@ -93,6 +98,8 @@ private:
 	Validates a read view list. */
 	bool validate() const;
 
+	friend class ReadView;
+
 	/**
 	Find a free view from the active list, if none found then allocate
 	a new view. This function will also attempt to move delete marked
@@ -100,11 +107,12 @@ private:
 	@return a view to use */
 	inline ReadView* get_view();
 
+public:
 	/**
 	Get the oldest view in the system. It will also move the delete
 	marked read views from the views list to the freed list.
 	@return oldest view if found or NULL */
-	inline ReadView* get_oldest_view() const;
+	ReadView* get_oldest_view() const; // TODO laurynas perf implications of un-inlining?
 
 private:
 	// Prevent copying

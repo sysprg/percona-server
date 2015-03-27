@@ -19,6 +19,12 @@
 
 /* Function items used by mysql */
 
+#ifndef MYSQL_SERVER
+
+class PT_item_list;
+
+#else
+
 #ifdef HAVE_IEEEFP_H
 extern "C"				/* Bug in BSDI include file */
 {
@@ -29,6 +35,7 @@ extern "C"				/* Bug in BSDI include file */
 extern void reject_geometry_args(uint arg_count, Item **args,
                                  Item_result_field *me);
 
+#endif /* !MYSQL_SERVER */
 
 class Item_func :public Item_result_field
 {
@@ -493,6 +500,7 @@ protected:
   virtual bool may_have_named_parameters() const { return false; }
 };
 
+#ifdef MYSQL_SERVER
 
 class Item_real_func :public Item_func
 {
@@ -658,6 +666,7 @@ class Item_num_op :public Item_func_numhybrid
   { DBUG_ASSERT(0); return 0; }
 };
 
+#endif /* MYSQL_SERVER */
 
 class Item_int_func :public Item_func
 {
@@ -704,6 +713,7 @@ public:
   void fix_length_and_dec() {}
 };
 
+#ifdef MYSQL_SERVER
 
 class Item_func_connection_id :public Item_int_func
 {
@@ -2762,5 +2772,7 @@ double my_double_round(double value, longlong dec, bool dec_unsigned,
 bool eval_const_cond(Item *cond);
 
 extern bool volatile  mqh_used;
+
+#endif /* MYSQL_SERVER */
 
 #endif /* ITEM_FUNC_INCLUDED */

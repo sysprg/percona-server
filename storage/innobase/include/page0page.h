@@ -529,7 +529,7 @@ bool
 page_is_leaf(
 /*=========*/
 	const page_t*	page)	/*!< in: page */
-	__attribute__((nonnull, pure));
+	__attribute__((pure));
 /************************************************************//**
 Determine whether the page is empty.
 @return true if the page is empty (PAGE_N_RECS = 0) */

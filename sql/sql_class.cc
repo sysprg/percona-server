@@ -447,7 +447,7 @@ void destroy_thd(THD *thd)
 */
 void *thd_get_scheduler_data(THD *thd)
 {
-  return thd->scheduler.data;
+  return thd->event_scheduler.data;
 }
 
 /**
@@ -458,7 +458,7 @@ void *thd_get_scheduler_data(THD *thd)
 */
 void thd_set_scheduler_data(THD *thd, void *data)
 {
-  thd->scheduler.data= data;
+  thd->event_scheduler.data= data;
 }
 
 /**
@@ -470,7 +470,7 @@ void thd_set_scheduler_data(THD *thd, void *data)
 */
 PSI_thread *thd_get_psi(THD *thd)
 {
-  return thd->scheduler.m_psi;
+  return thd->event_scheduler.m_psi;
 }
 
 /**
@@ -493,7 +493,7 @@ ulong thd_get_net_wait_timeout(THD* thd)
 */
 void thd_set_psi(THD *thd, PSI_thread *psi)
 {
-  thd->scheduler.m_psi= psi;
+  thd->event_scheduler.m_psi= psi;
 }
 
 /**
@@ -536,7 +536,7 @@ void thd_set_thread_stack(THD *thd, char *stack_start)
 void thd_close_connection(THD *thd)
 {
   if (thd->net.vio)
-    vio_shutdown(thd->net.vio);
+    vio_shutdown(thd->net.vio, SHUT_RDWR);
 }
 
 /**
@@ -929,6 +929,37 @@ void thd_inc_row_count(THD *thd)
   thd->get_stmt_da()->inc_current_row_for_condition();
 }
 
+extern "C"
+void increment_thd_innodb_stats(THD* thd,
+                                unsigned long long trx_id,
+                                long io_reads,
+                                long long  io_read,
+                                long      io_reads_wait_timer,
+                                long      lock_que_wait_timer,
+                                long      que_wait_timer,
+                                long      page_access)
+{
+  thd->innodb_was_used=               TRUE;
+  thd->innodb_trx_id=                 trx_id;
+  thd->innodb_io_reads+=              io_reads;
+  thd->innodb_io_read+=               io_read;
+  thd->innodb_io_reads_wait_timer+=   io_reads_wait_timer;
+  thd->innodb_lock_que_wait_timer+=   lock_que_wait_timer;
+  thd->innodb_innodb_que_wait_timer+= que_wait_timer;
+  thd->innodb_page_access+=           page_access;
+}
+
+extern "C"
+unsigned long thd_log_slow_verbosity(const THD *thd)
+{
+  return (unsigned long) thd->variables.log_slow_verbosity;
+}
+
+extern "C"
+int thd_opt_slow_log()
+{
+  return (int) opt_slow_log;
+}
 
 /**
   Dumps a text description of a thread, its security context
@@ -1020,6 +1051,30 @@ char *thd_security_context(THD *thd, char *buffer, size_t length,
   return buffer;
 }
 
+/* extend for kill session of idle transaction from engine */
+extern "C"
+int thd_command(const THD* thd)
+{
+  return (int) thd->get_command();
+}
+
+extern "C"
+long long thd_start_time(const THD* thd)
+{
+  return (long long) thd->start_time.tv_sec;
+}
+
+extern "C"
+void thd_kill(ulong id)
+{
+  Find_thd_with_id find_thd_with_id(id, false);
+  THD* thd= Global_THD_manager::get_instance()->find_thd(&find_thd_with_id);
+  if (!thd)
+    return;
+
+  thd->awake(THD::KILL_CONNECTION);
+  mysql_mutex_unlock(&thd->LOCK_thd_data);
+}
 
 /**
   Implementation of Drop_table_error_handler::handle_condition().
@@ -1114,6 +1169,7 @@ THD::THD(bool enable_plugins)
    query_plan(this),
    in_sub_stmt(0),
    fill_status_recursion_level(0),
+   order_deterministic(false),
    binlog_row_event_extra_data(NULL),
    binlog_unsafe_warning_flags(0),
    binlog_table_maps(0),
@@ -1123,6 +1179,8 @@ THD::THD(bool enable_plugins)
    m_trans_end_pos(0),
    m_transaction(new Transaction_ctx()),
    m_attachable_trx(NULL),
+   backup_tables_lock(MDL_key::BACKUP),
+   backup_binlog_lock(MDL_key::BINLOG),
    table_map_for_update(0),
    m_examined_row_count(0),
    m_stage_progress_psi(NULL),
@@ -1165,6 +1223,11 @@ THD::THD(bool enable_plugins)
   thread_stack= 0;
   m_catalog.str= "std";
   m_catalog.length= 3;
+  scheduler= NULL; // TODO laurynas thread_scheduler;                 // Will be fixed later
+  event_scheduler.data= 0;
+  event_scheduler.m_psi= 0;
+  skip_wait_timeout= false;
+  extra_port= 0;
   main_security_ctx.init();
   security_ctx= &main_security_ctx;
   no_errors= 0;
@@ -1202,13 +1265,20 @@ THD::THD(bool enable_plugins)
   enable_slow_log= 0;
   commit_error= CE_NONE;
   durability_property= HA_REGULAR_DURABILITY;
+  busy_time=            0;
+  cpu_time=             0;
+  bytes_received=       0;
+  bytes_sent=           0;
+  binlog_bytes_written= 0;
+  updated_row_count=    0;
+  sent_row_count_2=     0;
 #ifndef DBUG_OFF
   dbug_sentry=THD_SENTRY_MAGIC;
 #endif
 #ifndef EMBEDDED_LIBRARY
   mysql_audit_init_thd(this);
-  net.vio=0;
 #endif
+  net.vio=0;
   client_capabilities= 0;                       // minimalistic client
   system_thread= NON_SYSTEM_THREAD;
   cleanup_done= 0;
@@ -1219,6 +1289,8 @@ THD::THD(bool enable_plugins)
   mysql_mutex_init(key_LOCK_thd_data, &LOCK_thd_data, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_thd_query, &LOCK_thd_query, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_query_plan, &LOCK_query_plan, MY_MUTEX_INIT_FAST);
+  mysql_mutex_init(key_LOCK_temporary_tables, &LOCK_temporary_tables,
+                   MY_MUTEX_INIT_FAST);
 
   /* Variables with default values */
   proc_info="login";
@@ -1297,6 +1369,8 @@ bool THD::handle_condition(uint sql_errno,
                            const char* msg,
                            Sql_condition ** cond_hdl)
 {
+  last_errno= sql_errno;
+
   if (!m_internal_handler)
   {
     *cond_hdl= NULL;
@@ -1578,6 +1652,10 @@ void THD::init(void)
     ulong tmp;
     tmp= sql_rnd_with_mutex();
     randominit(&rand, tmp + (ulong) &rand, tmp + (ulong) ::global_query_id);
+    randominit(&slog_rand, tmp + (ulong) &slog_rand,
+               tmp + (ulong) ::global_query_id);
+    DBUG_EXECUTE_IF("seed_slow_log_random",
+                    randominit(&slog_rand, 0x11111111, 0x77777777););
   }
 
   server_status= SERVER_STATUS_AUTOCOMMIT;
@@ -1605,6 +1683,7 @@ void THD::init(void)
     variables.option_bits|= OPTION_BIN_LOG;
   else
     variables.option_bits&= ~OPTION_BIN_LOG;
+  reset_stats();
 
 #if defined(ENABLED_DEBUG_SYNC)
   /* Initialize the Debug Sync Facility. See debug_sync.cc. */
@@ -1618,8 +1697,96 @@ void THD::init(void)
   owned_gtid.sidno= 0;
   owned_gtid.gno= 0;
   owned_sid.clear();
+
+  clear_slow_extended();
 }
 
+// Resets stats in a THD.
+void THD::reset_stats(void)
+{
+  current_connect_time=    time(NULL);
+  last_global_update_time= current_connect_time;
+  reset_diff_stats();
+}
+
+// Resets the 'diff' stats, which are used to update global stats.
+void THD::reset_diff_stats(void)
+{
+  diff_total_busy_time=            0;
+  diff_total_cpu_time=             0;
+  diff_total_bytes_received=       0;
+  diff_total_bytes_sent=           0;
+  diff_total_binlog_bytes_written= 0;
+  diff_total_sent_rows=            0;
+  diff_total_updated_rows=         0;
+  diff_total_read_rows=            0;
+  diff_select_commands=            0;
+  diff_update_commands=            0;
+  diff_other_commands=             0;
+  diff_commit_trans=               0;
+  diff_rollback_trans=             0;
+  diff_denied_connections=         0;
+  diff_lost_connections=           0;
+  diff_access_denied_errors=       0;
+  diff_empty_queries=              0;
+}
+
+// Updates 'diff' stats of a THD.
+void THD::update_stats(bool ran_command)
+{
+  diff_total_busy_time+=            busy_time;
+  diff_total_cpu_time+=             cpu_time;
+  diff_total_bytes_received+=       bytes_received;
+  diff_total_bytes_sent+=           bytes_sent;
+  diff_total_binlog_bytes_written+= binlog_bytes_written;
+  diff_total_sent_rows+=            sent_row_count_2;
+  diff_total_updated_rows+=         updated_row_count;
+  // diff_total_read_rows is updated in handler.cc.
+
+  if (ran_command)
+  {
+    // The replication thread has the COM_CONNECT command.
+    DBUG_ASSERT(get_command() != COM_SLEEP);
+    if ((get_command() == COM_QUERY || get_command() == COM_CONNECT) &&
+        (lex->sql_command >= 0 && lex->sql_command < SQLCOM_END)) {
+      // A SQL query.
+      if (lex->sql_command == SQLCOM_SELECT)
+      {
+        diff_select_commands++;
+        if (!sent_row_count_2)
+          diff_empty_queries++;
+      }
+      else if (!sql_command_flags[lex->sql_command] & CF_STATUS_COMMAND)
+      {
+        // 'SHOW ' commands become SQLCOM_SELECT.
+        diff_other_commands++;
+        // 'SHOW ' commands shouldn't inflate total sent row count.
+        diff_total_sent_rows-= sent_row_count_2;
+      } else if (is_update_query(lex->sql_command)) {
+        diff_update_commands++;
+      } else {
+        diff_other_commands++;
+      }
+    }
+  }
+  // diff_commit_trans is updated in handler.cc.
+  // diff_rollback_trans is updated in handler.cc.
+  // diff_denied_connections is updated in sql_parse.cc.
+  // diff_lost_connections is updated in sql_parse.cc.
+  // diff_access_denied_errors is updated in sql_parse.cc.
+
+  /* reset counters to zero to avoid double-counting since values
+     are already store in diff_total_*.
+  */
+
+  busy_time=            0;
+  cpu_time=             0;
+  bytes_received=       0;
+  bytes_sent=           0;
+  binlog_bytes_written= 0;
+  updated_row_count=    0;
+  sent_row_count_2=     0;
+}
 
 /*
   Init THD for query processing.
@@ -1755,6 +1922,12 @@ void THD::cleanup(void)
   */
   mdl_context.release_transactional_locks();
 
+  /* Release backup locks, if acquired */
+  if (backup_binlog_lock.is_acquired())
+    backup_binlog_lock.release(this);
+  if (backup_tables_lock.is_acquired())
+    backup_tables_lock.release(this);
+
   /* Release the global read lock, if acquired. */
   if (global_read_lock.is_acquired())
     global_read_lock.unlock_global_read_lock(this);
@@ -1888,6 +2061,7 @@ THD::~THD()
   mysql_mutex_destroy(&LOCK_query_plan);
   mysql_mutex_destroy(&LOCK_thd_data);
   mysql_mutex_destroy(&LOCK_thd_query);
+  mysql_mutex_destroy(&LOCK_temporary_tables);
 #ifndef DBUG_OFF
   dbug_sentry= THD_SENTRY_GONE;
 #endif
@@ -2013,33 +2187,8 @@ void THD::awake(THD::killed_state state_to_set)
   {
     if (this != current_thd)
     {
-      /*
-        Before sending a signal, let's close the socket of the thread
-        that is being killed ("this", which is not the current thread).
-        This is to make sure it does not block if the signal is lost.
-        This needs to be done only on platforms where signals are not
-        a reliable interruption mechanism.
-
-        Note that the downside of this mechanism is that we could close
-        the connection while "this" target thread is in the middle of
-        sending a result to the application, thus violating the client-
-        server protocol.
-
-        On the other hand, without closing the socket we have a race
-        condition. If "this" target thread passes the check of
-        thd->killed, and then the current thread runs through
-        THD::awake(), sets the 'killed' flag and completes the
-        signaling, and then the target thread runs into read(), it will
-        block on the socket. As a result of the discussions around
-        Bug#37780, it has been decided that we accept the race
-        condition. A second KILL awakes the target from read().
-
-        If we are killing ourselves, we know that we are not blocked.
-        We also know that we will check thd->killed before we go for
-        reading the next statement.
-      */
-
-      shutdown_active_vio();
+      if (active_vio)
+        vio_cancel(active_vio, SHUT_RDWR);
     }
 
     /* Send an event to the scheduler that a thread should be killed. */
@@ -2131,7 +2280,7 @@ void THD::disconnect()
   /* Disconnect even if a active vio is not associated. */
   if (net.vio != vio && net.vio != NULL)
   {
-    vio_shutdown(net.vio);
+    vio_shutdown(net.vio, SHUT_RDWR);
   }
 
   mysql_mutex_unlock(&LOCK_thd_data);
@@ -2198,7 +2347,7 @@ bool THD::store_globals()
   */
   mysys_var->id= m_thread_id;
   real_id= pthread_self();                      // For debugging
-
+  vio_set_thread_id(net.vio, real_id);
   /*
     We have to call thr_lock_info_init() again here as THD may have been
     created in another thread
@@ -2540,13 +2689,42 @@ void THD::shutdown_active_vio()
 #ifndef EMBEDDED_LIBRARY
   if (active_vio)
   {
-    vio_shutdown(active_vio);
+    vio_shutdown(active_vio, SHUT_RDWR);
     active_vio = 0;
   }
 #endif
   DBUG_VOID_RETURN;
 }
 
+char *THD::get_client_host_port(THD *client)
+{
+  Security_context *client_sctx= client->security_ctx;
+  char *client_host= NULL;
+
+  if (client->peer_port && (client_sctx->get_host()->length()
+                            || client_sctx->get_ip()->length()) &&
+      security_ctx->host_or_ip[0])
+  {
+    if ((client_host= (char *) this->alloc(LIST_PROCESS_HOST_LEN+1)))
+      my_snprintf((char *) client_host, LIST_PROCESS_HOST_LEN,
+                  "%s:%u", client_sctx->host_or_ip, client->peer_port);
+  }
+  else
+    client_host= this->strdup(client_sctx->host_or_ip[0] ?
+                              client_sctx->host_or_ip :
+                              client_sctx->get_host()->length() ?
+                              client_sctx->get_host()->ptr() : "");
+
+  return client_host;
+}
+
+const char *get_client_host(THD *client)
+{
+  return client->security_ctx->host_or_ip[0] ?
+      client->security_ctx->host_or_ip :
+      client->security_ctx->get_host()->length() ?
+      client->security_ctx->get_host()->ptr() : "";
+}
 
 /*
   Register an item tree tree transformation, performed by the query
@@ -2738,6 +2916,8 @@ bool select_send::send_data(List<Item> &items)
   }
 
   thd->inc_sent_row_count(1);
+  thd->sent_row_count_2++;
+  DEBUG_SYNC(thd, "sent_row");
 
   if (thd->vio_ok())
     DBUG_RETURN(protocol->write());
@@ -2830,6 +3010,7 @@ select_to_file::~select_to_file()
 select_export::~select_export()
 {
   thd->set_sent_row_count(row_count);
+  thd->sent_row_count_2= row_count;
 }
 
 
@@ -2852,7 +3033,10 @@ select_export::~select_export()
 static File create_file(THD *thd, char *path, sql_exchange *exchange,
 			IO_CACHE *cache)
 {
-  File file;
+  File file= -1;
+  bool new_file_created= false;
+  MY_STAT stat_arg;
+
   uint option= MY_UNPACK_FILENAME | MY_RELATIVE_PATH;
 
   if (!dirname_length(exchange->file_name))
@@ -2872,25 +3056,43 @@ static File create_file(THD *thd, char *path, sql_exchange *exchange,
     return -1;
   }
 
-  if (!access(path, F_OK))
+  if (my_stat(path, &stat_arg, MYF(0)))
   {
-    my_error(ER_FILE_EXISTS_ERROR, MYF(0), exchange->file_name);
-    return -1;
-  }
-  /* Create the file world readable */
-  if ((file= mysql_file_create(key_select_to_file,
-                               path, 0666, O_WRONLY|O_EXCL, MYF(MY_WME))) < 0)
-    return file;
-#ifdef HAVE_FCHMOD
-  (void) fchmod(file, 0666);			// Because of umask()
-#else
-  (void) chmod(path, 0666);
+    /* Check if file is named pipe or unix socket */
+    if (MY_S_ISFIFO(stat_arg.st_mode))
+      file= mysql_file_open(key_select_to_file,
+                            path, O_WRONLY, MYF(MY_WME));
+#ifndef __WIN__
+    if (MY_S_ISSOCK(stat_arg.st_mode))
+      file= mysql_unix_socket_connect(key_select_to_file,
+                                      path, MYF(MY_WME));
 #endif
+    if (file < 0)
+    {
+      if (!(MY_S_ISFIFO(stat_arg.st_mode) || MY_S_ISSOCK(stat_arg.st_mode)))
+        my_error(ER_FILE_EXISTS_ERROR, MYF(0), exchange->file_name);
+      return -1;
+    }
+  }
+  else
+  {
+    /* Create the file world readable */
+    if ((file= mysql_file_create(key_select_to_file,
+                                 path, 0666, O_WRONLY|O_EXCL, MYF(MY_WME))) < 0)
+      return file;
+    new_file_created= true;
+#ifdef HAVE_FCHMOD
+    (void) fchmod(file, 0666);      // Because of umask()
+#else
+    (void) chmod(path, 0666);
+#endif
+  }
   if (init_io_cache(cache, file, 0L, WRITE_CACHE, 0L, 1, MYF(MY_WME)))
   {
     mysql_file_close(file, MYF(0));
-    /* Delete file on error, it was just created */
-    mysql_file_delete(key_select_to_file, path, MYF(0));
+    /* Delete file on error, if it was just created */
+    if (new_file_created)
+      mysql_file_delete(key_select_to_file, path, MYF(0));
     return -1;
   }
   return file;
@@ -3916,6 +4118,7 @@ void thd_increment_bytes_sent(size_t length)
   if (likely(thd != NULL))
   { /* current_thd==NULL when close_connection() calls net_send_error() */
     thd->status_var.bytes_sent+= length;
+    thd->bytes_sent+= length;
   }
 }
 
@@ -3924,7 +4127,10 @@ void thd_increment_bytes_received(size_t length)
 {
   THD *thd= current_thd;
   if (likely(thd != NULL))
+  {
     thd->status_var.bytes_received+= length;
+    thd->bytes_received+= length;
+  }
 }
 
 
@@ -4383,6 +4589,7 @@ extern "C" void thd_pool_wait_end(MYSQL_THD thd);
   SYNOPSIS
   thd_wait_begin()
   thd                     Thread object
+                          Can be NULL, in this case current THD is used.
   wait_type               Type of wait
                           1 -- short wait (e.g. for mutex)
                           2 -- medium wait (e.g. for disk io)
@@ -4399,6 +4606,12 @@ extern "C" void thd_pool_wait_end(MYSQL_THD thd);
 */
 extern "C" void thd_wait_begin(MYSQL_THD thd, int wait_type)
 {
+  if (!thd)
+  {
+    thd= current_thd;
+    if (unlikely(!thd))
+      return;
+  }
   MYSQL_CALLBACK(Connection_handler_manager::event_functions,
                  thd_wait_begin, (thd, wait_type));
 }
@@ -4408,9 +4621,16 @@ extern "C" void thd_wait_begin(MYSQL_THD thd, int wait_type)
   when they waking up from a sleep/stall.
 
   @param  thd   Thread handle
+  Can be NULL, in this case current THD is used.
 */
 extern "C" void thd_wait_end(MYSQL_THD thd)
 {
+  if (!thd)
+  {
+    thd= current_thd;
+    if (unlikely(!thd))
+      return;
+  }
   MYSQL_CALLBACK(Connection_handler_manager::event_functions,
                  thd_wait_end, (thd));
 }
@@ -4487,6 +4707,7 @@ void THD::reset_sub_statement_state(Sub_statement_state *backup,
     first_successful_insert_id_in_prev_stmt;
   backup->first_successful_insert_id_in_cur_stmt= 
     first_successful_insert_id_in_cur_stmt;
+  reset_sub_statement_state_slow_extended(backup);
 
   if ((!lex->requires_prelocking() || is_update_query(lex->sql_command)) &&
       !is_current_stmt_binlog_format_row())
@@ -4509,6 +4730,69 @@ void THD::reset_sub_statement_state(Sub_statement_state *backup,
   first_successful_insert_id_in_cur_stmt= 0;
 }
 
+void THD::clear_slow_extended()
+{
+  DBUG_ENTER("THD::clear_slow_extended");
+  m_sent_row_count=             0;
+  m_examined_row_count=         0;
+  bytes_sent_old=               status_var.bytes_sent;
+  tmp_tables_used=              0;
+  tmp_tables_disk_used=         0;
+  tmp_tables_size=              0;
+  innodb_was_used=              FALSE;
+  innodb_trx_id=                0;
+  innodb_io_reads=              0;
+  innodb_io_read=               0;
+  innodb_io_reads_wait_timer=   0;
+  innodb_lock_que_wait_timer=   0;
+  innodb_innodb_que_wait_timer= 0;
+  innodb_page_access=           0;
+  query_plan_flags=             QPLAN_NONE;
+  query_plan_fsort_passes=      0;
+  last_errno=                   0;
+  DBUG_VOID_RETURN;
+}
+
+void THD::reset_sub_statement_state_slow_extended(Sub_statement_state *backup)
+{
+  DBUG_ENTER("THD::reset_sub_statement_state_slow_extended");
+  backup->sent_row_count=               m_sent_row_count;
+  backup->examined_row_count=           m_examined_row_count;
+  backup->tmp_tables_used=              tmp_tables_used;
+  backup->tmp_tables_disk_used=         tmp_tables_disk_used;
+  backup->tmp_tables_size=              tmp_tables_size;
+  backup->innodb_was_used=              innodb_was_used;
+  backup->innodb_io_reads=              innodb_io_reads;
+  backup->innodb_io_read=               innodb_io_read;
+  backup->innodb_io_reads_wait_timer=   innodb_io_reads_wait_timer;
+  backup->innodb_lock_que_wait_timer=   innodb_lock_que_wait_timer;
+  backup->innodb_innodb_que_wait_timer= innodb_innodb_que_wait_timer;
+  backup->innodb_page_access=           innodb_page_access;
+  backup->query_plan_flags=             query_plan_flags;
+  backup->query_plan_fsort_passes=      query_plan_fsort_passes;
+  clear_slow_extended();
+  DBUG_VOID_RETURN;
+}
+
+void THD::restore_sub_statement_state_slow_extended(const Sub_statement_state *backup)
+{
+  DBUG_ENTER("THD::restore_sub_statement_state_slow_extended");
+  m_sent_row_count=              backup->sent_row_count;
+  m_examined_row_count+=         backup->examined_row_count;
+  tmp_tables_used+=              backup->tmp_tables_used;
+  tmp_tables_disk_used+=         backup->tmp_tables_disk_used;
+  tmp_tables_size+=              backup->tmp_tables_size;
+  innodb_was_used=               (innodb_was_used || backup->innodb_was_used);
+  innodb_io_reads+=              backup->innodb_io_reads;
+  innodb_io_read+=               backup->innodb_io_read;
+  innodb_io_reads_wait_timer+=   backup->innodb_io_reads_wait_timer;
+  innodb_lock_que_wait_timer+=   backup->innodb_lock_que_wait_timer;
+  innodb_innodb_que_wait_timer+= backup->innodb_innodb_que_wait_timer;
+  innodb_page_access+=           backup->innodb_page_access;
+  query_plan_flags|=             backup->query_plan_flags;
+  query_plan_fsort_passes+=      backup->query_plan_fsort_passes;
+  DBUG_VOID_RETURN;
+}
 
 void THD::restore_sub_statement_state(Sub_statement_state *backup)
 {
@@ -4574,6 +4858,7 @@ void THD::restore_sub_statement_state(Sub_statement_state *backup)
   */
   inc_examined_row_count(backup->examined_row_count);
   cuted_fields+=       backup->cuted_fields;
+  restore_sub_statement_state_slow_extended(backup);
   DBUG_VOID_RETURN;
 }
 
@@ -4623,6 +4908,7 @@ void THD::inc_status_select_full_join()
 #ifdef HAVE_PSI_STATEMENT_INTERFACE
   PSI_STATEMENT_CALL(inc_statement_select_full_join)(m_statement_psi, 1);
 #endif
+  query_plan_flags|= QPLAN_FULL_JOIN;
 }
 
 void THD::inc_status_select_full_range_join()
@@ -4655,6 +4941,7 @@ void THD::inc_status_select_scan()
 #ifdef HAVE_PSI_STATEMENT_INTERFACE
   PSI_STATEMENT_CALL(inc_statement_select_scan)(m_statement_psi, 1);
 #endif
+  query_plan_flags|= QPLAN_FULL_SCAN;
 }
 
 void THD::inc_status_sort_merge_passes()

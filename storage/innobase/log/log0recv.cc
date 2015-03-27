@@ -46,6 +46,7 @@ Created 9/20/1997 Heikki Tuuri
 #include "btr0btr.h"
 #include "btr0cur.h"
 #include "ibuf0ibuf.h"
+#include "log0archive.h"
 #include "trx0undo.h"
 #include "trx0rec.h"
 #include "fil0fil.h"
@@ -758,9 +759,9 @@ recv_synchronize_groups(void)
 
 	ut_a(start_lsn != end_lsn);
 
-	log_group_read_log_seg(recv_sys->last_block,
+	log_group_read_log_seg(LOG_RECOVER, recv_sys->last_block,
 			       UT_LIST_GET_FIRST(log_sys->log_groups),
-			       start_lsn, end_lsn);
+			       start_lsn, end_lsn, false);
 
 	for (log_group_t* group = UT_LIST_GET_FIRST(log_sys->log_groups);
 	     group;
@@ -957,7 +958,7 @@ block.  We also accept a log block in the old format before
 InnoDB-3.23.52 where the checksum field contains the log block number.
 @return TRUE if ok, or if the log block may be in the format of InnoDB
 version predating 3.23.52 */
-static
+
 ibool
 log_block_checksum_is_ok_or_old_format(
 /*===================================*/
@@ -1726,6 +1727,8 @@ recv_recover_page_func(
 					     block->page.id.page_no());
 
 	if ((recv_addr == NULL)
+		/* bugfix: http://bugs.mysql.com/bug.php?id=44140 */
+	    || (recv_addr->state == RECV_BEING_READ && !just_read_in)
 	    || (recv_addr->state == RECV_BEING_PROCESSED)
 	    || (recv_addr->state == RECV_PROCESSED)) {
 		ut_ad(recv_addr == NULL || recv_needed_recovery);
@@ -2289,7 +2292,7 @@ skip_this_recv_addr:
 @param[in]	apply		whether to apply MLOG_FILE_* records
 @param[out]	body		start of log record body
 @return length of the record, or 0 if the record was not complete */
-static
+
 ulint
 recv_parse_log_rec(
 	mlog_id_t*	type,
@@ -2365,7 +2368,7 @@ recv_parse_log_rec(
 
 /*******************************************************//**
 Calculates the new value for lsn when more data is added to the log. */
-static
+
 lsn_t
 recv_calc_lsn_on_data_add(
 /*======================*/
@@ -3148,8 +3151,8 @@ recv_group_scan_log_recs(
 		start_lsn = end_lsn;
 		end_lsn += RECV_SCAN_SIZE;
 
-		log_group_read_log_seg(
-			log_sys->buf, group, start_lsn, end_lsn);
+		log_group_read_log_seg(LOG_RECOVER,
+			log_sys->buf, group, start_lsn, end_lsn, false);
 	} while (!recv_scan_log_recs(
 			 available_mem, &store_to_hash, log_sys->buf,
 			 RECV_SCAN_SIZE,
@@ -3294,12 +3297,16 @@ recv_recovery_from_checkpoint_start(
 	log_group_t*	group;
 	log_group_t*	max_cp_group;
 	ulint		max_cp_field;
+	ulint		log_hdr_log_block_size;
 	lsn_t		checkpoint_lsn;
 	bool		rescan;
 	ib_uint64_t	checkpoint_no;
 	lsn_t		contiguous_lsn;
+	lsn_t		archived_lsn;
 	byte*		buf;
-	byte		log_hdr_buf[LOG_FILE_HDR_SIZE];
+	byte*		log_hdr_buf;
+	byte*		log_hdr_buf_base = static_cast<byte *>
+		(alloca(LOG_FILE_HDR_SIZE + OS_FILE_LOG_BLOCK_SIZE));
 	dberr_t		err;
 
 	/* Initialize red-black tree for fast insertions into the
@@ -3307,6 +3314,9 @@ recv_recovery_from_checkpoint_start(
 	buf_flush_init_flush_rbt();
 
 	ut_when_dtor<recv_dblwr_t> tmp(recv_sys->dblwr);
+
+	log_hdr_buf = static_cast<byte *>
+		(ut_align(log_hdr_buf_base, OS_FILE_LOG_BLOCK_SIZE));
 
 	if (srv_force_recovery >= SRV_FORCE_NO_LOG_REDO) {
 
@@ -3338,6 +3348,7 @@ recv_recovery_from_checkpoint_start(
 
 	checkpoint_lsn = mach_read_from_8(buf + LOG_CHECKPOINT_LSN);
 	checkpoint_no = mach_read_from_8(buf + LOG_CHECKPOINT_NO);
+	archived_lsn = mach_read_from_8(buf + LOG_CHECKPOINT_ARCHIVED_LSN);
 
 	/* Read the first log file header to print a note if this is
 	a recovery from a restored InnoDB Hot Backup */
@@ -3384,6 +3395,34 @@ recv_recovery_from_checkpoint_start(
 	known to be contiguously written to all log groups. */
 
 	recv_sys->mlog_checkpoint_lsn = 0;
+
+	log_hdr_log_block_size
+		= mach_read_from_4(log_hdr_buf
+				   + LOG_FILE_OS_FILE_LOG_BLOCK_SIZE);
+	if (log_hdr_log_block_size == 0) {
+		/* 0 means default value */
+		log_hdr_log_block_size = 512;
+	}
+
+	if (UNIV_UNLIKELY(log_hdr_log_block_size != srv_log_block_size)) {
+		fprintf(stderr,
+			"InnoDB: Error: The block size of ib_logfile (" ULINTPF
+			") is not equal to innodb_log_block_size.\n"
+			"InnoDB: Error: Suggestion - Recreate log files.\n",
+			log_hdr_log_block_size);
+		return(DB_ERROR);
+	}
+
+	group = UT_LIST_GET_FIRST(log_sys->log_groups);
+
+	while (group) {
+		log_checkpoint_get_nth_group_info(buf, group->id,
+						  &(group->archived_file_no));
+
+		log_archived_get_offset(group, group->archived_file_no,
+			archived_lsn, &(group->archived_offset));
+		group = UT_LIST_GET_NEXT(log_groups, group);
+	}
 
 	ut_ad(RECV_SCAN_SIZE <= log_sys->buf_size);
 
@@ -3521,6 +3560,8 @@ recv_recovery_from_checkpoint_start(
 	log_sys->next_checkpoint_lsn = checkpoint_lsn;
 	log_sys->next_checkpoint_no = checkpoint_no + 1;
 
+	log_sys->archived_lsn = archived_lsn;
+
 	recv_synchronize_groups();
 
 	if (!recv_needed_recovery) {
@@ -3547,6 +3588,11 @@ recv_recovery_from_checkpoint_start(
 		    log_sys->lsn - log_sys->last_checkpoint_lsn);
 
 	log_sys->next_checkpoint_no = checkpoint_no + 1;
+
+	if (archived_lsn == LSN_MAX) {
+
+		log_sys->archiving_state = LOG_ARCH_OFF;
+	}
 
 	mutex_enter(&recv_sys->mutex);
 
@@ -3651,6 +3697,8 @@ Resets the logs. The contents of log files will be lost! */
 void
 recv_reset_logs(
 /*============*/
+	lsn_t		arch_log_no,	/*!< in: next archived log file
+					number */
 	lsn_t		lsn)		/*!< in: reset to this lsn
 					rounded up to be divisible by
 					OS_FILE_LOG_BLOCK_SIZE, after
@@ -3668,6 +3716,8 @@ recv_reset_logs(
 	while (group) {
 		group->lsn = log_sys->lsn;
 		group->lsn_offset = LOG_FILE_HDR_SIZE;
+		group->archived_file_no = arch_log_no;
+		group->archived_offset = 0;
 		group = UT_LIST_GET_NEXT(log_groups, group);
 	}
 
@@ -3676,6 +3726,10 @@ recv_reset_logs(
 
 	log_sys->next_checkpoint_no = 0;
 	log_sys->last_checkpoint_lsn = 0;
+
+	log_sys->archived_lsn = log_sys->lsn;
+
+	log_sys->tracked_lsn = log_sys->lsn;
 
 	log_block_init(log_sys->buf, log_sys->lsn);
 	log_block_set_first_rec_group(log_sys->buf, LOG_BLOCK_HDR_SIZE);

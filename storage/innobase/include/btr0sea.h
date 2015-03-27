@@ -87,13 +87,14 @@ btr_search_info_create(
 	mem_heap_t*	heap);	/*!< in: heap where created */
 /*****************************************************************//**
 Returns the value of ref_count. The value is protected by
-btr_search_latch.
+the latch of the AHI partition corresponding to this index.
 @return ref_count value. */
 
 ulint
 btr_search_info_get_ref_count(
 /*==========================*/
-	btr_search_t*   info);	/*!< in: search info. */
+	btr_search_t*   info,	/*!< in: search info. */
+	dict_index_t*	index); /*!< in: index */
 /*********************************************************************//**
 Updates the search info. */
 UNIV_INLINE
@@ -119,8 +120,9 @@ btr_search_guess_on_hash(
 	ulint		latch_mode,	/*!< in: BTR_SEARCH_LEAF, ... */
 	btr_cur_t*	cursor,		/*!< out: tree cursor */
 	ulint		has_search_latch,/*!< in: latch mode the caller
-					currently has on btr_search_latch:
-					RW_S_LATCH, RW_X_LATCH, or 0 */
+					currently has on the AHI search latch
+					for this index: RW_S_LATCH, RW_X_LATCH,
+					or 0 */
 	mtr_t*		mtr);		/*!< in: mtr */
 /********************************************************************//**
 Moves or deletes hash entries for moved records. If new_page is already hashed,
@@ -195,12 +197,87 @@ ibool
 btr_search_validate(void);
 /*======================*/
 
+/********************************************************************//**
+Returns the adaptive hash index table for a given index key.
+@return the adaptive hash index table for a given index key */
+UNIV_INLINE
+hash_table_t*
+btr_search_get_hash_table(
+/*======================*/
+	const dict_index_t*	index)	/*!< in: index */
+	__attribute__((pure,warn_unused_result));
+
+/********************************************************************//**
+Returns the adaptive hash index latch for a given index key.
+@return the adaptive hash index latch for a given index key */
+UNIV_INLINE
+rw_lock_t*
+btr_search_get_latch(
+/*=================*/
+	const dict_index_t*	index)	/*!< in: index */
+	__attribute__((pure,warn_unused_result));
+
+/*********************************************************************//**
+Returns the AHI partition number corresponding to a given index ID. */
+UNIV_INLINE
+ulint
+btr_search_get_key(
+/*===============*/
+	index_id_t	index_id)	/*!< in: index ID */
+	__attribute__((pure,warn_unused_result));
+
+/*********************************************************************//**
+Initializes AHI-related fields in a newly created index. */
+UNIV_INLINE
+void
+btr_search_index_init(
+/*===============*/
+	dict_index_t*	index)	/*!< in: index */
+	__attribute__((nonnull));
+
+/********************************************************************//**
+Latches all adaptive hash index latches in exclusive mode.  */
+UNIV_INLINE
+void
+btr_search_x_lock_all(void);
+/*========================*/
+
+/********************************************************************//**
+Unlatches all adaptive hash index latches in exclusive mode.  */
+UNIV_INLINE
+void
+btr_search_x_unlock_all(void);
+/*==========================*/
+
+#ifdef UNIV_SYNC_DEBUG
+/******************************************************************//**
+Checks if the thread has locked all the adaptive hash index latches in the
+specified mode.
+
+@return true if all latches are locked by the current thread, false
+otherwise.  */
+UNIV_INLINE
+bool
+btr_search_own_all(
+/*===============*/
+	ulint lock_type)
+	__attribute__((warn_unused_result));
+/********************************************************************//**
+Checks if the thread owns any adaptive hash latches in either S or X mode.
+@return	true if the thread owns at least one latch in any mode. */
+UNIV_INLINE
+bool
+btr_search_own_any(void)
+/*=====================*/
+	 __attribute__((warn_unused_result));
+#endif
+
 /** The search info struct in an index */
 struct btr_search_t{
 	ulint	ref_count;	/*!< Number of blocks in this index tree
 				that have search index built
 				i.e. block->index points to this index.
-				Protected by btr_search_latch except
+				Protected by the AHI search latch except
 				when during initialization in
 				btr_search_info_create(). */
 
@@ -251,9 +328,9 @@ struct btr_search_t{
 
 /** The hash index system */
 struct btr_search_sys_t{
-	hash_table_t*	hash_index;	/*!< the adaptive hash index,
-					mapping dtuple_fold values
-					to rec_t pointers on index pages */
+	hash_table_t**	hash_tables;	/*!< the array of adaptive hash index
+					tables, mapping dtuple_fold values to
+					rec_t pointers on index pages */
 };
 
 /** The adaptive hash index */

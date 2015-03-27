@@ -475,8 +475,6 @@ class MYSQL_BIN_LOG: public TC_LOG
             const char *new_name);
   bool init_and_set_log_file_name(const char *log_name,
                                   const char *new_name);
-  int generate_new_name(char *new_name, const char *log_name);
-
 public:
   const char *generate_name(const char *log_name, const char *suffix,
                             char *buff);
@@ -618,6 +616,8 @@ private:
   /* The prevoius gtid set in relay log. */
   Gtid_set* previous_gtid_set_relaylog;
 
+  bool snapshot_lock_acquired;
+
   int open(const char *opt_name) { return open_binlog(opt_name); }
   bool change_stage(THD *thd, Stage_manager::StageID stage,
                     THD* queue, mysql_mutex_t *leave,
@@ -645,7 +645,15 @@ public:
   void update_thd_next_event_pos(THD *thd);
   int flush_and_set_pending_rows_event(THD *thd, Rows_log_event* event,
                                        bool is_transactional);
-
+  void xlock(void);
+  void xunlock(void);
+  void slock(void) { mysql_rwlock_rdlock(&LOCK_consistent_snapshot); }
+  void sunlock(void) { mysql_rwlock_unlock(&LOCK_consistent_snapshot); }
+#else
+  void xlock(void) { }
+  void xunlock(void) { }
+  void slock(void) { }
+  void sunlock(void) { }
 #endif /* !defined(MYSQL_CLIENT) */
   void add_bytes_written(ulonglong inc)
   {
@@ -736,7 +744,7 @@ public:
 
   bool write_event(Log_event* event_info);
   bool write_cache(THD *thd, class binlog_cache_data *binlog_cache_data);
-  int  do_write_cache(IO_CACHE *cache);
+  int  do_write_cache(THD *thd, IO_CACHE *cache);
 
   void set_write_error(THD *thd, bool is_transactional);
   bool check_write_error(THD *thd);
@@ -783,6 +791,7 @@ public:
   int purge_logs(const char *to_log, bool included,
                  bool need_lock_index, bool need_update_threads,
                  ulonglong *decrease_log_space, bool auto_purge);
+  int purge_logs_maximum_number(ulong max_nr_files);
   int purge_logs_before_date(time_t purge_time, bool auto_purge);
   int purge_first_log(Relay_log_info* rli, bool included);
   int set_crash_safe_index_file_name(const char *base_file_name);
@@ -837,6 +846,7 @@ public:
   mysql_mutex_t* get_binlog_end_pos_lock() { return &LOCK_binlog_end_pos; }
   void lock_binlog_end_pos() { mysql_mutex_lock(&LOCK_binlog_end_pos); }
   void unlock_binlog_end_pos() { mysql_mutex_unlock(&LOCK_binlog_end_pos); }
+  void set_status_variables(THD *thd);
 };
 
 typedef struct st_load_file_info
@@ -874,9 +884,19 @@ void register_binlog_handler(THD *thd, bool trx);
 int gtid_empty_group_log_and_cleanup(THD *thd);
 int query_error_code(THD *thd, bool not_killed);
 
+bool generate_new_log_name(char *new_name, ulong *new_ext,
+                           const char *log_name, bool unique);
+
 extern const char *log_bin_index;
 extern const char *log_bin_basename;
 extern bool opt_binlog_order_commits;
+
+/*
+  Maximum unique log filename extension.
+  Note: setting to 0x7FFFFFFF due to atol windows
+  overflow/truncate.
+*/
+#define MAX_LOG_UNIQUE_FN_EXT 0x7FFFFFFF
 
 /**
   Turns a relative log binary log path into a full path, based on the

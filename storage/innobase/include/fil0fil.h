@@ -40,6 +40,7 @@ Created 10/25/1995 Heikki Tuuri
 #include "ibuf0types.h"
 #include "log0log.h"
 #endif /* !UNIV_HOTBACKUP */
+#include "trx0types.h"
 
 #include <list>
 #include <vector>
@@ -169,6 +170,7 @@ struct fil_space_t {
 	bool		is_in_unflushed_spaces;
 				/*!< true if this space is currently in
 				unflushed_spaces */
+	bool		is_corrupt;
 	UT_LIST_NODE_T(fil_space_t) space_list;
 				/*!< list of all spaces */
 	ulint		magic_n;/*!< FIL_SPACE_MAGIC_N */
@@ -391,6 +393,7 @@ fil_node_create(
 	fil_space_t*	space,
 	bool		is_raw)
 	__attribute__((warn_unused_result));
+
 /** Create a space memory object and put it to the fil_system hash table.
 Error messages are issued to the server log.
 @param[in]	name	tablespace name
@@ -399,7 +402,6 @@ Error messages are issued to the server log.
 @param[in]	purpose	tablespace purpose
 @return pointer to created tablespace, to be filled in with fil_node_create()
 @retval NULL on failure (such as when the same tablespace exists) */
-
 fil_space_t*
 fil_space_create(
 	const char*	name,
@@ -407,6 +409,26 @@ fil_space_create(
 	ulint		flags,
 	fil_type_t	purpose)
 	__attribute__((warn_unused_result));
+
+/****************************************************************//**
+Drops files from the start of a file space, so that its size is cut by
+the amount given. */
+
+void
+fil_space_truncate_start(
+/*=====================*/
+	ulint	id,		/*!< in: space id */
+	ulint	trunc_len);	/*!< in: truncate by this much; it is an error
+				if this does not equal to the combined size of
+				some initial files in the space */
+/****************************************************************//**
+Check is there node in file space with given name. */
+
+ibool
+fil_space_contains_node(
+/*====================*/
+	ulint	id,		/*!< in: space id */
+	char*	node_name);	/*!< in: node name */
 
 /*******************************************************************//**
 Assigns a new space id for a new single-table tablespace. This works simply by
@@ -957,7 +979,7 @@ else ignored
 @return DB_SUCCESS, DB_TABLESPACE_DELETED or DB_TABLESPACE_TRUNCATED
 if we are trying to do i/o on a tablespace which does not exist */
 dberr_t
-fil_io(
+_fil_io(
 	ulint			type,
 	bool			sync,
 	const page_id_t&	page_id,
@@ -965,7 +987,11 @@ fil_io(
 	ulint			byte_offset,
 	ulint			len,
 	void*			buf,
-	void*			message);
+	void*			message,
+	trx_t*			trx);
+
+#define fil_io(type, sync, page_id, page_size, byte_offset, len, buf, message) \
+	_fil_io(type, sync, page_id, page_size, byte_offset, len, buf, message, NULL)
 
 /**********************************************************************//**
 Waits for an aio operation to complete. This function is used to write the
@@ -1269,5 +1295,29 @@ void test_make_filepath();
 #endif /* UNIV_COMPILE_TEST_FUNCS */
 
 #endif /* !UNIV_INNOCHECKSUM */
+
+/*************************************************************************
+Return local hash table informations. */
+
+ulint
+fil_system_hash_cells(void);
+/*========================*/
+
+ulint
+fil_system_hash_nodes(void);
+/*========================*/
+
+/*************************************************************************
+functions to access is_corrupt flag of fil_space_t*/
+
+ibool
+fil_space_is_corrupt(
+/*=================*/
+	ulint	space_id);
+
+void
+fil_space_set_corrupt(
+/*==================*/
+	ulint	space_id);
 
 #endif /* fil0fil_h */

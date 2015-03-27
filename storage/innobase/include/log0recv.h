@@ -36,6 +36,28 @@ Created 9/20/1997 Heikki Tuuri
 
 #include <list>
 
+/******************************************************//**
+Checks the 4-byte checksum to the trailer checksum field of a log
+block.  We also accept a log block in the old format before
+InnoDB-3.23.52 where the checksum field contains the log block number.
+@return TRUE if ok, or if the log block may be in the format of InnoDB
+version predating 3.23.52 */
+
+ibool
+log_block_checksum_is_ok_or_old_format(
+/*===================================*/
+	const byte*	block);	/*!< in: pointer to a log block */
+
+/*******************************************************//**
+Calculates the new value for lsn when more data is added to the log. */
+
+lsn_t
+recv_calc_lsn_on_data_add(
+/*======================*/
+	lsn_t		lsn,	/*!< in: old lsn */
+	ib_uint64_t	len);	/*!< in: this many bytes of data is
+				added, log block headers not included */
+
 #ifdef UNIV_HOTBACKUP
 extern ibool	recv_replay_file_ops;
 
@@ -135,12 +157,35 @@ Initiates the rollback of active transactions. */
 void
 recv_recovery_rollback_active(void);
 /*===============================*/
+
+/** Tries to parse a single log record.
+@param[out]	type		log record type
+@param[in]	ptr		pointer to a buffer
+@param[in]	end_ptr		end of the buffer
+@param[out]	space_id	tablespace identifier
+@param[out]	page_no		page number
+@param[in]	apply		whether to apply MLOG_FILE_* records
+@param[out]	body		start of log record body
+@return length of the record, or 0 if the record was not complete */
+
+ulint
+recv_parse_log_rec(
+	mlog_id_t*	type,
+	byte*		ptr,
+	byte*		end_ptr,
+	ulint*		space,
+	ulint*		page_no,
+	bool		apply,
+	byte**		body);
+
 /******************************************************//**
 Resets the logs. The contents of log files will be lost! */
 
 void
 recv_reset_logs(
 /*============*/
+	lsn_t		arch_log_no,	/*!< in: next archived log file
+					number */
 	lsn_t		lsn);		/*!< in: reset to this lsn
 					rounded up to be divisible by
 					OS_FILE_LOG_BLOCK_SIZE, after

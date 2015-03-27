@@ -235,7 +235,8 @@ row_log_block_allocate(
 		);
 
 		log_buf.block = ut_allocator<byte>(mem_key_row_log_buf)
-			.allocate_large(srv_sort_buf_size, &log_buf.block_pfx);
+			.allocate_large(srv_sort_buf_size, &log_buf.block_pfx,
+					false);
 
 		if (log_buf.block == NULL) {
 			DBUG_RETURN(false);

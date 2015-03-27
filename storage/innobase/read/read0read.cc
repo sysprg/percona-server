@@ -24,6 +24,7 @@ Created 2/16/1997 Heikki Tuuri
 *******************************************************/
 
 #include "read0read.h"
+#include "read0i_s.h"
 
 #include "srv0srv.h"
 #include "trx0sys.h"
@@ -376,6 +377,21 @@ MVCC::~MVCC()
 	ut_a(UT_LIST_GET_LEN(m_views) == 0);
 }
 
+/** Insert the view in the proper order into the view list. It is
+ordered by TODO laurynas in descending order.
+@param	view	view to add */
+void
+MVCC::view_add(const ReadView* view)
+{
+	ut_ad(mutex_own(&trx_sys->mutex));
+
+	UT_LIST_ADD_FIRST(m_views, const_cast<ReadView *>(view));
+
+	ut_ad(!view->is_closed());
+
+	ut_ad(validate());
+}
+
 /**
 Copy the transaction ids from the source vector */
 
@@ -592,11 +608,8 @@ MVCC::view_open(ReadView*& view, trx_t* trx)
 
 		view->complete();
 
-		UT_LIST_ADD_FIRST(m_views, view);
+		view_add(view);
 
-		ut_ad(!view->is_closed());
-
-		ut_ad(validate());
 	}
 
 	trx_sys_mutex_exit();
@@ -673,6 +686,27 @@ ReadView::copy_complete()
 
 	/* We added the creator transaction ID to the m_ids. */
 	m_creator_trx_id = 0;
+}
+
+/**
+Clones a read view object. This function will allocate space for two
+read views contiguously, one identical in size and content to this view
+(starting at returned pointer) and another view immediately following
+the trx_ids array. The second view will have space for an extra
+trx_id_t element. <- TODO laurynas
+@return	read view struct */
+
+ReadView*
+ReadView::clone() const
+{
+	ut_ad(mutex_own(&trx_sys->mutex));
+
+	ReadView* result= trx_sys->mvcc->get_view();
+
+	result->copy_prepare(*this);
+	result->copy_complete();
+
+	return result;
 }
 
 /** Clones the oldest view and stores it in view. No need to
@@ -778,4 +812,27 @@ MVCC::set_view_creator_trx_id(ReadView* view, trx_id_t id)
 	ut_ad(mutex_own(&trx_sys->mutex));
 
 	view->creator_trx_id(id);
+}
+
+// TODO laurynas how does this thing iterate?!
+i_s_xtradb_read_view_t*
+read_fill_i_s_xtradb_read_view(i_s_xtradb_read_view_t* rv)
+{
+	ReadView*    view;
+
+	mutex_enter(&trx_sys->mutex);
+
+	view = trx_sys->mvcc->get_oldest_view();
+	if (!view) {
+		mutex_exit(&trx_sys->mutex);
+		return NULL;
+	}
+
+	rv->low_limit_no = view->low_limit_no();
+	rv->up_limit_id = view->up_limit_id();
+	rv->low_limit_id = view->low_limit_id();
+
+	mutex_exit(&trx_sys->mutex);
+
+	return rv;
 }

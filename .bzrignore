@@ -783,9 +783,9 @@ libmysql/.deps/viosocket.Plo
 libmysql/.deps/viossl.Plo
 libmysql/.deps/viosslfactories.Plo
 libmysql/.deps/xml.Plo
-libmysql/.libs/libmysqlclient.lai
-libmysql/.libs/libmysqlclient.so.15
-libmysql/.libs/libmysqlclient.so.15.0.0
+libmysql/.libs/libperconaserverclient.lai
+libmysql/.libs/libperconaserverclient.so.15
+libmysql/.libs/libperconaserverclient.so.15.0.0
 libmysql/conf_to_src
 libmysql/debug/libmysql.exp
 libmysql/libmysql.ver
@@ -919,9 +919,9 @@ libmysql_r/.deps/viosocket.Plo
 libmysql_r/.deps/viossl.Plo
 libmysql_r/.deps/viosslfactories.Plo
 libmysql_r/.deps/xml.Plo
-libmysql_r/.libs/libmysqlclient_r.lai
-libmysql_r/.libs/libmysqlclient_r.so.15
-libmysql_r/.libs/libmysqlclient_r.so.15.0.0
+libmysql_r/.libs/libperconaserverclient_r.lai
+libmysql_r/.libs/libperconaserverclient_r.so.15
+libmysql_r/.libs/libperconaserverclient_r.so.15.0.0
 libmysql_r/acconfig.h
 libmysql_r/client_settings.h
 libmysql_r/conf_to_src
@@ -3142,3 +3142,5 @@ sql/gen_lex_token
 internal/plugin/thread_pool/src/thread_pool_config.h
 internal/tests/innorwlocktest
 packaging/solaris/postinstall-solaris
+doc/build
+doc/source/percona-theme/

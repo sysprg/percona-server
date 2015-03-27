@@ -454,10 +454,10 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %lex-param { class THD *YYTHD }
 %pure-parser                                    /* We have threads */
 /*
-  Currently there are 160 shift/reduce conflicts.
+  Currently there are 162 shift/reduce conflicts.
   We should not introduce new conflicts any more.
 */
-%expect 160
+%expect 162
 
 /*
    Comments for TOKENS.
@@ -492,6 +492,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  AND_AND_SYM                   /* OPERATOR */
 %token  AND_SYM                       /* SQL-2003-R */
 %token  ANY_SYM                       /* SQL-2003-R */
+%token  ARCHIVED_SYM                  /* MYSQL      */
 %token  AS                            /* SQL-2003-R */
 %token  ASC                           /* SQL-2003-N */
 %token  ASCII_SYM                     /* MYSQL-FUNC */
@@ -531,6 +532,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  CHAIN_SYM                     /* SQL-2003-N */
 %token  CHANGE
 %token  CHANGED
+%token  CHANGED_PAGE_BITMAPS_SYM      /* MYSQL      */
 %token  CHARSET
 %token  CHAR_SYM                      /* SQL-2003-R */
 %token  CHECKSUM_SYM
@@ -538,7 +540,9 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  CIPHER_SYM
 %token  CLASS_ORIGIN_SYM              /* SQL-2003-N */
 %token  CLIENT_SYM
+%token  CLIENT_STATS_SYM
 %token  CLOSE_SYM                     /* SQL-2003-R */
+%token  CLUSTERING_SYM
 %token  COALESCE                      /* SQL-2003-N */
 %token  CODE_SYM
 %token  COLLATE_SYM                   /* SQL-2003-R */
@@ -701,6 +705,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  IMPORT
 %token  INDEXES
 %token  INDEX_SYM
+%token  INDEX_STATS_SYM
 %token  INFILE
 %token  INITIAL_SIZE_SYM
 %token  INNER_SYM                     /* SQL-2003-R */
@@ -1000,6 +1005,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  STARTING
 %token  STARTS_SYM
 %token  START_SYM                     /* SQL-2003-R */
+%token  STATEMENT_SYM
 %token  STATS_AUTO_RECALC_SYM
 %token  STATS_PERSISTENT_SYM
 %token  STATS_SAMPLE_PAGES_SYM
@@ -1027,6 +1033,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  TABLESPACE
 %token  TABLE_REF_PRIORITY
 %token  TABLE_SYM                     /* SQL-2003-R */
+%token  TABLE_STATS_SYM
 %token  TABLE_CHECKSUM_SYM
 %token  TABLE_NAME_SYM                /* SQL-2003-N */
 %token  TEMPORARY                     /* SQL-2003-N */
@@ -1036,6 +1043,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  TEXT_SYM
 %token  THAN_SYM
 %token  THEN_SYM                      /* SQL-2003-R */
+%token  THREAD_STATS_SYM
 %token  TIMESTAMP                     /* SQL-2003-R */
 %token  TIMESTAMP_ADD
 %token  TIMESTAMP_DIFF
@@ -1044,6 +1052,12 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  TINYINT
 %token  TINYTEXT
 %token  TO_SYM                        /* SQL-2003-R */
+%token  TOKU_UNCOMPRESSED_SYM
+%token  TOKU_ZLIB_SYM
+%token  TOKU_QUICKLZ_SYM
+%token  TOKU_LZMA_SYM
+%token  TOKU_FAST_SYM
+%token  TOKU_SMALL_SYM
 %token  TRAILING                      /* SQL-2003-R */
 %token  TRANSACTION_SYM
 %token  TRIGGERS_SYM
@@ -1073,6 +1087,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  UPGRADE_SYM
 %token  USAGE                         /* SQL-2003-N */
 %token  USER                          /* SQL-2003-R */
+%token  USER_STATS_SYM
 %token  USE_FRM
 %token  USE_SYM
 %token  USING                         /* SQL-2003-R */
@@ -1237,7 +1252,8 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
         option_type opt_var_type opt_var_ident_type
 
 %type <key_type>
-        normal_key_type opt_unique constraint_key_type fulltext spatial
+        normal_key_type opt_unique_combo_clustering constraint_key_type 
+        fulltext spatial unique_opt_clustering unique_combo_clustering unique clustering
 
 %type <key_alg>
         btree_or_rtree
@@ -1461,6 +1477,7 @@ END_OF_INPUT
 %type <option_value_no_option_type> option_value_no_option_type
 
 %type <option_value_list> option_value_list option_value_list_continued
+        set_stmt_option_value_list set_stmt_option_value_list_continued
 
 %type <start_option_value_list> start_option_value_list
 
@@ -2207,7 +2224,7 @@ create:
             }
             create_table_set_open_action_and_adjust_tables(lex);
           }
-        | CREATE opt_unique INDEX_SYM ident key_alg ON table_ident
+        | CREATE opt_unique_combo_clustering INDEX_SYM ident key_alg ON table_ident
           {
             if (add_create_index_prepare(Lex, $7))
               MYSQL_YYABORT;
@@ -6105,6 +6122,12 @@ row_types:
         | COMPRESSED_SYM { $$= ROW_TYPE_COMPRESSED; }
         | REDUNDANT_SYM  { $$= ROW_TYPE_REDUNDANT; }
         | COMPACT_SYM    { $$= ROW_TYPE_COMPACT; }
+        | TOKU_UNCOMPRESSED_SYM { $$= ROW_TYPE_TOKU_UNCOMPRESSED; }
+        | TOKU_ZLIB_SYM         { $$= ROW_TYPE_TOKU_ZLIB; }
+        | TOKU_QUICKLZ_SYM      { $$= ROW_TYPE_TOKU_QUICKLZ; }
+        | TOKU_LZMA_SYM         { $$= ROW_TYPE_TOKU_LZMA; }
+        | TOKU_FAST_SYM         { $$= ROW_TYPE_TOKU_FAST; }
+        | TOKU_SMALL_SYM        { $$= ROW_TYPE_TOKU_SMALL; }
         ;
 
 merge_insert_types:
@@ -6167,6 +6190,13 @@ key_def:
         | opt_constraint constraint_key_type opt_ident key_alg
           '(' key_list ')' normal_key_options
           {
+            if (($1.length != 0)
+                 && ((enum Key::Keytype)$2 == (Key::CLUSTERING | Key::MULTIPLE)))
+            {
+              /* Forbid "CONSTRAINT c CLUSTERING" */
+              my_syntax_error(ER(ER_SYNTAX_ERROR));
+              MYSQL_YYABORT;
+            }
             if (add_create_index (Lex, $2, $3.str ? $3 : $1))
               MYSQL_YYABORT;
           }
@@ -6664,17 +6694,23 @@ attribute:
             lex->type|= PRI_KEY_FLAG | NOT_NULL_FLAG;
             lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX;
           }
-        | UNIQUE_SYM
+        | unique_combo_clustering
           {
             LEX *lex=Lex;
-            lex->type|= UNIQUE_FLAG;
+            if ($1 & Key::UNIQUE)
+              lex->type|= UNIQUE_FLAG; 
+            if ($1 & Key::CLUSTERING)
+              lex->type|= CLUSTERING_FLAG;
             lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX;
           }
-        | UNIQUE_SYM KEY_SYM
+        | unique_combo_clustering KEY_SYM
           {
             LEX *lex=Lex;
-            lex->type|= UNIQUE_KEY_FLAG;
-            lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX;
+            if ($1 & Key::UNIQUE)
+              lex->type|= UNIQUE_KEY_FLAG; 
+            if ($1 & Key::CLUSTERING)
+              lex->type|= CLUSTERING_FLAG;
+            lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX; 
           }
         | COMMENT_SYM TEXT_STRING_sys { Lex->comment= $2; }
         | COLLATE_SYM collation_name
@@ -7072,7 +7108,8 @@ normal_key_type:
 
 constraint_key_type:
           PRIMARY_SYM KEY_SYM { $$= Key::PRIMARY; }
-        | UNIQUE_SYM opt_key_or_index { $$= Key::UNIQUE; }
+        | unique_combo_clustering opt_key_or_index { $$= $1; }
+
         ;
 
 key_or_index:
@@ -7091,9 +7128,43 @@ keys_or_index:
         | INDEXES {}
         ;
 
-opt_unique:
-          /* empty */  { $$= Key::MULTIPLE; }
-        | UNIQUE_SYM   { $$= Key::UNIQUE; }
+opt_unique_combo_clustering:
+          /* empty */          { $$= Key::MULTIPLE; }
+        | unique_combo_clustering
+        ;
+
+unique_combo_clustering:
+          clustering
+          {
+            $$= (enum Key::Keytype)($1 | Key::MULTIPLE);
+          }
+        | unique_opt_clustering
+          {
+            $$= $1;
+          }
+        ;
+
+unique_opt_clustering:
+          unique 
+          { 
+            $$= $1; 
+          }
+        | unique clustering
+          {
+            $$= (enum Key::Keytype)($1 | $2);
+          }
+        | clustering unique
+          {
+            $$= (enum Key::Keytype)($1 | $2);
+          }
+        ;        
+
+unique: 
+          UNIQUE_SYM     { $$= Key::UNIQUE; }
+        ;
+
+clustering:
+          CLUSTERING_SYM { $$= Key::CLUSTERING; }
         ;
 
 fulltext:
@@ -8161,6 +8232,12 @@ start_transaction_option:
           WITH CONSISTENT_SYM SNAPSHOT_SYM
           {
             $$= MYSQL_START_TRANS_OPT_WITH_CONS_SNAPSHOT;
+          }
+        | WITH CONSISTENT_SYM SNAPSHOT_SYM FROM SESSION_SYM expr
+          {
+            $$= MYSQL_START_TRANS_OPT_WITH_CONS_SNAPSHOT;
+            Lex->value_list.empty();
+            Lex->value_list.push_front($6);
           }
         | READ_SYM ONLY_SYM
           {
@@ -10566,7 +10643,11 @@ delete_limit_clause:
 
             SELECT_LEX *sel= Select;
             sel->select_limit= $2;
-            Lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_LIMIT);
+            if (Select->select_limit->fixed &&
+                Select->select_limit->val_int() != 0)
+            {
+              Lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_LIMIT);
+            }
             sel->explicit_limit= 1;
           }
         ;
@@ -11737,6 +11818,41 @@ show_param:
           {
             Lex->sql_command = SQLCOM_SHOW_SLAVE_STAT;
           }
+        | CLIENT_STATS_SYM wild_and_where
+          {
+           LEX *lex= Lex;
+           Lex->sql_command= SQLCOM_SELECT;
+           if (prepare_schema_table(YYTHD, lex, 0, SCH_CLIENT_STATS))
+             MYSQL_YYABORT;
+          }
+        | USER_STATS_SYM wild_and_where
+          {
+           LEX *lex= Lex;
+           lex->sql_command= SQLCOM_SELECT;
+           if (prepare_schema_table(YYTHD, lex, 0, SCH_USER_STATS))
+             MYSQL_YYABORT;
+          }
+        | THREAD_STATS_SYM wild_and_where
+          {
+           LEX *lex= Lex;
+           Lex->sql_command= SQLCOM_SELECT;
+           if (prepare_schema_table(YYTHD, lex, 0, SCH_THREAD_STATS))
+             MYSQL_YYABORT;
+          }
+        | TABLE_STATS_SYM wild_and_where
+          {
+           LEX *lex= Lex;
+           lex->sql_command= SQLCOM_SELECT;
+           if (prepare_schema_table(YYTHD, lex, 0, SCH_TABLE_STATS))
+             MYSQL_YYABORT;
+          }
+        | INDEX_STATS_SYM wild_and_where
+          {
+           LEX *lex= Lex;
+           lex->sql_command= SQLCOM_SELECT;
+           if (prepare_schema_table(YYTHD, lex, 0, SCH_INDEX_STATS))
+             MYSQL_YYABORT;
+          }
         | CREATE PROCEDURE_SYM sp_name
           {
             LEX *lex= Lex;
@@ -12045,12 +12161,24 @@ flush_option:
           { Lex->type|= REFRESH_LOG; }
         | STATUS_SYM
           { Lex->type|= REFRESH_STATUS; }
+        | CLIENT_STATS_SYM
+          { Lex->type|= REFRESH_CLIENT_STATS; }
+        | USER_STATS_SYM
+          { Lex->type|= REFRESH_USER_STATS; }
+        | THREAD_STATS_SYM
+          { Lex->type|= REFRESH_THREAD_STATS; }
+        | TABLE_STATS_SYM
+          { Lex->type|= REFRESH_TABLE_STATS; }
+        | INDEX_STATS_SYM
+          { Lex->type|= REFRESH_INDEX_STATS; }
         | DES_KEY_FILE
           { Lex->type|= REFRESH_DES_KEY_FILE; }
         | RESOURCES
           { Lex->type|= REFRESH_USER_RESOURCES; }
         | OPTIMIZER_COSTS_SYM
           { Lex->type|= REFRESH_OPTIMIZER_COSTS; }
+        | CHANGED_PAGE_BITMAPS_SYM
+          { Lex->type|= REFRESH_FLUSH_PAGE_BITMAPS; }
         ;
 
 opt_table_list:
@@ -12078,6 +12206,8 @@ reset_option:
           slave_reset_options { }
         | MASTER_SYM          { Lex->type|= REFRESH_MASTER; }
         | QUERY_SYM CACHE_SYM { Lex->type|= REFRESH_QUERY_CACHE;}
+        | CHANGED_PAGE_BITMAPS_SYM
+          { Lex->type |= REFRESH_RESET_PAGE_BITMAPS; }
         ;
 
 slave_reset_options:
@@ -12098,6 +12228,14 @@ purge:
 
 purge_options:
           master_or_binary LOGS_SYM purge_option
+        | CHANGED_PAGE_BITMAPS_SYM BEFORE_SYM real_ulonglong_num
+          {
+            LEX *lex= Lex;
+            lex->value_list.empty();
+            lex->value_list.push_front(new Item_uint($3));
+            lex->type= PURGE_BITMAPS_TO_LSN;
+          }
+        |  ARCHIVED_SYM LOGS_SYM purge_archive_option
         ;
 
 purge_option:
@@ -12113,6 +12251,21 @@ purge_option:
             lex->value_list.empty();
             lex->value_list.push_front($2);
             lex->sql_command= SQLCOM_PURGE_BEFORE;
+          }
+        ;
+
+purge_archive_option:
+          TO_SYM TEXT_STRING_sys
+          {
+            Lex->to_log = $2.str;
+            Lex->sql_command= SQLCOM_PURGE_ARCHIVE;
+          }
+        | BEFORE_SYM expr
+          {
+            LEX *lex= Lex;
+            lex->value_list.empty();
+            lex->value_list.push_front($2);
+            lex->sql_command= SQLCOM_PURGE_ARCHIVE_BEFORE;
           }
         ;
 
@@ -12934,6 +13087,7 @@ keyword_sp:
         | AGGREGATE_SYM            {}
         | ALGORITHM_SYM            {}
         | ANALYSE_SYM              {}
+        | ARCHIVED_SYM             {}
         | ANY_SYM                  {}
         | AT_SYM                   {}
         | AUTO_INC                 {}
@@ -12950,7 +13104,9 @@ keyword_sp:
         | CATALOG_NAME_SYM         {}
         | CHAIN_SYM                {}
         | CHANGED                  {}
+        | CHANGED_PAGE_BITMAPS_SYM {}
         | CIPHER_SYM               {}
+        | CLIENT_STATS_SYM         {}
         | CLIENT_SYM               {}
         | CLASS_ORIGIN_SYM         {}
         | COALESCE                 {}
@@ -13030,6 +13186,7 @@ keyword_sp:
         | HOSTS_SYM                {}
         | HOUR_SYM                 {}
         | IDENTIFIED_SYM           {}
+        | INDEX_STATS_SYM          {}
         | IGNORE_SERVER_IDS_SYM    {}
         | INVOKER_SYM              {}
         | IMPORT                   {}
@@ -13193,6 +13350,7 @@ keyword_sp:
         | STATS_AUTO_RECALC_SYM    {}
         | STATS_PERSISTENT_SYM     {}
         | STATS_SAMPLE_PAGES_SYM   {}
+        | STATEMENT_SYM            {}
         | STATUS_SYM               {}
         | STORAGE_SYM              {}
         | STRING_SYM               {}
@@ -13205,6 +13363,7 @@ keyword_sp:
         | SUSPEND_SYM              {}
         | SWAPS_SYM                {}
         | SWITCHES_SYM             {}
+        | TABLE_STATS_SYM          {}
         | TABLE_NAME_SYM           {}
         | TABLES                   {}
         | TABLE_CHECKSUM_SYM       {}
@@ -13213,12 +13372,19 @@ keyword_sp:
         | TEMPTABLE_SYM            {}
         | TEXT_SYM                 {}
         | THAN_SYM                 {}
+        | THREAD_STATS_SYM         {} 
         | TRANSACTION_SYM          {}
         | TRIGGERS_SYM             {}
         | TIMESTAMP                {}
         | TIMESTAMP_ADD            {}
         | TIMESTAMP_DIFF           {}
         | TIME_SYM                 {}
+        | TOKU_UNCOMPRESSED_SYM    {}
+        | TOKU_ZLIB_SYM            {}
+        | TOKU_QUICKLZ_SYM         {}
+        | TOKU_LZMA_SYM            {}
+        | TOKU_SMALL_SYM           {}
+        | TOKU_FAST_SYM            {}
         | TYPES_SYM                {}
         | TYPE_SYM                 {}
         | UDF_RETURNS_SYM          {}
@@ -13230,6 +13396,7 @@ keyword_sp:
         | UNKNOWN_SYM              {}
         | UNTIL_SYM                {}
         | USER                     {}
+        | USER_STATS_SYM           {}
         | USE_FRM                  {}
         | VALIDATION_SYM           {}
         | VARIABLES                {}
@@ -13257,10 +13424,19 @@ keyword_sp:
 set:
           SET start_option_value_list
           {
-            $$= NEW_PTN PT_set(@1, $2);
+            $$= NEW_PTN PT_set(@1, $2, false);
+          }
+        | SET STATEMENT_SYM option_value_following_option_type
+          set_stmt_option_value_list_continued
+          FOR_SYM statement 
+          {
+            $$= NEW_PTN PT_set(@1,
+              NEW_PTN PT_start_set_stmt_option_value_list(
+                NEW_PTN PT_start_option_value_list_following_option_type_eq($3,
+                                                                            @3,
+                                                                            $4)), true);
           }
         ;
-
 
 // Start of option value list
 start_option_value_list:
@@ -13301,6 +13477,21 @@ start_option_value_list_following_option_type:
             $$= NEW_PTN
               PT_start_option_value_list_following_option_type_transaction($2,
                                                                            @2);
+          }
+        ;
+
+set_stmt_option_value_list_continued:
+          /* empty */                    { $$= NULL; }
+        | ',' set_stmt_option_value_list { $$= $2;   }
+
+set_stmt_option_value_list:
+          option_value_no_option_type
+          {
+            $$= NEW_PTN PT_option_value_list_head(@0, $1, @1);
+          }
+        | option_value_list ',' option_value_no_option_type
+          {
+            $$= NEW_PTN PT_option_value_list($1, @2, $3, @3);
           }
         ;
 
@@ -13490,16 +13681,28 @@ set_expr_or_default:
 /* Lock function */
 
 lock:
-          LOCK_SYM table_or_tables
+          LOCK_SYM lock_variant
           {
-            LEX *lex= Lex;
-
-            if (lex->sphead)
+            if (Lex->sphead)
             {
               my_error(ER_SP_BADSTATEMENT, MYF(0), "LOCK");
               MYSQL_YYABORT;
             }
-            lex->sql_command= SQLCOM_LOCK_TABLES;
+          }
+        ;
+
+lock_variant:
+          BINLOG_SYM FOR_SYM BACKUP_SYM
+          {
+            Lex->sql_command= SQLCOM_LOCK_BINLOG_FOR_BACKUP;
+          }
+        | TABLES FOR_SYM BACKUP_SYM
+          {
+            Lex->sql_command= SQLCOM_LOCK_TABLES_FOR_BACKUP;
+          }
+        | table_or_tables
+          {
+            Lex->sql_command= SQLCOM_LOCK_TABLES;
           }
           table_lock_list
           {}
@@ -13555,19 +13758,25 @@ lock_option:
         ;
 
 unlock:
-          UNLOCK_SYM
+          UNLOCK_SYM unlock_variant
           {
-            LEX *lex= Lex;
-
-            if (lex->sphead)
+            if (Lex->sphead)
             {
               my_error(ER_SP_BADSTATEMENT, MYF(0), "UNLOCK");
               MYSQL_YYABORT;
             }
-            lex->sql_command= SQLCOM_UNLOCK_TABLES;
           }
-          table_or_tables
-          {}
+	;
+
+unlock_variant:
+          BINLOG_SYM
+          {
+            Lex->sql_command= SQLCOM_UNLOCK_BINLOG;
+          }
+        | table_or_tables
+          {
+            Lex->sql_command= SQLCOM_UNLOCK_TABLES;
+          }
         ;
 
 /*

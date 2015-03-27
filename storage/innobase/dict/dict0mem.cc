@@ -108,8 +108,6 @@ dict_mem_table_create(
 	dict_table_stats_latch_create(table, true);
 
 #ifndef UNIV_HOTBACKUP
-	table->autoinc_lock = static_cast<ib_lock_t*>(
-		mem_heap_alloc(heap, lock_get_size()));
 
 	mutex_create("autoinc", &table->autoinc_mutex);
 
@@ -132,6 +130,9 @@ dict_mem_table_create(
 	} else {
 		table->fts = NULL;
 	}
+
+	table->is_corrupt = FALSE;
+
 #endif /* !UNIV_HOTBACKUP */
 
 	new(&table->foreign_set) dict_foreign_set();
@@ -164,7 +165,10 @@ dict_mem_table_free(
 		}
 	}
 #ifndef UNIV_HOTBACKUP
-	mutex_free(&(table->autoinc_mutex));
+	if (table->autoinc_lock) {
+
+		mutex_free(&(table->autoinc_mutex));
+	}
 #endif /* UNIV_HOTBACKUP */
 
 	dict_table_stats_latch_destroy(table);

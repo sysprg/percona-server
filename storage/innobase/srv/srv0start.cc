@@ -55,7 +55,9 @@ Created 2/16/1996 Heikki Tuuri
 #include "fsp0fsp.h"
 #include "rem0rec.h"
 #include "mtr0mtr.h"
+#include "log0archive.h"
 #include "log0log.h"
+#include "log0online.h"
 #include "log0recv.h"
 #include "page0page.h"
 #include "page0cur.h"
@@ -144,9 +146,20 @@ enum srv_shutdown_t	srv_shutdown_state = SRV_SHUTDOWN_NONE;
 static os_file_t	files[1000];
 
 /** io_handler_thread parameters for thread identification */
-static ulint		n[SRV_MAX_N_IO_THREADS + 6];
-/** io_handler_thread identifiers, 32 is the maximum number of purge threads  */
-static os_thread_id_t	thread_ids[SRV_MAX_N_IO_THREADS + 6 + 32];
+static ulint		n[SRV_MAX_N_IO_THREADS];
+/** io_handler_thread identifiers, 32 is the maximum number of purge threads.
+The extra elements at the end are allocated as follows:
+SRV_MAX_N_IO_THREADS + 1: srv_master_thread
+SRV_MAX_N_IO_THREADS + 2: lock_wait_timeout_thread
+SRV_MAX_N_IO_THREADS + 3: srv_error_monitor_thread
+SRV_MAX_N_IO_THREADS + 4: srv_monitor_thread
+SRV_MAX_N_IO_THREADS + 5: srv_redo_log_follow_thread
+SRV_MAX_N_IO_THREADS + 6: srv_purge_coordinator_thread
+SRV_MAX_N_IO_THREADS + 7: srv_worker_thread
+...
+SRV_MAX_N_IO_THREADS + 7 + srv_n_purge_threads - 1: srv_worker_thread */
+static os_thread_id_t	thread_ids[SRV_MAX_N_IO_THREADS + 7
+				   + SRV_MAX_N_PURGE_THREADS];
 
 /** Name of srv_monitor_file */
 static char*	srv_monitor_file_name;
@@ -173,6 +186,7 @@ mysql_pfs_key_t	srv_lock_timeout_thread_key;
 mysql_pfs_key_t	srv_master_thread_key;
 mysql_pfs_key_t	srv_monitor_thread_key;
 mysql_pfs_key_t	srv_purge_thread_key;
+mysql_pfs_key_t	srv_log_tracking_thread_key;
 #endif /* UNIV_PFS_THREAD */
 
 /*********************************************************************//**
@@ -235,6 +249,9 @@ srv_file_check_mode(
 }
 
 #ifndef UNIV_HOTBACKUP
+
+static ulint io_tid_i = 0;
+
 /********************************************************************//**
 I/o-handler thread function.
 @return OS_THREAD_DUMMY_RETURN */
@@ -246,8 +263,14 @@ DECLARE_THREAD(io_handler_thread)(
 			the aio array */
 {
 	ulint	segment;
+	ulint	tid_i = os_atomic_increment_ulint(&io_tid_i, 1) - 1;
+
+	ut_ad(tid_i < srv_n_file_io_threads);
 
 	segment = *((ulint*) arg);
+
+	srv_io_tids[tid_i] = os_thread_get_tid();
+	os_thread_set_priority(srv_io_tids[tid_i], srv_sched_priority_io);
 
 #ifdef UNIV_DEBUG_THREAD_CREATION
 	ib_logf(IB_LOG_LEVEL_INFO,
@@ -284,6 +307,7 @@ DECLARE_THREAD(io_handler_thread)(
 	while (srv_shutdown_state != SRV_SHUTDOWN_EXIT_THREADS
 	       || buf_page_cleaner_is_active
 	       || !os_aio_all_slots_free()) {
+
 		fil_aio_wait(segment);
 	}
 
@@ -434,6 +458,10 @@ create_log_files(
 		}
 	}
 
+	/* Create the file space object for archived logs. */
+	ut_a(fil_space_create("arch_log_space", SRV_LOG_SPACE_FIRST_ID + 1,
+			      0, FIL_TYPE_LOG));
+
 	if (!log_group_init(0, srv_n_log_files,
 			    srv_log_file_size * UNIV_PAGE_SIZE,
 			    SRV_LOG_SPACE_FIRST_ID,
@@ -446,7 +474,8 @@ create_log_files(
 	/* Create a log checkpoint. */
 	log_mutex_enter();
 	ut_d(recv_no_log_write = FALSE);
-	recv_reset_logs(lsn);
+	recv_reset_logs(UT_LIST_GET_FIRST(log_sys->log_groups)
+			->archived_file_no, lsn);
 	log_mutex_exit();
 
 	return(DB_SUCCESS);
@@ -1066,6 +1095,29 @@ srv_start_wait_for_purge_to_start()
 	}
 }
 
+/*********************************************************************//**
+Initializes the log tracking subsystem and starts its thread.  */
+static
+void
+init_log_online(void)
+/*=================*/
+{
+	if (UNIV_UNLIKELY(srv_force_recovery > 0 || srv_read_only_mode)) {
+		srv_track_changed_pages = FALSE;
+		return;
+	}
+
+	if (srv_track_changed_pages) {
+
+		log_online_read_init();
+
+		/* Create the thread that follows the redo log to output the
+		   changed page bitmap */
+		os_thread_create(&srv_redo_log_follow_thread, NULL,
+				 thread_ids + 5 + SRV_MAX_N_IO_THREADS);
+	}
+}
+
 /********************************************************************
 Create the temporary file tablespace.
 @return DB_SUCCESS or error code. */
@@ -1449,6 +1501,9 @@ innobase_start_or_create_for_mysql(void)
 	} else if (0 == ut_strcmp(srv_file_flush_method_str, "O_DIRECT")) {
 		srv_unix_file_flush_method = SRV_UNIX_O_DIRECT;
 
+	} else if (0 == ut_strcmp(srv_file_flush_method_str, "ALL_O_DIRECT")) {
+		srv_unix_file_flush_method = SRV_UNIX_ALL_O_DIRECT;
+
 	} else if (0 == ut_strcmp(srv_file_flush_method_str, "O_DIRECT_NO_FSYNC")) {
 		srv_unix_file_flush_method = SRV_UNIX_O_DIRECT_NO_FSYNC;
 
@@ -1492,6 +1547,7 @@ innobase_start_or_create_for_mysql(void)
 			    + 1 /* srv_error_monitor_thread */
 			    + 1 /* srv_monitor_thread */
 			    + 1 /* srv_master_thread */
+			    + 1 /* srv_redo_log_follow_thread */
 			    + 1 /* srv_purge_coordinator_thread */
 			    + 1 /* buf_dump_thread */
 			    + 1 /* dict_stats_thread */
@@ -1695,7 +1751,8 @@ innobase_start_or_create_for_mysql(void)
 		size, unit, srv_buf_pool_instances,
 		chunk_size, chunk_unit);
 
-	err = buf_pool_init(srv_buf_pool_size, srv_buf_pool_instances);
+	err = buf_pool_init(srv_buf_pool_size, (ibool) srv_buf_pool_populate,
+			    srv_buf_pool_instances);
 
 	if (err != DB_SUCCESS) {
 		ib_logf(IB_LOG_LEVEL_ERROR,
@@ -1829,6 +1886,8 @@ innobase_start_or_create_for_mysql(void)
 		/* Other errors might come from Datafile::validate_first_page() */
 		return(srv_init_abort(err));
 	}
+
+	os_normalize_path_for_win(srv_arch_dir);
 
 	dirnamelen = strlen(srv_log_group_home_dir);
 	ut_a(dirnamelen < (sizeof logfilename) - 10 - sizeof "ib_logfile");
@@ -2019,6 +2078,7 @@ files_checked:
 	if (create_new_db) {
 
 		ut_a(!srv_read_only_mode);
+		init_log_online();
 
 		mtr_start(&mtr);
 
@@ -2107,6 +2167,8 @@ files_checked:
 		if (err != DB_SUCCESS) {
 			return(srv_init_abort(DB_ERROR));
 		}
+
+		init_log_online();
 
 		purge_queue = trx_sys_init_at_db_start();
 
@@ -2262,8 +2324,14 @@ files_checked:
 				return(srv_init_abort(err));
 			}
 
+			/* create_log_files() can increase system lsn that is
+			why FIL_PAGE_FILE_FLUSH_LSN have to be updated */
+			flushed_lsn = log_get_lsn();
+			fil_write_flushed_lsn(flushed_lsn);
+			fil_flush_file_spaces(FIL_TYPE_TABLESPACE);
+
 			create_log_files_rename(
-				logfilename, dirnamelen, flushed_lsn,
+				logfilename, dirnamelen, log_get_lsn(),
 				logfile0);
 		}
 
@@ -2294,8 +2362,29 @@ files_checked:
 		log_buffer_flush_to_disk();
 	}
 
-	/* Open temp-tablespace and keep it open until shutdown. */
+	if (!srv_log_archive_on) {
+		ut_a(DB_SUCCESS == log_archive_noarchivelog());
+	} else {
+		bool	start_archive;
 
+		log_mutex_enter();
+
+		start_archive = false;
+
+		if (log_sys->archiving_state == LOG_ARCH_OFF) {
+
+			start_archive = true;
+		}
+
+		log_mutex_exit();
+
+		if (start_archive) {
+
+			ut_a(DB_SUCCESS == log_archive_archivelog());
+		}
+	}
+
+	/* Open temp-tablespace and keep it open until shutdown. */
 	err = srv_open_tmp_tablespace(&srv_tmp_space);
 
 	if (err != DB_SUCCESS) {
@@ -2389,16 +2478,16 @@ files_checked:
 
 		os_thread_create(
 			srv_purge_coordinator_thread,
-			NULL, thread_ids + 5 + SRV_MAX_N_IO_THREADS);
+			NULL, thread_ids + 6 + SRV_MAX_N_IO_THREADS);
 
 		ut_a(UT_ARR_SIZE(thread_ids)
-		     > 5 + srv_n_purge_threads + SRV_MAX_N_IO_THREADS);
+		     > 6 + srv_n_purge_threads + SRV_MAX_N_IO_THREADS);
 
 		/* We've already created the purge coordinator thread above. */
 		for (i = 1; i < srv_n_purge_threads; ++i) {
 			os_thread_create(
 				srv_worker_thread, NULL,
-				thread_ids + 5 + i + SRV_MAX_N_IO_THREADS);
+				thread_ids + 6 + i + SRV_MAX_N_IO_THREADS);
 		}
 
 		srv_start_wait_for_purge_to_start();
@@ -2477,8 +2566,16 @@ files_checked:
 		}
 	}
 
+	if (!srv_file_per_table && srv_pass_corrupt_table) {
+		ib::warn()
+			<< "The option innodb_file_per_table is disabled,"
+			   " so using the option innodb_pass_corrupt_table "
+			   "doesn't make sense.";
+	}
+
 	if (srv_print_verbose_log) {
-		ib::info() << INNODB_VERSION_STR
+		ib::info()
+			<< "Percona XtraDB (http://www.percona.com) " INNODB_VERSION_STR
 			<< " started; log sequence number "
 			<< srv_start_lsn;
 	}

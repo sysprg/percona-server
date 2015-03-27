@@ -84,6 +84,8 @@
 #include "rpl_handler.h"
 
 #include "sp_head.h"
+#include "sp_rcontext.h"
+#include "sp_instr.h"
 #include "sp.h"
 #include "sp_cache.h"
 #include "events.h"
@@ -105,6 +107,8 @@
 #include "sp_rcontext.h"
 #include "parse_location.h"
 
+#include <sys/time.h>
+
 #include <algorithm>
 using std::max;
 
@@ -125,6 +129,9 @@ using std::max;
 
 static bool execute_sqlcom_select(THD *thd, TABLE_LIST *all_tables);
 static void sql_kill(THD *thd, my_thread_id id, bool only_kill_query);
+
+// Uses the THD to update the global stats by user name and client IP
+void update_global_user_stats(THD* thd, bool create_user, time_t now);
 
 const LEX_STRING command_name[]={
   { C_STRING_WITH_LEN("Sleep") },
@@ -722,7 +729,8 @@ bool do_command(THD *thd)
     the client, the connection is closed or "net_wait_timeout"
     number of seconds has passed.
   */
-  my_net_set_read_timeout(net, thd->variables.net_wait_timeout);
+  if(!thd->skip_wait_timeout)
+    my_net_set_read_timeout(net, thd->variables.net_wait_timeout);
 
   /*
     XXX: this code is here only to clear possible errors of init_connect. 
@@ -732,6 +740,12 @@ bool do_command(THD *thd)
   */
   thd->clear_error();				// Clear error message
   thd->get_stmt_da()->reset_diagnostics_area();
+  thd->updated_row_count=    0;
+  thd->busy_time=            0;
+  thd->cpu_time=             0;
+  thd->bytes_received=       0;
+  thd->bytes_sent=           0;
+  thd->binlog_bytes_written= 0;
 
   net_new_transaction(net);
 
@@ -869,7 +883,7 @@ static my_bool deny_updates_if_read_only_option(THD *thd,
     ((ulong)(thd->security_ctx->master_access & SUPER_ACL) ==
      (ulong)SUPER_ACL);
 
-  if (user_is_super)
+  if (user_is_super && (!opt_super_readonly))
     DBUG_RETURN(FALSE);
 
   if (!(sql_command_flags[lex->sql_command] & CF_CHANGES_DATA))
@@ -1039,6 +1053,10 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
   DBUG_PRINT("info",("packet: '%*.s'; command: %d",
                      static_cast<int>(packet_length), packet, command));
 
+  DBUG_EXECUTE_IF("crash_dispatch_command_before",
+                  { DBUG_PRINT("crash_dispatch_command_before", ("now"));
+                    DBUG_ABORT(); });
+
   /* SHOW PROFILE instrumentation, begin */
 #if defined(ENABLED_PROFILING)
   thd->profiling.start_new_query();
@@ -1054,11 +1072,13 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
                                                com_statement_info[command].m_key);
 
   thd->set_command(command);
+
   /*
     Commands which always take a long time are logged into
     the slow log only if opt_log_slow_admin_statements is set.
   */
   thd->enable_slow_log= TRUE;
+  thd->clear_slow_extended();
   thd->lex->sql_command= SQLCOM_END; /* to avoid confusing VIEW detectors */
   thd->set_time();
   if (!thd->is_valid_time())
@@ -1687,6 +1707,13 @@ done:
 
   THD_STAGE_INFO(thd, stage_cleaning_up);
 
+  if (thd->killed == THD::KILL_QUERY ||
+      thd->killed == THD::KILL_BAD_DATA)
+  {
+    thd->killed= THD::NOT_KILLED;
+    thd->mysys_var->abort= 0;
+  }
+
   thd->reset_query();
   thd->set_command(COM_SLEEP);
 
@@ -1716,7 +1743,6 @@ done:
 
   DBUG_RETURN(error);
 }
-
 
 /**
   Create a TABLE_LIST object for an INFORMATION_SCHEMA table.
@@ -1756,6 +1782,8 @@ int prepare_schema_table(THD *thd, LEX *lex, Table_ident *table_ident,
 
   case SCH_TABLE_NAMES:
   case SCH_TABLES:
+  case SCH_TEMPORARY_TABLES:
+  case SCH_GLOBAL_TEMPORARY_TABLES:
   case SCH_VIEWS:
   case SCH_TRIGGERS:
   case SCH_EVENTS:
@@ -1797,6 +1825,13 @@ int prepare_schema_table(THD *thd, LEX *lex, Table_ident *table_ident,
     thd->profiling.discard_current_query();
 #endif
     break;
+  case SCH_USER_STATS:
+  case SCH_CLIENT_STATS:
+  case SCH_THREAD_STATS:
+    if (check_global_access(thd, SUPER_ACL | PROCESS_ACL))
+      DBUG_RETURN(1);
+  case SCH_TABLE_STATS:
+  case SCH_INDEX_STATS:
   case SCH_OPTIMIZER_TRACE:
   case SCH_OPEN_TABLES:
   case SCH_VARIABLES:
@@ -1949,6 +1984,7 @@ bool sp_process_definer(THD *thd)
                        thd->security_ctx->priv_host)) &&
         check_global_access(thd, SUPER_ACL))
     {
+      thd->diff_access_denied_errors++;
       my_error(ER_SPECIFIC_ACCESS_DENIED_ERROR, MYF(0), "SUPER");
       DBUG_RETURN(TRUE);
     }
@@ -2085,6 +2121,73 @@ err:
   return TRUE;
 }
 
+/**
+  Acquire a global backup lock.
+
+  @param thd     Thread context.
+
+  @return FALSE on success, TRUE in case of error.
+*/
+
+static bool lock_tables_for_backup(THD *thd)
+{
+  DBUG_ENTER("lock_tables_for_backup");
+
+  if (check_global_access(thd, RELOAD_ACL))
+    DBUG_RETURN(true);
+
+  if (delay_key_write_options == DELAY_KEY_WRITE_ALL)
+  {
+    my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "delay_key_write=ALL");
+    DBUG_RETURN(true);
+  }
+  /*
+    Do nothing if the current connection already owns the LOCK TABLES FOR
+    BACKUP lock or the global read lock (as it's a more restrictive lock).
+  */
+  if (thd->backup_tables_lock.is_acquired() ||
+      thd->global_read_lock.is_acquired())
+    DBUG_RETURN(false);
+
+  /*
+    Do not allow backup locks under regular LOCK TABLES, FLUSH TABLES ... FOR
+    EXPORT, or FLUSH TABLES <table_list> WITH READ LOCK.
+  */
+  if (thd->variables.option_bits & OPTION_TABLE_LOCK)
+  {
+    my_message(ER_LOCK_OR_ACTIVE_TRANSACTION,
+               ER(ER_LOCK_OR_ACTIVE_TRANSACTION), MYF(0));
+    DBUG_RETURN(true);
+  }
+
+  DBUG_RETURN(thd->backup_tables_lock.acquire(thd));
+}
+
+/**
+  Acquire a global binlog lock.
+
+  @param thd     Thread context.
+
+  @return FALSE in case of success, TRUE in case of error.
+*/
+
+static bool lock_binlog_for_backup(THD *thd)
+{
+  DBUG_ENTER("lock_binlog_for_backup");
+
+  if (check_global_access(thd, RELOAD_ACL))
+    DBUG_RETURN(true);
+
+  /*
+    Do nothing if the current connection already owns a LOCK BINLOG FOR BACKUP
+    lock or the global read lock (as it's a more restrictive lock).
+  */
+  if (thd->backup_binlog_lock.is_acquired() ||
+      thd->global_read_lock.is_acquired())
+    DBUG_RETURN(false);
+
+  DBUG_RETURN(thd->backup_binlog_lock.acquire(thd));
+}
 
 /**
   Execute command saved in thd and lex->sql_command.
@@ -2123,6 +2226,8 @@ mysql_execute_command(THD *thd)
   /* have table map for update for multi-update statement (BUG#37051) */
   bool have_table_map_for_update= FALSE;
 #endif
+  struct system_variables *per_query_variables_backup= NULL;
+
   DBUG_ENTER("mysql_execute_command");
   /* EXPLAIN OTHER isn't explainable command, but can have describe flag. */
   DBUG_ASSERT(!lex->describe || is_explainable_query(lex->sql_command) ||
@@ -2321,7 +2426,8 @@ mysql_execute_command(THD *thd)
     */
     if (deny_updates_if_read_only_option(thd, all_tables))
     {
-      my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--read-only");
+      my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0),
+               opt_super_readonly ? "--read-only (super)" : "--read-only");
       DBUG_RETURN(-1);
     }
 #ifdef HAVE_REPLICATION
@@ -2430,6 +2536,22 @@ mysql_execute_command(THD *thd)
     thd->query_plan.set_query_plan(lex->sql_command, lex,
                                    !thd->stmt_arena->is_conventional());
 
+  if (lex->set_statement && !lex->var_list.is_empty()) {
+    per_query_variables_backup= copy_system_variables(&thd->variables,
+                                                      thd->m_enable_plugins);
+    if ((res= sql_set_variables(thd, &lex->var_list)))
+    {
+      /*
+         We encountered some sort of error, but no message was sent.
+         Send something semi-generic here since we don't know which
+         assignment in the list caused the error.
+      */
+      if (!thd->is_error())
+        my_error(ER_WRONG_ARGUMENTS, MYF(0), "SET");
+      goto error;
+    }
+  }
+
   switch (lex->sql_command) {
 
   case SQLCOM_SHOW_STATUS:
@@ -2499,6 +2621,12 @@ case SQLCOM_PREPARE:
   }
   case SQLCOM_EXECUTE:
   {
+    /*
+      Deallocate free_list here to avoid assertion failure later in
+      Prepared_statement::execute_loop
+    */
+    free_items(thd->free_list);
+    thd->free_list= NULL;
     mysql_sql_stmt_execute(thd);
     break;
   }
@@ -2528,9 +2656,35 @@ case SQLCOM_PREPARE:
   {
     if (check_global_access(thd, SUPER_ACL))
       goto error;
-    /* PURGE MASTER LOGS TO 'file' */
-    res = purge_master_logs(thd, lex->to_log);
-    break;
+    if (lex->type == 0)
+    {
+      /* PURGE MASTER LOGS TO 'file' */
+      res = purge_master_logs(thd, lex->to_log);
+      break;
+    }
+    if (lex->type == PURGE_BITMAPS_TO_LSN)
+    {
+      /* PURGE CHANGED_PAGE_BITMAPS BEFORE lsn */
+      ulonglong lsn= 0;
+      Item *it= (Item *)lex->value_list.head();
+      if ((!it->fixed && it->fix_fields(lex->thd, &it)) || it->check_cols(1)
+          || it->null_value)
+      {
+        my_error(ER_WRONG_ARGUMENTS, MYF(0),
+                 "PURGE CHANGED_PAGE_BITMAPS BEFORE");
+        goto error;
+      }
+      lsn= it->val_uint();
+      res= ha_purge_changed_page_bitmaps(lsn);
+      if (res)
+      {
+        my_error(ER_LOG_PURGE_UNKNOWN_ERR, MYF(0),
+                 "PURGE CHANGED_PAGE_BITMAPS BEFORE");
+        goto error;
+      }
+      my_ok(thd);
+      break;
+    }
   }
   case SQLCOM_PURGE_BEFORE:
   {
@@ -2556,6 +2710,49 @@ case SQLCOM_PREPARE:
     if (thd->is_error())
       goto error;
     res = purge_master_logs_before_date(thd, purge_time);
+    break;
+  }
+  case SQLCOM_PURGE_ARCHIVE:
+  {
+    if (check_global_access(thd, SUPER_ACL))
+      goto error;
+    /* PURGE ARCHIVED LOGS TO 'file' */
+    if (!ha_purge_archive_logs_to(NULL, NULL, lex->to_log)) {
+      my_ok(thd);
+    } else {
+      my_error(ER_LOG_PURGE_UNKNOWN_ERR, MYF(0), "PURGE ARCHIVE LOGS TO");
+      goto error;
+    }
+
+    break;
+  }
+  case SQLCOM_PURGE_ARCHIVE_BEFORE:
+  {
+    Item *it;
+
+    if (check_global_access(thd, SUPER_ACL))
+      goto error;
+    /* PURGE ARCHIVE LOGS BEFORE 'data' */
+    it= (Item *)lex->value_list.head();
+    if ((!it->fixed && it->fix_fields(lex->thd, &it)) ||
+        it->check_cols(1))
+    {
+      my_error(ER_WRONG_ARGUMENTS, MYF(0), "PURGE ARCHIVE LOGS BEFORE");
+      goto error;
+    }
+    it= new Item_func_unix_timestamp(it);
+    /*
+      it is OK only emulate fix_fieds, because we need only
+      value of constant
+    */
+    it->quick_fix_field();
+    ulong before_timestamp = (ulong)it->val_int();
+    if (!ha_purge_archive_logs(NULL, NULL, &before_timestamp )) {
+      my_ok(thd);
+    } else {
+      my_error(ER_LOG_PURGE_UNKNOWN_ERR, MYF(0), "PURGE ARCHIVE LOGS BEFORE");
+      goto error;
+    }
     break;
   }
 #endif
@@ -2837,6 +3034,7 @@ case SQLCOM_PREPARE:
         goto end_with_restore_list;
       }
 
+      res= open_normal_and_derived_tables(thd, all_tables, 0);
       if (!(res= open_normal_and_derived_tables(thd, all_tables, 0)))
       {
         /* The table already exists */
@@ -3258,12 +3456,15 @@ end_with_restore_list:
 #endif /* HAVE_REPLICATION */
       if (res)
         break;
+      bool enforce_ro = true;
+      if (!opt_super_readonly)
+        enforce_ro = !(thd->security_ctx->master_access & SUPER_ACL);
       if (opt_readonly &&
-	  !(thd->security_ctx->master_access & SUPER_ACL) &&
+	  enforce_ro &&
 	  some_non_temp_table_to_be_updated(thd, all_tables))
       {
-	my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--read-only");
-	break;
+        my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0),
+                 opt_super_readonly ? "--read-only (super)" : "--read-only");
       }
 #ifdef HAVE_REPLICATION
     }  /* unlikely */
@@ -3390,6 +3591,7 @@ end_with_restore_list:
                       DBUG_ASSERT(!debug_sync_set_action(current_thd,
                                                          STRING_WITH_LEN(act)));
                     };);
+    DEBUG_SYNC(thd, "after_mysql_insert");
     break;
   }
   case SQLCOM_REPLACE_SELECT:
@@ -3702,6 +3904,7 @@ end_with_restore_list:
     */
     if (thd->variables.option_bits & OPTION_TABLE_LOCK)
     {
+      DBUG_ASSERT(!thd->backup_tables_lock.is_acquired());
       /*
         Can we commit safely? If not, return to avoid releasing
         transactional metadata locks.
@@ -3713,13 +3916,38 @@ end_with_restore_list:
       thd->mdl_context.release_transactional_locks();
       thd->variables.option_bits&= ~(OPTION_TABLE_LOCK);
     }
+
+    if (thd->backup_tables_lock.is_acquired())
+    {
+      DBUG_ASSERT(!(thd->variables.option_bits & OPTION_TABLE_LOCK));
+      DBUG_ASSERT(!thd->global_read_lock.is_acquired());
+
+      thd->backup_tables_lock.release(thd);
+    }
+
     if (thd->global_read_lock.is_acquired())
       thd->global_read_lock.unlock_global_read_lock(thd);
+
     if (res)
       goto error;
     my_ok(thd);
     break;
+
+  case SQLCOM_UNLOCK_BINLOG:
+    if (thd->backup_binlog_lock.is_acquired())
+      thd->backup_binlog_lock.release(thd);
+
+    my_ok(thd);
+    break;
+
   case SQLCOM_LOCK_TABLES:
+    /*
+      Do not allow LOCK TABLES under an active LOCK TABLES FOR BACKUP in the
+      same connection.
+    */
+    if (thd->backup_tables_lock.abort_if_acquired())
+      goto error;
+
     /*
       Can we commit safely? If not, return to avoid releasing
       transactional metadata locks.
@@ -3764,6 +3992,16 @@ end_with_restore_list:
         query_cache.invalidate_locked_for_write(first_table);
       my_ok(thd);
     }
+    break;
+  case SQLCOM_LOCK_TABLES_FOR_BACKUP:
+    if (!lock_tables_for_backup(thd))
+      my_ok(thd);
+
+    break;
+  case SQLCOM_LOCK_BINLOG_FOR_BACKUP:
+    if (!lock_binlog_for_backup(thd))
+      my_ok(thd);
+
     break;
   case SQLCOM_CREATE_DB:
   {
@@ -4137,11 +4375,25 @@ end_with_restore_list:
   case SQLCOM_FLUSH:
   {
     int write_to_binlog;
-    if (check_global_access(thd,RELOAD_ACL))
+
+    if (lex->type & REFRESH_FLUSH_PAGE_BITMAPS
+        || lex->type & REFRESH_RESET_PAGE_BITMAPS)
+    {
+      if (check_global_access(thd, SUPER_ACL))
+          goto error;
+    }
+    else if (check_global_access(thd, RELOAD_ACL))
       goto error;
 
     if (first_table && lex->type & REFRESH_READ_LOCK)
     {
+      /*
+         Do not allow FLUSH TABLES <table_list> WITH READ LOCK under an active
+         LOCK TABLES FOR BACKUP lock.
+       */
+      if (thd->backup_tables_lock.abort_if_acquired())
+        goto error;
+
       /* Check table-level privileges. */
       if (check_table_access(thd, LOCK_TABLES_ACL | SELECT_ACL, all_tables,
                              FALSE, UINT_MAX, FALSE))
@@ -4153,6 +4405,13 @@ end_with_restore_list:
     }
     else if (first_table && lex->type & REFRESH_FOR_EXPORT)
     {
+      /*
+         Do not allow FLUSH TABLES ... FOR EXPORT under an active LOCK TABLES
+         FOR BACKUP lock.
+       */
+      if (thd->backup_tables_lock.abort_if_acquired())
+        goto error;
+
       /* Check table-level privileges. */
       if (check_table_access(thd, LOCK_TABLES_ACL | SELECT_ACL, all_tables,
                              FALSE, UINT_MAX, FALSE))
@@ -4872,6 +5131,32 @@ finish:
   DBUG_ASSERT(!thd->in_active_multi_stmt_transaction() ||
                thd->in_multi_stmt_transaction_mode());
 
+  if (per_query_variables_backup) {
+    DBUG_ASSERT(lex->set_statement);
+    DBUG_ASSERT(!lex->var_list.is_empty());
+
+    List_iterator_fast<set_var_base> it(thd->lex->var_list);
+    set_var *var;
+
+    free_system_variables(&thd->variables, thd->m_enable_plugins);
+    thd->variables= *per_query_variables_backup;
+    my_free(per_query_variables_backup);
+    /*
+       When variables are restored after "SET STATEMENT ... FOR ..." statement
+       execution an update callback must be invoked for the system variables
+       to save special logic if it is. set_var_base class does not contain
+       refference to variable as it is just an interface class. But only
+       system variables are allowed to be used in "SET STATEMENT ... FOR ..."
+       statement, so cast from set_var_base* to set_var* can be used here.
+    */
+    while ((var=(set_var *)it++))
+    {
+      var->var->stmt_update(thd);
+    }
+
+    thd->lex->set_statement= false;
+  }
+
   if (! thd->in_sub_stmt)
   {
     /* report error issued during command execution */
@@ -5207,7 +5492,8 @@ void THD::reset_for_next_command()
   thd->get_stmt_da()->reset_statement_cond_count();
 
   thd->rand_used= 0;
-  thd->m_sent_row_count= thd->m_examined_row_count= 0;
+
+  thd->clear_slow_extended();
 
   thd->reset_current_stmt_binlog_format_row();
   thd->binlog_unsafe_warning_flags= 0;
@@ -5317,6 +5603,34 @@ void mysql_parse(THD *thd, Parser_state *parser_state)
   */
   mysql_reset_thd_for_next_command(thd);
   lex_start(thd);
+
+  int start_time_error=   0;
+  int end_time_error=     0;
+  struct timeval start_time, end_time;
+  double start_usecs=     0;
+  double end_usecs=       0;
+  /* cpu time */
+  int cputime_error=      0;
+#ifdef HAVE_CLOCK_GETTIME
+  struct timespec tp;
+#endif
+  double start_cpu_nsecs= 0;
+  double end_cpu_nsecs=   0;
+
+  if (opt_userstat)
+  {
+#ifdef HAVE_CLOCK_GETTIME
+    /* get start cputime */
+    if (!(cputime_error = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tp)))
+      start_cpu_nsecs = tp.tv_sec*1000000000.0+tp.tv_nsec;
+#endif
+
+    // Gets the start time, in order to measure how long this command takes.
+    if (!(start_time_error = gettimeofday(&start_time, NULL)))
+    {
+      start_usecs = start_time.tv_sec * 1000000.0 + start_time.tv_usec;
+    }
+  }
 
   if (query_cache.send_result_to_client(thd, thd->query()) <= 0)
   {
@@ -5513,6 +5827,58 @@ void mysql_parse(THD *thd, Parser_state *parser_state)
     parser_state->m_lip.found_semicolon= NULL;
   }
 
+  if (opt_userstat)
+  {
+    // Gets the end time.
+    if (!(end_time_error= gettimeofday(&end_time, NULL)))
+    {
+      end_usecs= end_time.tv_sec * 1000000.0 + end_time.tv_usec;
+    }
+
+    // Calculates the difference between the end and start times.
+    if (start_usecs && end_usecs >= start_usecs && !start_time_error && !end_time_error)
+    {
+      thd->busy_time= (end_usecs - start_usecs) / 1000000;
+      // In case there are bad values, 2629743 is the #seconds in a month.
+      if (thd->busy_time > 2629743)
+      {
+        thd->busy_time= 0;
+      }
+    }
+    else
+    {
+      // end time went back in time, or gettimeofday() failed.
+      thd->busy_time= 0;
+    }
+
+#ifdef HAVE_CLOCK_GETTIME
+    /* get end cputime */
+    if (!cputime_error &&
+        !(cputime_error = clock_gettime(CLOCK_THREAD_CPUTIME_ID, &tp)))
+      end_cpu_nsecs = tp.tv_sec*1000000000.0+tp.tv_nsec;
+#endif
+    if (start_cpu_nsecs && !cputime_error)
+    {
+      thd->cpu_time = (end_cpu_nsecs - start_cpu_nsecs) / 1000000000;
+      // In case there are bad values, 2629743 is the #seconds in a month.
+      if (thd->cpu_time > 2629743)
+      {
+        thd->cpu_time = 0;
+      }
+    }
+    else
+      thd->cpu_time = 0;
+  }
+
+  // Updates THD stats and the global user stats.
+  if (unlikely(opt_userstat))
+  {
+    thd->update_stats(true);
+#ifndef EMBEDDED_LIBRARY
+    update_global_user_stats(thd, true, time(NULL));
+#endif
+  }
+
   DBUG_VOID_RETURN;
 }
 
@@ -5608,13 +5974,20 @@ bool add_field_to_list(THD *thd, LEX_STRING *field_name, enum_field_types type,
     lex->alter_info.key_list.push_back(key);
     lex->col_list.empty();
   }
-  if (type_modifier & (UNIQUE_FLAG | UNIQUE_KEY_FLAG))
+  if (type_modifier & (UNIQUE_FLAG | UNIQUE_KEY_FLAG | CLUSTERING_FLAG))
   {
-    Key *key;
+    Key::Keytype keytype;
+    if (type_modifier & (UNIQUE_FLAG | UNIQUE_KEY_FLAG))
+      keytype= Key::UNIQUE;
+    else
+      keytype= Key::MULTIPLE;
+    if (type_modifier & CLUSTERING_FLAG)
+      keytype= (enum Key::Keytype)(keytype | Key::CLUSTERING);
+    DBUG_ASSERT(keytype != Key::MULTIPLE);
+
     lex->col_list.push_back(new Key_part_spec(*field_name, 0));
-    key= new Key(Key::UNIQUE, null_lex_str,
-                 &default_key_create_info, 0,
-                 lex->col_list);
+    Key *key= new Key(keytype, null_lex_str, &default_key_create_info, 0,
+                      lex->col_list);
     lex->alter_info.key_list.push_back(key);
     lex->col_list.empty();
   }
@@ -6315,7 +6688,7 @@ uint kill_one_thread(THD *thd, my_thread_id id, bool only_kill_query)
 {
   THD *tmp= NULL;
   uint error=ER_NO_SUCH_THREAD;
-  Find_thd_with_id find_thd_with_id(id);
+  Find_thd_with_id find_thd_with_id(id, false);
 
   DBUG_ENTER("kill_one_thread");
   DBUG_PRINT("enter", ("id=%u only_kill=%d", id, only_kill_query));

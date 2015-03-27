@@ -274,6 +274,9 @@ btr_cur_latch_leaves(
 		mode = latch_mode == BTR_MODIFY_LEAF ? RW_X_LATCH : RW_S_LATCH;
 		get_block = btr_block_get(page_id, page_size, mode,
 					  cursor->index, mtr);
+
+		SRV_CORRUPT_TABLE_CHECK(get_block, return;);
+
 #ifdef UNIV_BTR_DEBUG
 		ut_a(page_is_comp(get_block->frame) == page_is_comp(page));
 #endif /* UNIV_BTR_DEBUG */
@@ -302,6 +305,9 @@ btr_cur_latch_leaves(
 			get_block = btr_block_get(
 				page_id_t(page_id.space(), left_page_no),
 				page_size, RW_X_LATCH, cursor->index, mtr);
+
+			SRV_CORRUPT_TABLE_CHECK(get_block, return;);
+
 #ifdef UNIV_BTR_DEBUG
 			ut_a(page_is_comp(get_block->frame)
 			     == page_is_comp(page));
@@ -323,6 +329,9 @@ btr_cur_latch_leaves(
 
 		get_block = btr_block_get(
 			page_id, page_size, RW_X_LATCH, cursor->index, mtr);
+
+		SRV_CORRUPT_TABLE_CHECK(get_block, return;);
+
 #ifdef UNIV_BTR_DEBUG
 		ut_a(page_is_comp(get_block->frame) == page_is_comp(page));
 #endif /* UNIV_BTR_DEBUG */
@@ -344,6 +353,9 @@ btr_cur_latch_leaves(
 			get_block = btr_block_get(
 				page_id_t(page_id.space(), right_page_no),
 				page_size, RW_X_LATCH, cursor->index, mtr);
+
+			SRV_CORRUPT_TABLE_CHECK(get_block, return;);
+
 #ifdef UNIV_BTR_DEBUG
 			ut_a(page_is_comp(get_block->frame)
 			     == page_is_comp(page));
@@ -372,6 +384,9 @@ btr_cur_latch_leaves(
 				page_id_t(page_id.space(), left_page_no),
 				page_size, mode, cursor->index, mtr);
 			cursor->left_block = get_block;
+
+			SRV_CORRUPT_TABLE_CHECK(get_block, return;);
+
 #ifdef UNIV_BTR_DEBUG
 			ut_a(page_is_comp(get_block->frame)
 			     == page_is_comp(page));
@@ -383,6 +398,9 @@ btr_cur_latch_leaves(
 
 		get_block = btr_block_get(page_id, page_size, mode,
 					  cursor->index, mtr);
+
+		SRV_CORRUPT_TABLE_CHECK(get_block, return;);
+
 #ifdef UNIV_BTR_DEBUG
 		ut_a(page_is_comp(get_block->frame) == page_is_comp(page));
 #endif /* UNIV_BTR_DEBUG */
@@ -735,8 +753,8 @@ btr_cur_search_to_nth_level(
 	btr_cur_t*	cursor, /*!< in/out: tree cursor; the cursor page is
 				s- or x-latched, but see also above! */
 	ulint		has_search_latch,/*!< in: info on the latch mode the
-				caller currently has on btr_search_latch:
-				RW_S_LATCH, or 0 */
+				caller currently has on the AHI latch for this
+				index: RW_S_LATCH, or 0 */
 	const char*	file,	/*!< in: file name */
 	ulint		line,	/*!< in: line where called */
 	mtr_t*		mtr)	/*!< in: mtr */
@@ -890,7 +908,8 @@ btr_cur_search_to_nth_level(
 # endif
 	/* Use of AHI is disabled for intrinsic table as these tables re-use
 	the index-id and AHI validation is based on index-id. */
-	if (rw_lock_get_writer(&btr_search_latch) == RW_LOCK_NOT_LOCKED
+	if (rw_lock_get_writer(btr_search_get_latch(cursor->index)) ==
+	    RW_LOCK_NOT_LOCKED
 	    && latch_mode <= BTR_MODIFY_LEAF
 	    && info->last_hash_succ
 	    && !index->disable_ahi
@@ -929,7 +948,7 @@ btr_cur_search_to_nth_level(
 
 	if (has_search_latch) {
 		/* Release possible search latch to obey latching order */
-		rw_lock_s_unlock(&btr_search_latch);
+		rw_lock_s_unlock(btr_search_get_latch(cursor->index));
 	}
 
 	/* Store the position of the tree latch we push to mtr so that we
@@ -1088,6 +1107,20 @@ retry_page_get:
 	tree_blocks[n_blocks] = block;
 
 	if (block == NULL) {
+		SRV_CORRUPT_TABLE_CHECK(buf_mode == BUF_GET_IF_IN_POOL ||
+					buf_mode == BUF_GET_IF_IN_POOL_OR_WATCH,
+			{
+				page_cursor->block = 0;
+				page_cursor->rec = 0;
+				if (estimate) {
+
+					cursor->path_arr->nth_rec =
+						ULINT_UNDEFINED;
+				}
+
+				goto func_exit;
+			});
+
 		/* This must be a search to perform an insert/delete
 		mark/ delete; try using the insert/delete buffer */
 
@@ -1204,6 +1237,19 @@ retry_page_get:
 
 	block->check_index_page_at_flush = TRUE;
 	page = buf_block_get_frame(block);
+
+	SRV_CORRUPT_TABLE_CHECK(page,
+		{
+		    page_cursor->block = 0;
+		    page_cursor->rec = 0;
+
+		    if (estimate) {
+
+			cursor->path_arr->nth_rec = ULINT_UNDEFINED;
+		    }
+
+		    goto func_exit;
+		});
 
 	if (height == ULINT_UNDEFINED
 	    && page_is_leaf(page)
@@ -1834,7 +1880,8 @@ retry_page_get:
 		/* We do a dirty read of btr_search_enabled here.  We
 		will properly check btr_search_enabled again in
 		btr_search_build_page_hash_index() before building a
-		page hash index, while holding btr_search_latch. */
+		page hash index, while holding the required AHI search
+		latch. */
 		if (btr_search_enabled && !index->disable_ahi) {
 			btr_search_info_update(index, cursor);
 		}
@@ -1875,7 +1922,7 @@ func_exit:
 
 	if (has_search_latch) {
 
-		rw_lock_s_lock(&btr_search_latch);
+		rw_lock_s_lock(btr_search_get_latch(cursor->index));
 	}
 
 	if (mbr_adj) {
@@ -2182,6 +2229,19 @@ btr_cur_open_at_index_side_func(
 
 		page = buf_block_get_frame(block);
 
+		SRV_CORRUPT_TABLE_CHECK(page,
+		{
+			page_cursor->block = 0;
+			page_cursor->rec = 0;
+
+			if (estimate) {
+
+				cursor->path_arr->nth_rec = ULINT_UNDEFINED;
+			}
+			/* Can't use break with the macro */
+			goto exit_loop;
+		});
+
 		if (height == ULINT_UNDEFINED
 		    && btr_page_get_level(page, mtr) == 0
 		    && rw_latch != RW_NO_LATCH
@@ -2400,6 +2460,7 @@ btr_cur_open_at_index_side_func(
 		n_blocks++;
 	}
 
+exit_loop:
 	if (heap) {
 		mem_heap_free(heap);
 	}
@@ -2614,6 +2675,14 @@ btr_cur_open_at_rnd_pos_func(
 
 		page = buf_block_get_frame(block);
 
+		SRV_CORRUPT_TABLE_CHECK(page,
+		{
+			page_cursor->block = 0;
+			page_cursor->rec = 0;
+
+			goto exit_loop;
+		});
+
 		if (height == ULINT_UNDEFINED
 		    && btr_page_get_level(page, mtr) == 0
 		    && rw_latch != RW_NO_LATCH
@@ -2633,6 +2702,7 @@ btr_cur_open_at_rnd_pos_func(
 		}
 
 		ut_ad(fil_page_index_page_check(page));
+
 		ut_ad(index->id == btr_page_get_index_id(page));
 
 		if (height == ULINT_UNDEFINED) {
@@ -2766,6 +2836,7 @@ btr_cur_open_at_rnd_pos_func(
 		n_blocks++;
 	}
 
+exit_loop:
 	if (UNIV_LIKELY_NULL(heap)) {
 		mem_heap_free(heap);
 	}
@@ -2992,6 +3063,9 @@ btr_cur_optimistic_insert(
 	*big_rec = NULL;
 
 	block = btr_cur_get_block(cursor);
+
+	SRV_CORRUPT_TABLE_CHECK(block, return(DB_CORRUPTION););
+
 	page = buf_block_get_frame(block);
 	index = cursor->index;
 
@@ -3328,6 +3402,9 @@ btr_cur_pessimistic_insert(
 
 	if (!(flags & BTR_NO_UNDO_LOG_FLAG)
 	    || dict_table_is_intrinsic(index->table)) {
+
+		ut_a(cursor->tree_height != ULINT_UNDEFINED);
+
 		/* First reserve enough free space for the file segments
 		of the index tree, so that the insert will not fail because
 		of lack of space */
@@ -3608,7 +3685,7 @@ btr_cur_parse_update_in_place(
 	ut_a((ibool)!!page_is_comp(page) == dict_table_is_comp(index->table));
 	rec = page + rec_offset;
 
-	/* We do not need to reserve btr_search_latch, as the page is only
+	/* We do not need to reserve the AHI search latch, as the page is only
 	being recovered, and there cannot be a hash index to it. */
 
 	offsets = rec_get_offsets(rec, index, NULL, ULINT_UNDEFINED, &heap);
@@ -3652,7 +3729,8 @@ btr_cur_update_alloc_zip_func(
 	ulint		length,	/*!< in: size needed */
 	bool		create,	/*!< in: true=delete-and-insert,
 				false=update-in-place */
-	mtr_t*		mtr)	/*!< in/out: mini-transaction */
+	mtr_t*		mtr,	/*!< in/out: mini-transaction */
+	trx_t*		trx)	/*!< in: NULL or transaction */
 {
 	const page_t*	page = page_cur_get_page(cursor);
 
@@ -3746,6 +3824,7 @@ btr_cur_update_in_place(
 	roll_ptr_t	roll_ptr	= 0;
 	ulint		was_delete_marked;
 	ibool		is_hashed;
+	trx_t*		trx;
 
 	rec = btr_cur_get_rec(cursor);
 	index = cursor->index;
@@ -3772,13 +3851,14 @@ btr_cur_update_in_place(
 
 	block = btr_cur_get_block(cursor);
 	page_zip = buf_block_get_page_zip(block);
+	trx = thr_get_trx(thr);
 
 	/* Check that enough space is available on the compressed page. */
 	if (page_zip) {
 		if (!btr_cur_update_alloc_zip(
 			    page_zip, btr_cur_get_page_cur(cursor),
 			    index, offsets, rec_offs_size(offsets),
-			    false, mtr)) {
+			    false, mtr, trx)) {
 			return(DB_ZIP_OVERFLOW);
 		}
 
@@ -3824,13 +3904,13 @@ btr_cur_update_in_place(
 			btr_search_update_hash_on_delete(cursor);
 		}
 
-		rw_lock_x_lock(&btr_search_latch);
+		rw_lock_x_lock(btr_search_get_latch(cursor->index));
 	}
 
 	row_upd_rec_in_place(rec, index, offsets, update, page_zip);
 
 	if (is_hashed) {
-		rw_lock_x_unlock(&btr_search_latch);
+		rw_lock_x_unlock(btr_search_get_latch(cursor->index));
 	}
 
 	btr_cur_update_in_place_log(flags, rec, index, update,
@@ -4003,7 +4083,7 @@ any_extern:
 	if (page_zip) {
 		if (!btr_cur_update_alloc_zip(
 			    page_zip, page_cursor, index, *offsets,
-			    new_rec_size, true, mtr)) {
+			    new_rec_size, true, mtr, thr_get_trx(thr))) {
 			return(DB_ZIP_OVERFLOW);
 		}
 
@@ -4676,7 +4756,7 @@ btr_cur_parse_del_mark_set_clust_rec(
 	if (page) {
 		rec = page + offset;
 
-		/* We do not need to reserve btr_search_latch, as the page
+		/* We do not need to the AHI search latch, as the page
 		is only being recovered, and there cannot be a hash index to
 		it. Besides, these fields are being updated in place
 		and the adaptive hash index does not depend on them. */
@@ -4755,7 +4835,7 @@ btr_cur_del_mark_set_clust_rec(
 		return(err);
 	}
 
-	/* The btr_search_latch is not needed here, because
+	/* The AHI search latch is not needed here, because
 	the adaptive hash index does not depend on the delete-mark
 	and the delete-mark is being updated in place. */
 
@@ -4860,7 +4940,7 @@ btr_cur_parse_del_mark_set_sec_rec(
 	if (page) {
 		rec = page + offset;
 
-		/* We do not need to reserve btr_search_latch, as the page
+		/* We do not need to reserve the AHI search latch, as the page
 		is only being recovered, and there cannot be a hash index to
 		it. Besides, the delete-mark flag is being updated in place
 		and the adaptive hash index does not depend on it. */
@@ -4911,7 +4991,7 @@ btr_cur_del_mark_set_sec_rec(
 			      cursor->index->name, cursor->index->id,
 			      trx_get_id_for_print(thr_get_trx(thr))));
 
-	/* We do not need to reserve btr_search_latch, as the
+	/* We do not need to reserve the AHI search latch, as the
 	delete-mark flag is being updated in place and the adaptive
 	hash index does not depend on it. */
 	btr_rec_set_deleted_flag(rec, buf_block_get_page_zip(block), val);
@@ -4936,7 +5016,7 @@ btr_cur_set_deleted_flag_for_ibuf(
 	ibool		val,		/*!< in: value to set */
 	mtr_t*		mtr)		/*!< in/out: mini-transaction */
 {
-	/* We do not need to reserve btr_search_latch, as the page
+	/* We do not need to reserve the AHI search latch, as the page
 	has just been read to the buffer pool and there cannot be
 	a hash index to it.  Besides, the delete-mark flag is being
 	updated in place and the adaptive hash index does not depend
@@ -5034,6 +5114,8 @@ btr_cur_optimistic_delete_func(
 	/* This is intended only for leaf page deletions */
 
 	block = btr_cur_get_block(cursor);
+
+	SRV_CORRUPT_TABLE_CHECK(block, return(DB_CORRUPTION););
 
 	ut_ad(page_is_leaf(buf_block_get_frame(block)));
 	ut_ad(!dict_index_is_online_ddl(cursor->index)
@@ -5166,6 +5248,8 @@ btr_cur_pessimistic_delete(
 		/* First reserve enough free space for the file segments
 		of the index tree, so that the node pointer updates will
 		not fail because of lack of space */
+
+		ut_a(cursor->tree_height != ULINT_UNDEFINED);
 
 		ulint	n_extents = cursor->tree_height / 32 + 1;
 
@@ -5822,6 +5906,8 @@ btr_estimate_number_of_different_key_vals(
 
 		page = btr_cur_get_page(&cursor);
 
+		SRV_CORRUPT_TABLE_CHECK(page, goto exit_loop;);
+
 		rec = page_rec_get_next(page_get_infimum_rec(page));
 
 		if (!page_rec_is_supremum(rec)) {
@@ -5904,6 +5990,7 @@ btr_estimate_number_of_different_key_vals(
 		mtr_commit(&mtr);
 	}
 
+exit_loop:
 	/* If we saw k borders between different key values on
 	n_sample_pages leaf pages, we can estimate how many
 	there will be in index->stat_n_leaf_pages */

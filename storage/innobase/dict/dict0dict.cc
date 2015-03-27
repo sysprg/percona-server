@@ -1321,7 +1321,7 @@ dict_table_can_be_evicted(
 
 			See also: dict_index_remove_from_cache_low() */
 
-			if (btr_search_info_get_ref_count(info) > 0) {
+			if (btr_search_info_get_ref_count(info, index) > 0) {
 				return(FALSE);
 			}
 		}
@@ -2754,7 +2754,8 @@ dict_index_remove_from_cache_low(
 	zero. See also: dict_table_can_be_evicted() */
 
 	do {
-		ulint ref_count = btr_search_info_get_ref_count(info);
+		ulint ref_count = btr_search_info_get_ref_count(info,
+								index);
 
 		if (ref_count == 0) {
 			break;
@@ -3084,6 +3085,7 @@ dict_index_build_internal_clust(
 	new_index->n_user_defined_cols = index->n_fields;
 
 	new_index->id = index->id;
+	btr_search_index_init(new_index);
 
 	/* Copy the fields of index */
 	dict_index_copy(new_index, index, table, 0, index->n_fields);
@@ -3263,6 +3265,7 @@ dict_index_build_internal_non_clust(
 	new_index->n_user_defined_cols = index->n_fields;
 
 	new_index->id = index->id;
+	btr_search_index_init(new_index);
 
 	/* Copy fields from index to new_index */
 	dict_index_copy(new_index, index, table, 0, index->n_fields);
@@ -3351,6 +3354,7 @@ dict_index_build_internal_fts(
 	new_index->n_user_defined_cols = index->n_fields;
 
 	new_index->id = index->id;
+	btr_search_index_init(new_index);
 
 	/* Copy fields from index to new_index */
 	dict_index_copy(new_index, index, table, 0, index->n_fields);
@@ -5815,6 +5819,44 @@ dict_set_corrupted_index_cache_only(
 	}
 
 	index->type |= DICT_CORRUPT;
+}
+
+/*************************************************************************
+set is_corrupt flag by space_id*/
+
+void
+dict_table_set_corrupt_by_space(
+/*============================*/
+	ulint	space_id,
+	ibool	need_mutex)
+{
+	dict_table_t*	table;
+	ibool		found = FALSE;
+
+	ut_a(space_id != 0 && space_id < SRV_LOG_SPACE_FIRST_ID);
+
+	if (need_mutex)
+		mutex_enter(&(dict_sys->mutex));
+
+	table = UT_LIST_GET_FIRST(dict_sys->table_LRU);
+
+	while (table) {
+		if (table->space == space_id) {
+			table->is_corrupt = TRUE;
+			found = TRUE;
+		}
+
+		table = UT_LIST_GET_NEXT(table_LRU, table);
+	}
+
+	if (need_mutex)
+		mutex_exit(&(dict_sys->mutex));
+
+	if (!found) {
+		fprintf(stderr, "InnoDB: space to be marked as "
+			"crashed was not found for id " ULINTPF ".\n",
+			space_id);
+	}
 }
 #endif /* !UNIV_HOTBACKUP */
 

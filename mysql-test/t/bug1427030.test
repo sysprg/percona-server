@@ -1,0 +1,3 @@
+flush tables;
+CREATE TEMPORARY TABLE mysql.user (id INT);
+grant select on test.* to 'root'@'localhost';

@@ -179,9 +179,9 @@ btr_cur_search_to_nth_level(
 				to protect the record! */
 	btr_cur_t*	cursor, /*!< in/out: tree cursor; the cursor page is
 				s- or x-latched, but see also above! */
-	ulint		has_search_latch,/*!< in: latch mode the caller
-				currently has on btr_search_latch:
-				RW_S_LATCH, or 0 */
+	ulint		has_search_latch,/*!< in: info on the latch mode the
+				caller currently has on the AHI latch for this
+				index: RW_S_LATCH, or 0 */
 	const char*	file,	/*!< in: file name */
 	ulint		line,	/*!< in: line where called */
 	mtr_t*		mtr);	/*!< in: mtr */
@@ -367,14 +367,20 @@ btr_cur_update_alloc_zip_func(
 	ulint		length,	/*!< in: size needed */
 	bool		create,	/*!< in: true=delete-and-insert,
 				false=update-in-place */
-	mtr_t*		mtr)	/*!< in/out: mini-transaction */
-	__attribute__((nonnull, warn_unused_result));
+	mtr_t*		mtr,	/*!< in/out: mini-transaction */
+	trx_t*		trx)	/*!< in: NULL or transaction */
 #ifdef UNIV_DEBUG
-# define btr_cur_update_alloc_zip(page_zip,cursor,index,offsets,len,cr,mtr) \
-	btr_cur_update_alloc_zip_func(page_zip,cursor,index,offsets,len,cr,mtr)
+	__attribute__((nonnull (1, 2, 3, 4, 7), warn_unused_result));
+#else
+	__attribute__((nonnull (1, 2, 3, 6), warn_unused_result));
+#endif
+
+#ifdef UNIV_DEBUG
+# define btr_cur_update_alloc_zip(page_zip,cursor,index,offsets,len,cr,mtr,trx) \
+	btr_cur_update_alloc_zip_func(page_zip,cursor,index,offsets,len,cr,mtr,trx)
 #else /* UNIV_DEBUG */
-# define btr_cur_update_alloc_zip(page_zip,cursor,index,offsets,len,cr,mtr) \
-	btr_cur_update_alloc_zip_func(page_zip,cursor,index,len,cr,mtr)
+# define btr_cur_update_alloc_zip(page_zip,cursor,index,offsets,len,cr,mtr,trx) \
+	btr_cur_update_alloc_zip_func(page_zip,cursor,index,len,cr,mtr,trx)
 #endif /* UNIV_DEBUG */
 /*************************************************************//**
 Updates a record when the update causes no size changes in its fields.

@@ -54,6 +54,7 @@ my_bool	srv_ibuf_disable_background_merge;
 #include "btr0cur.h"
 #include "btr0pcur.h"
 #include "btr0btr.h"
+#include "btr0sea.h"
 #include "row0upd.h"
 #include "sync0mutex.h"
 #include "dict0boot.h"
@@ -473,6 +474,45 @@ ibuf_close(void)
 }
 
 /******************************************************************//**
+Function to pass ibuf status variables */
+
+void
+ibuf_export_ibuf_status(
+/*====================*/
+	ulint*	size,
+	ulint*	free_list,
+	ulint*	segment_size,
+	ulint*	merges,
+	ulint*	merged_inserts,
+	ulint*	merged_delete_marks,
+	ulint*	merged_deletes,
+	ulint*	discarded_inserts,
+	ulint*	discarded_delete_marks,
+	ulint*	discarded_deletes)
+{
+	*size
+		= ibuf->size;
+	*free_list
+		= ibuf->free_list_len;
+	*segment_size
+		= ibuf->seg_size;
+	*merges
+		= ibuf->n_merges;
+	*merged_inserts
+		= ibuf->n_merged_ops[IBUF_OP_INSERT];
+	*merged_delete_marks
+		= ibuf->n_merged_ops[IBUF_OP_DELETE_MARK];
+	*merged_deletes
+		= ibuf->n_merged_ops[IBUF_OP_DELETE];
+	*discarded_inserts
+		= ibuf->n_discarded_ops[IBUF_OP_INSERT];
+	*discarded_delete_marks
+		= ibuf->n_discarded_ops[IBUF_OP_DELETE_MARK];
+	*discarded_deletes
+		= ibuf->n_discarded_ops[IBUF_OP_DELETE];
+}
+
+/******************************************************************//**
 Updates the size information of the ibuf, assuming the segment size has not
 changed. */
 static
@@ -579,6 +619,7 @@ ibuf_init_at_db_start(void)
 	dict_mem_index_add_field(index, "DUMMY_COLUMN", 0);
 
 	index->id = DICT_IBUF_ID_MIN + IBUF_SPACE_ID;
+	btr_search_index_init(index);
 
 	error = dict_index_add_to_cache(table, index,
 					FSP_IBUF_TREE_ROOT_PAGE_NO, FALSE);
@@ -2826,6 +2867,8 @@ ibuf_contract_in_background(
 
 		sum_bytes += n_bytes;
 		sum_pages += n_pag2;
+
+		srv_inc_activity_count();
 	}
 
 	return(sum_bytes);
@@ -4109,7 +4152,7 @@ dump:
 							    update)
 		    && (!page_zip || btr_cur_update_alloc_zip(
 				page_zip, &page_cur, index, offsets,
-				rec_offs_size(offsets), false, mtr))) {
+				rec_offs_size(offsets), false, mtr, NULL))) {
 			/* This is the easy case. Do something similar
 			to btr_cur_update_in_place(). */
 			rec = page_cur_get_rec(&page_cur);

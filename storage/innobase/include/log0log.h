@@ -65,6 +65,10 @@ extern log_checksum_func_t log_checksum_algorithm_ptr;
 /** Maximum number of log groups in log_group_t::checkpoint_buf */
 #define LOG_MAX_N_GROUPS	32
 
+#define IB_ARCHIVED_LOGS_PREFIX		"ib_log_archive_"
+#define IB_ARCHIVED_LOGS_PREFIX_LEN	(sizeof(IB_ARCHIVED_LOGS_PREFIX) - 1)
+#define IB_ARCHIVED_LOGS_SERIAL_LEN	20
+
 /*******************************************************************//**
 Calculates where in log files we find a specified lsn.
 @return log file number */
@@ -188,6 +192,28 @@ void
 log_io_complete(
 /*============*/
 	log_group_t*	group);	/*!< in: log group */
+
+/******************************************************//**
+Writes a buffer to a log file group. */
+
+void
+log_group_write_buf(
+/*================*/
+	log_group_t*	group,		/*!< in: log group */
+	byte*		buf,		/*!< in: buffer */
+	ulint		len,		/*!< in: buffer len; must be divisible
+					by OS_FILE_LOG_BLOCK_SIZE */
+#ifdef UNIV_DEBUG
+	ulint		pad_len,	/*!< in: pad len in the buffer len */
+#endif /* UNIV_DEBUG */
+	lsn_t		start_lsn,	/*!< in: start lsn of the buffer; must
+					be divisible by
+					OS_FILE_LOG_BLOCK_SIZE */
+	ulint		new_data_offset);/*!< in: start offset of new data in
+					buf: this parameter is used to decide
+					if we have to write a new log file
+					header */
+
 /******************************************************//**
 This function is called, e.g., when a transaction wants to commit. It checks
 that the log has been written to the log file up to the last log entry written
@@ -266,8 +292,7 @@ log_checkpoint_get_nth_group_info(
 /*==============================*/
 	const byte*	buf,	/*!< in: buffer containing checkpoint info */
 	ulint		n,	/*!< in: nth slot */
-	ulint*		file_no,/*!< out: archived file number */
-	ulint*		offset);/*!< out: archived file offset */
+	lsn_t*		file_no);/*!< out: archived file number */
 /** Write checkpoint info to the log header and invoke log_mutex_exit().
 @param[in]	sync	whether to wait for the write to complete */
 
@@ -282,6 +307,13 @@ log_write_checkpoint_info(
 mtr_buf_t*
 log_append_on_checkpoint(
 	mtr_buf_t*	buf);
+/******************************************************//**
+Writes checkpoint info to groups. */
+
+void
+log_groups_write_checkpoint_info(void); // TODO laurynas
+/*==================================*/
+
 #else /* !UNIV_HOTBACKUP */
 /******************************************************//**
 Writes info to a buffer of a log group when log files are created in
@@ -311,10 +343,14 @@ Reads a specified log segment to a buffer. */
 void
 log_group_read_log_seg(
 /*===================*/
+	ulint		type,		/*!< in: LOG_ARCHIVE or LOG_RECOVER */
 	byte*		buf,		/*!< in: buffer where to read */
 	log_group_t*	group,		/*!< in: log group */
 	lsn_t		start_lsn,	/*!< in: read area start */
-	lsn_t		end_lsn);	/*!< in: read area end */
+	lsn_t		end_lsn,	/*!< in: read area end */
+	bool		release_mutex);	/*!< in: whether the log_sys->mutex
+				        should be released before the read */
+
 /********************************************************//**
 Sets the field values in group to correspond to a given lsn. For this function
 to work, the values must already be correctly initialized to correspond to
@@ -514,6 +550,18 @@ void
 log_mem_free(void);
 /*==============*/
 
+/****************************************************************//**
+Safely reads the log_sys->tracked_lsn value.  Uses atomic operations
+if available, otherwise this field is protected with the log system
+mutex.  The writer counterpart function is log_set_tracked_lsn() in
+log0online.c.
+
+@return log_sys->tracked_lsn value. */
+UNIV_INLINE
+lsn_t
+log_get_tracked_lsn(void);
+/*=====================*/
+
 extern log_t*	log_sys;
 
 /* Values used as flags */
@@ -629,6 +677,9 @@ extern log_t*	log_sys;
 					when mysqld is first time started
 					on the restored database, it can
 					print helpful info for the user */
+#define LOG_FILE_OS_FILE_LOG_BLOCK_SIZE 64
+					/* extend to record log_block_size
+					of XtraDB. 0 means default 512 */
 #define	LOG_FILE_ARCH_COMPLETED	OS_FILE_LOG_BLOCK_SIZE
 					/* this 4-byte field is TRUE when
 					the writing of an archived log file
@@ -677,6 +728,28 @@ struct log_group_t{
 	byte**		file_header_bufs_ptr;/*!< unaligned buffers */
 	byte**		file_header_bufs;/*!< buffers for each file
 					header in the group */
+#ifdef UNIV_LOG_ARCHIVE // todo laurynas remove define
+	/*-----------------------------*/
+	byte**		archive_file_header_bufs_ptr;/*!< unaligned buffers */
+	byte**		archive_file_header_bufs;/*!< buffers for each file
+					header in the group */
+	ulint		archive_space_id;/*!< file space which
+					implements the log group
+					archive */
+	lsn_t		archived_file_no;/*!< file number corresponding to
+					log_sys->archived_lsn */
+	lsn_t		archived_offset;/*!< file offset corresponding to
+					log_sys->archived_lsn, 0 if we have
+					not yet written to the archive file
+					number archived_file_no */
+	lsn_t		next_archived_file_no;/*!< during an archive write,
+					until the write is completed, we
+					store the next value for
+					archived_file_no here: the write
+					completion function then sets the new
+					value to ..._file_no */
+	lsn_t		next_archived_offset; /*!< like the preceding field */
+#endif /* UNIV_LOG_ARCHIVE */
 	/*-----------------------------*/
 	lsn_t		scanned_lsn;	/*!< used only in recovery: recovery scan
 					succeeded up to this lsn in this log
@@ -820,6 +893,46 @@ struct log_t{
 	byte*		checkpoint_buf;	/*!< checkpoint header is read to this
 					buffer */
 	/* @} */
+	/** Fields involved in archiving @{ */
+	ulint		archiving_state;/*!< LOG_ARCH_ON, LOG_ARCH_STOPPING
+					LOG_ARCH_STOPPED, LOG_ARCH_OFF */
+	lsn_t		archived_lsn;	/*!< archiving has advanced to this
+					lsn */
+	lsn_t		max_archived_lsn_age_async;
+					/*!< recommended maximum age of
+					archived_lsn, before we start
+					asynchronous copying to the archive */
+	lsn_t		max_archived_lsn_age;
+					/*!< maximum allowed age for
+					archived_lsn */
+	lsn_t		next_archived_lsn;/*!< during an archive write,
+					until the write is completed, we
+					store the next value for
+					archived_lsn here: the write
+					completion function then sets the new
+					value to archived_lsn */
+	ulint		archiving_phase;/*!< LOG_ARCHIVE_READ or
+					LOG_ARCHIVE_WRITE */
+	ulint		n_pending_archive_ios;
+					/*!< number of currently pending reads
+					or writes in archiving */
+	rw_lock_t	archive_lock;	/*!< this latch is x-locked when an
+					archive write is running; a thread
+					should wait for this without owning
+					the log mutex */
+	ulint		archive_buf_size;/*!< size of archive_buf */
+	byte*		archive_buf_ptr;/*!< unaligned archived_buf */
+	byte*		archive_buf;	/*!< log segment is written to the
+					archive from this buffer */
+	os_event_t	archiving_on;	/*!< if archiving has been stopped,
+					a thread can wait for this event to
+					become signaled */
+	/* @} */
+	lsn_t		tracked_lsn;	/*!< log tracking has advanced to this
+					lsn.  Field accessed atomically where
+					64-bit atomic ops are supported,
+					protected by the log sys mutex
+					otherwise. */
 };
 
 /** Test if flush order mutex is owned. */

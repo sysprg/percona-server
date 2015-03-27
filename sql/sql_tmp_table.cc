@@ -579,6 +579,7 @@ create_tmp_table(THD *thd, Temp_table_param *param, List<Item> &fields,
               (ulong) rows_limit, MY_TEST(group)));
 
   thd->inc_status_created_tmp_tables();
+  thd->query_plan_flags|= QPLAN_TMP_TABLE;
 
   if (use_temp_pool && !(test_flags & TEST_KEEP_TMP_TABLES))
     temp_pool_slot = bitmap_lock_set_next(&temp_pool);
@@ -2063,6 +2064,7 @@ bool create_myisam_tmp_table(TABLE *table, KEY *keyinfo,
     goto err;
   }
   table->in_use->inc_status_created_tmp_disk_tables();
+  table->in_use->query_plan_flags|= QPLAN_TMP_DISK;
   share->db_record_offset= 1;
   DBUG_RETURN(0);
  err:
@@ -2225,6 +2227,14 @@ free_tmp_table(THD *thd, TABLE *entry)
 
   save_proc_info=thd->proc_info;
   THD_STAGE_INFO(thd, stage_removing_tmp_table);
+
+  thd->tmp_tables_used++;
+  if (entry->file)
+  {
+      thd->tmp_tables_size += entry->file->stats.data_file_length;
+      if (entry->file->ht->db_type != DB_TYPE_HEAP)
+          thd->tmp_tables_disk_used++;
+  }
 
   // Release latches since this can take a long time
   ha_release_temporary_latches(thd);

@@ -172,7 +172,7 @@ TEST(ut0new, edgecases)
 	ut_new_pfx_t		pfx;
 	void*			ret;
 
-	ret = alloc1.allocate_large(0, &pfx);
+	ret = alloc1.allocate_large(0, &pfx, false);
 	EXPECT_EQ(NULL, ret);
 
 #ifdef UNIV_PFS_MEMORY

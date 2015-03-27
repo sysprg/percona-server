@@ -74,6 +74,11 @@ public:
     Close the listener
   */
   void close_listener();
+
+  bool is_connection_extra_port(const Channel_info& channel_info) const
+  {
+    return false;
+  }
 };
 
 #endif // NAMED_PIPE_CONNECTION_INCLUDED.

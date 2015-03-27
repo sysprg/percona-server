@@ -832,13 +832,15 @@ bool mysql_insert(THD *thd,TABLE_LIST *table_list,
   if (thd->is_error())
     goto exit_without_my_ok;
 
+  ha_rows row_count;
+
   if (values_list.elements == 1 && (!(thd->variables.option_bits & OPTION_WARNINGS) ||
 				    !thd->cuted_fields))
   {
-    my_ok(thd, info.stats.copied + info.stats.deleted +
+    row_count= info.stats.copied + info.stats.deleted +
                ((thd->client_capabilities & CLIENT_FOUND_ROWS) ?
-                info.stats.touched : info.stats.updated),
-          id);
+                info.stats.touched : info.stats.updated);
+    my_ok(thd, row_count, id);
   }
   else
   {
@@ -855,8 +857,10 @@ bool mysql_insert(THD *thd,TABLE_LIST *table_list,
                   ER(ER_INSERT_INFO), (long) info.stats.records,
                   (long) (info.stats.deleted + updated),
                   (long) thd->get_stmt_da()->current_statement_cond_count());
-    my_ok(thd, info.stats.copied + info.stats.deleted + updated, id, buff);
+    row_count= info.stats.copied + info.stats.deleted + updated;
+    my_ok(thd, row_count, id, buff);
   }
+  thd->updated_row_count+= row_count;
   DBUG_RETURN(FALSE);
 
 exit_without_my_ok:
@@ -2133,6 +2137,7 @@ bool select_insert::send_eof()
 
   error= (bulk_insert_started ?
           table->file->ha_end_bulk_insert() : 0);
+  bulk_insert_started= false;
   if (!error && thd->is_error())
     error= thd->get_stmt_da()->mysql_errno();
 
@@ -2217,6 +2222,7 @@ bool select_insert::send_eof()
      thd->first_successful_insert_id_in_prev_stmt :
      (info.stats.copied ? autoinc_value_of_last_inserted_row : 0));
   my_ok(thd, row_count, id, buff);
+  thd->updated_row_count+= row_count;
   DBUG_RETURN(0);
 }
 
@@ -2239,8 +2245,10 @@ void select_insert::abort_result_set() {
       if tables are not locked yet (bulk insert is not started yet
       in this case).
     */
-    if (bulk_insert_started)
+    if (bulk_insert_started) {
       table->file->ha_end_bulk_insert();
+      bulk_insert_started= false;
+    }
 
     /*
       If at least one row has been inserted/modified and will stay in

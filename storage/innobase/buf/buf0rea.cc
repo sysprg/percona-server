@@ -121,7 +121,8 @@ buf_read_page_low(
 	const page_id_t&	page_id,
 	const page_size_t&	page_size,
 	ibool			unzip,
-	int64_t			tablespace_version)
+	int64_t			tablespace_version,
+	trx_t*			trx)
 {
 	buf_page_t*	bpage;
 	ulint		wake_later;
@@ -161,6 +162,52 @@ buf_read_page_low(
 	bpage = buf_page_init_for_read(err, mode, page_id, page_size,
 				       unzip, tablespace_version);
 	if (bpage == NULL) {
+		/* bugfix: http://bugs.mysql.com/bug.php?id=43948 */
+		if (recv_recovery_is_on() && *err == DB_TABLESPACE_DELETED) {
+			/* hashed log recs must be treated here */
+			recv_addr_t*    recv_addr;
+
+			mutex_enter(&(recv_sys->mutex));
+
+			if (recv_sys->apply_log_recs == FALSE) {
+				mutex_exit(&(recv_sys->mutex));
+				goto not_to_recover;
+			}
+
+			/* recv_get_fil_addr_struct() */
+			recv_addr = (recv_addr_t*)
+				HASH_GET_FIRST(recv_sys->addr_hash,
+					       hash_calc_hash(
+						       ut_fold_ulint_pair(
+							       page_id.space(),
+							       page_id.page_no()),
+						recv_sys->addr_hash));
+			while (recv_addr) {
+				if ((recv_addr->space == page_id.space())
+				    && (recv_addr->page_no
+					== page_id.page_no())) {
+					break;
+				}
+				recv_addr = (recv_addr_t*)HASH_GET_NEXT(addr_hash, recv_addr);
+			}
+
+			if ((recv_addr == NULL)
+			    || (recv_addr->state == RECV_BEING_PROCESSED)
+			    || (recv_addr->state == RECV_PROCESSED)) {
+				mutex_exit(&(recv_sys->mutex));
+				goto not_to_recover;
+			}
+
+			ib::info() << " (cannot find space: "
+				   << page_id.space() << ")";
+			recv_addr->state = RECV_PROCESSED;
+
+			ut_a(recv_sys->n_addrs);
+			recv_sys->n_addrs--;
+
+			mutex_exit(&(recv_sys->mutex));
+		}
+not_to_recover:
 
 		return(0);
 	}
@@ -188,9 +235,9 @@ buf_read_page_low(
 		dst = ((buf_block_t*) bpage)->frame;
 	}
 
-	*err = fil_io(OS_FILE_READ | wake_later | ignore_nonexistent_pages,
-		      sync, page_id, page_size, 0, page_size.physical(), dst,
-		      bpage);
+	*err = _fil_io(OS_FILE_READ | wake_later | ignore_nonexistent_pages,
+		       sync, page_id, page_size, 0, page_size.physical(), dst,
+		       bpage, trx);
 
 	if (sync) {
 		thd_wait_end(NULL);
@@ -215,7 +262,9 @@ buf_read_page_low(
 			return(0);
 		}
 
-		ut_error;
+		SRV_CORRUPT_TABLE_CHECK(*err == DB_SUCCESS,
+					bpage->is_corrupt = TRUE;);
+
 	}
 
 	if (sync) {
@@ -249,7 +298,8 @@ ulint
 buf_read_ahead_random(
 	const page_id_t&	page_id,
 	const page_size_t&	page_size,
-	ibool			inside_ibuf)
+	ibool			inside_ibuf,
+	trx_t*			trx)
 {
 	buf_pool_t*	buf_pool = buf_pool_get(page_id);
 	int64_t		tablespace_version;
@@ -362,7 +412,7 @@ read_ahead:
 				&err, false,
 				ibuf_mode | OS_AIO_SIMULATED_WAKE_LATER,
 				cur_page_id, page_size, FALSE,
-				tablespace_version);
+				tablespace_version, trx);
 			if (err == DB_TABLESPACE_DELETED) {
 				ib::warn() << "Random readahead trying to"
 					" access page " << cur_page_id
@@ -405,7 +455,8 @@ released by the i/o-handler thread.
 ibool
 buf_read_page(
 	const page_id_t&	page_id,
-	const page_size_t&	page_size)
+	const page_size_t&	page_size,
+	trx_t*			trx)
 {
 	int64_t		tablespace_version;
 	ulint		count;
@@ -417,7 +468,7 @@ buf_read_page(
 	switches: hence TRUE */
 
 	count = buf_read_page_low(&err, true, BUF_READ_ANY_PAGE, page_id,
-				  page_size, FALSE, tablespace_version);
+				  page_size, FALSE, tablespace_version, trx);
 	srv_stats.buf_pool_reads.add(count);
 	if (err == DB_TABLESPACE_DELETED) {
 		ib::error() << "trying to read page " << page_id
@@ -454,7 +505,7 @@ buf_read_page_background(
 				  | OS_AIO_SIMULATED_WAKE_LATER
 				  | BUF_READ_IGNORE_NONEXISTENT_PAGES,
 				  page_id, page_size, FALSE,
-				  tablespace_version);
+				  tablespace_version, NULL);
 	srv_stats.buf_pool_reads.add(count);
 
 	/* We do not increment number of I/O operations used for LRU policy
@@ -497,7 +548,8 @@ ulint
 buf_read_ahead_linear(
 	const page_id_t&	page_id,
 	const page_size_t&	page_size,
-	ibool			inside_ibuf)
+	ibool			inside_ibuf,
+	trx_t*			trx)
 {
 	buf_pool_t*	buf_pool = buf_pool_get(page_id);
 	int64_t		tablespace_version;
@@ -724,7 +776,7 @@ buf_read_ahead_linear(
 		if (!ibuf_bitmap_page(cur_page_id, page_size)) {
 			count += buf_read_page_low(
 				&err, false, ibuf_mode, cur_page_id,
-				page_size, FALSE, tablespace_version);
+				page_size, FALSE, tablespace_version, trx);
 			if (err == DB_TABLESPACE_DELETED) {
 				ib::warn() << "linear readahead trying to"
 					" access page "
@@ -818,7 +870,7 @@ buf_read_ibuf_merge_pages(
 
 		buf_read_page_low(&err, sync && (i + 1 == n_stored),
 				  BUF_READ_ANY_PAGE, page_id, page_size,
-				  TRUE, space_versions[i]);
+				  TRUE, space_versions[i], NULL);
 
 		if (err == DB_TABLESPACE_DELETED) {
 			/* We have deleted or are deleting the single-table
@@ -863,6 +915,50 @@ buf_read_recv_pages(
 		/* It is a single table tablespace and the .ibd file is
 		missing: do nothing */
 
+		/* the log records should be treated here same reason
+		for http://bugs.mysql.com/bug.php?id=43948 */
+
+		if (recv_recovery_is_on()) {
+			recv_addr_t*    recv_addr;
+
+			mutex_enter(&(recv_sys->mutex));
+
+			if (recv_sys->apply_log_recs == FALSE) {
+				mutex_exit(&(recv_sys->mutex));
+				goto not_to_recover;
+			}
+
+			for (i = 0; i < n_stored; i++) {
+				/* recv_get_fil_addr_struct() */
+				recv_addr = (recv_addr_t*)HASH_GET_FIRST(recv_sys->addr_hash,
+						hash_calc_hash(ut_fold_ulint_pair(space, page_nos[i]),
+							recv_sys->addr_hash));
+				while (recv_addr) {
+					if ((recv_addr->space == space)
+						&& (recv_addr->page_no == page_nos[i])) {
+						break;
+					}
+					recv_addr = (recv_addr_t*)HASH_GET_NEXT(addr_hash, recv_addr);
+				}
+
+				if ((recv_addr == NULL)
+				    || (recv_addr->state == RECV_BEING_PROCESSED)
+				    || (recv_addr->state == RECV_PROCESSED)) {
+					continue;
+				}
+
+				recv_addr->state = RECV_PROCESSED;
+
+				ut_a(recv_sys->n_addrs);
+				recv_sys->n_addrs--;
+			}
+
+			mutex_exit(&(recv_sys->mutex));
+
+			fprintf(stderr, " (cannot find space: %lu)", space);
+		}
+not_to_recover:
+
 		return;
 	}
 
@@ -900,7 +996,7 @@ buf_read_recv_pages(
 
 		buf_read_page_low(&err, read_sync, mode,
 				  cur_page_id, page_size, TRUE,
-				  tablespace_version);
+				  tablespace_version, NULL);
 	}
 
 	os_aio_simulated_wake_handler_threads();

@@ -34,6 +34,7 @@ Created 10/13/2010 Jimmy Yang
 #include "btr0cur.h"
 #include "btr0bulk.h"
 #include "fts0plugin.h"
+#include "btr0sea.h"
 
 /** Read the next record to buffer N.
 @param N index into array of merge info structure */
@@ -91,6 +92,8 @@ row_merge_create_fts_sort_index(
 	new_index->n_def = FTS_NUM_FIELDS_SORT;
 	new_index->cached = TRUE;
 	new_index->parser = index->parser;
+
+	btr_search_index_init(new_index);
 
 	idx_field = dict_index_get_nth_field(index, 0);
 	charset = fts_index_get_charset(index);

@@ -80,6 +80,9 @@ public:
 
   void set_prior_thr_create_utime()
   { prior_thr_create_utime= my_micro_time(); }
+
+  virtual int get_socket_fd() const
+  { return 0; }
 };
 
 #endif // SQL_CHANNEL_INFO_INCLUDED.

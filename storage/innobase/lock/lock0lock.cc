@@ -453,6 +453,8 @@ lock_sys_create(
 	lock_sys->prdt_hash = hash_create(n_cells);
 	lock_sys->prdt_page_hash = hash_create(n_cells);
 
+	lock_sys->rec_num = 0;
+
 	if (!srv_read_only_mode) {
 		lock_latest_err_file = os_file_create_tmpfile();
 		ut_a(lock_latest_err_file);
@@ -1152,7 +1154,7 @@ lock_rec_has_expl(
 /*********************************************************************//**
 Checks if some other transaction has a lock request in the queue.
 @return lock or NULL */
-
+static __attribute__((warn_unused_result))
 const lock_t*
 lock_rec_other_has_expl_req(
 /*========================*/
@@ -1503,6 +1505,8 @@ lock_rec_create_low(
 	HASH_INSERT(lock_t, hash, lock_hash_get(type_mode),
 		    lock_rec_fold(space, page_no), lock);
 
+	lock_sys->rec_num++;
+
 	if (!caller_owns_trx_mutex) {
 		trx_mutex_enter(trx);
 	}
@@ -1636,6 +1640,13 @@ lock_rec_enqueue_waiting(
 
 	trx->lock.was_chosen_as_deadlock_victim = false;
 	trx->lock.wait_started = ut_time();
+
+	if (UNIV_UNLIKELY(trx->take_stats)) {
+		ulint			sec;
+		ulint			ms;
+		ut_usectime(&sec, &ms);
+		trx->lock_que_wait_ustarted = (ib_uint64_t)sec * 1000000 + ms;
+	}
 
 	ut_a(que_thr_stop(thr));
 
@@ -2135,6 +2146,7 @@ lock_rec_dequeue_from_page(
 
 	HASH_DELETE(lock_t, hash, lock_hash,
 		    lock_rec_fold(space, page_no), in_lock);
+	lock_sys->rec_num--;
 
 	UT_LIST_REMOVE(trx_lock->trx_locks, in_lock);
 
@@ -2185,6 +2197,8 @@ lock_rec_discard(
 
 	HASH_DELETE(lock_t, hash, lock_hash_get(in_lock->type_mode),
 			    lock_rec_fold(space, page_no), in_lock);
+
+	lock_sys->rec_num--;
 
 	UT_LIST_REMOVE(trx_lock->trx_locks, in_lock);
 
@@ -3581,6 +3595,13 @@ lock_table_enqueue_waiting(
 	trx->lock.wait_started = ut_time();
 	trx->lock.was_chosen_as_deadlock_victim = false;
 
+	if (UNIV_UNLIKELY(trx->take_stats)) {
+		ulint		sec;
+		ulint		ms;
+		ut_usectime(&sec, &ms);
+		trx->lock_que_wait_ustarted = (ib_uint64_t)sec * 1000000 + ms;
+	}
+
 	ut_a(que_thr_stop(thr));
 
 	MONITOR_INC(MONITOR_TABLELOCK_WAIT);
@@ -4862,6 +4883,7 @@ lock_print_info_all_transactions(
 	ut_ad(lock_validate());
 }
 
+
 #ifdef UNIV_DEBUG
 /*********************************************************************//**
 Find the the lock in the trx_t::trx_lock_t::table_locks vector.
@@ -4874,6 +4896,10 @@ lock_trx_table_locks_find(
 	const lock_t*	find_lock)	/*!< in: lock to find */
 {
 	bool		found = false;
+	    /* TODO laurynas
+	if ( srv_show_verbose_locks ) {
+	block = buf_page_try_get(space, page_no, &mtr);
+	    */
 
 	trx_mutex_enter(trx);
 
@@ -4900,6 +4926,7 @@ lock_trx_table_locks_find(
 		ut_a(lock_get_type_low(lock) & LOCK_TABLE);
 		ut_a(lock->un_member.tab_lock.table != NULL);
 	}
+	// } see TODO laurynas above
 
 	trx_mutex_exit(trx);
 
@@ -5353,6 +5380,7 @@ lock_rec_insert_check_and_lock(
 	      || dict_index_is_clust(index)
 	      || (flags & BTR_CREATE_FLAG));
 	ut_ad(mtr->is_named_space(index->space));
+	ut_ad((flags & BTR_NO_LOCKING_FLAG) || thr);
 
 	if (flags & BTR_NO_LOCKING_FLAG) {
 

@@ -26,6 +26,8 @@ Created 3/26/1996 Heikki Tuuri
 #ifndef trx0trx_h
 #define trx0trx_h
 
+#ifndef UNIV_INNOCHECKSUM
+
 #include <set>
 #include <list>
 
@@ -55,12 +57,14 @@ class ReadView;
 extern sess_t*	trx_dummy_sess;
 
 /********************************************************************//**
-Releases the search latch if trx has reserved it. */
+In XtraDB it is impossible for a transaction to own a search latch outside of
+InnoDB code, so there is nothing to release on demand.  We keep this function to
+simplify maintenance.*/
 UNIV_INLINE
 void
 trx_search_latch_release_if_reserved(
 /*=================================*/
-	trx_t*		trx); /*!< in: transaction */
+	trx_t*	   trx __attribute__((unused))); /*!< in: transaction */
 /******************************************************************//**
 Set detailed error message for the transaction. */
 
@@ -344,6 +348,18 @@ const ReadView*
 trx_get_read_view(
 /*==============*/
 	const trx_t*	trx);
+
+/********************************************************************//**
+Clones the read view from another transaction. All the consistent reads within
+the receiver transaction will get the same read view as the donor transaction
+@return read view clone */
+
+ReadView*
+trx_clone_read_view(
+/*================*/
+	trx_t*	trx,		/*!< in: receiver transaction */
+	trx_t*	from_trx)	/*!< in: donor transaction */
+	__attribute__((warn_unused_result));
 
 /****************************************************************//**
 Prepares a transaction for commit/rollback. */
@@ -1008,7 +1024,7 @@ struct trx_t {
 					trx_commit_complete_for_mysql() */
 	ulint		duplicates;	/*!< TRX_DUP_IGNORE | TRX_DUP_REPLACE */
 	bool		has_search_latch;
-					/*!< TRUE if this trx has latched the
+					/*!< true if this trx has latched any
 					search system latch in S-mode */
 	ulint		search_latch_timeout;
 					/*!< If we notice that someone is
@@ -1056,6 +1072,8 @@ struct trx_t {
 					/*!< if MySQL binlog is used, this
 					field contains the end offset of the
 					binlog entry */
+	time_t		idle_start;
+	ib_uint64_t	last_stmt_start;
 	/*------------------------------*/
 	ib_uint32_t	n_mysql_tables_in_use; /*!< number of Innobase tables
 					used in the processing of the current
@@ -1206,6 +1224,17 @@ struct trx_t {
 					doing Non-locking Read-only Read
 					Committed on DD tables */
 #endif /* UNIV_DEBUG */
+	/*------------------------------*/
+	ulint		io_reads;
+	ib_uint64_t	io_read;
+	ulint		io_reads_wait_timer;
+	ib_uint64_t	lock_que_wait_ustarted;
+	ulint		lock_que_wait_timer;
+	ulint		innodb_que_wait_timer;
+	ulint		distinct_page_access;
+#define	DPAH_SIZE	8192
+	byte*		distinct_page_access_hash;
+	ibool		take_stats;
 	ulint		magic_n;
 };
 
@@ -1292,7 +1321,7 @@ but does NOT protect:
 
 Bear in mind (3) and (4) when using the hash index.
 */
-extern rw_lock_t*	btr_search_latch_temp;
+extern rw_lock_t*	btr_search_latch_arr;
 
 /** Track if a transaction is executing inside InnoDB code */
 class TrxInInnoDB {
@@ -1302,12 +1331,12 @@ public:
 	static bool is_aborted() { return(false); }
 };
 
-/** The latch protecting the adaptive search system */
-#define btr_search_latch	(*btr_search_latch_temp)
 
 #ifndef UNIV_NONINL
 #include "trx0trx.ic"
 #endif
 #endif /* !UNIV_HOTBACKUP */
+
+#endif /* !UNIV_INNOCHECKSUM */
 
 #endif

@@ -42,6 +42,7 @@ Created 2011/04/18 Sunny Bains
 
 #include "srv0srv.h"
 #include "sync0mutex.h"
+#include "btr0types.h"
 #include "trx0trx.h"
 #include "row0mysql.h"
 #include "dict0dict.h"
@@ -273,6 +274,7 @@ srv_conc_enter_innodb_with_atomics(
 		}
 
 		os_thread_sleep(sleep_in_us);
+		trx->innodb_que_wait_timer += sleep_in_us;
 
 		trx->op_info = "";
 
@@ -357,6 +359,10 @@ srv_conc_enter_innodb_without_atomics(
 	ulint			i;
 	srv_conc_slot_t*	slot = NULL;
 	ibool			has_slept = FALSE;
+	ib_uint64_t		start_time = 0L;
+	ib_uint64_t		finish_time = 0L;
+	ulint			sec;
+	ulint			ms;
 
 	mutex_enter(&srv_conc_mutex);
 retry:
@@ -405,6 +411,7 @@ retry:
 		switches. */
 		if (srv_thread_sleep_delay > 0) {
 			os_thread_sleep(srv_thread_sleep_delay);
+			trx->innodb_que_wait_timer += sleep_in_us;
 		}
 
 		trx->op_info = "";
@@ -468,6 +475,13 @@ retry:
 		ut_ad(!sync_check_iterate(check));
 	}
 
+	if (UNIV_UNLIKELY(trx->take_stats)) {
+		ut_usectime(&sec, &ms);
+		start_time = (ib_uint64_t)sec * 1000000 + ms;
+	} else {
+		start_time = 0;
+	}
+
 	trx->op_info = "waiting in InnoDB queue";
 
 	thd_wait_begin(trx->mysql_thd, THD_WAIT_USER_LOCK);
@@ -476,6 +490,13 @@ retry:
 	thd_wait_end(trx->mysql_thd);
 
 	trx->op_info = "";
+
+	if (UNIV_UNLIKELY(start_time != 0)) {
+		ut_usectime(&sec, &ms);
+		finish_time = (ib_uint64_t)sec * 1000000 + ms;
+		trx->innodb_que_wait_timer
+			+= (ulint)(finish_time - start_time);
+	}
 
 	mutex_enter(&srv_conc_mutex);
 

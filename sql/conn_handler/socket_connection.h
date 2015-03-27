@@ -74,6 +74,8 @@ class Mysqld_socket_listener
 {
   std::string m_bind_addr_str; // IP address string
   uint m_tcp_port; // TCP port to bind to
+  uint m_extra_tcp_port; // Extra TCP port to bind to if non-zero
+  int  m_extra_tcp_port_fd;
   uint m_backlog; // backlog specifying length of pending connection queue
   uint m_port_timeout; // port timeout value
   std::string m_unix_sockname; // unix socket pathname to bind to
@@ -141,13 +143,14 @@ public:
 
     @param   bind_addr_str  IP address used in bind
     @param   tcp_port       TCP port to bind to
+    @param   extra_tcp_port extra TCP port to bind to (do not bind if 0)
     @param   backlog        backlog specifying length of pending
                             connection queue used in listen.
     @param   port_timeout   portname.
     @param   unix_sockname  pathname for unix socket to bind to
   */
   Mysqld_socket_listener(std::string bind_addr_str, uint tcp_port,
-                         uint backlog, uint port_timeout,
+                         uint extra_tcp_port, uint backlog, uint port_timeout,
                          std::string unix_sockname);
 
   /**
@@ -171,6 +174,8 @@ public:
     Close the listener.
   */
   void close_listener();
+
+  bool is_connection_extra_port(const Channel_info& channel_info) const;
 };
 
 #endif // SOCKET_CONNECTION_INCLUDED.

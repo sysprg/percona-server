@@ -226,6 +226,11 @@ public:
     mysql_socket_shutdown(m_connect_sock, SHUT_RDWR);
     mysql_socket_close(m_connect_sock);
   }
+
+  virtual int get_socket_fd() const
+  {
+    return mysql_socket_getfd(m_connect_sock);
+  }
 };
 
 
@@ -764,11 +769,13 @@ bool Unix_socket::create_lockfile()
 
 Mysqld_socket_listener::Mysqld_socket_listener(std::string bind_addr_str,
                                                uint tcp_port,
+                                               uint extra_tcp_port,
                                                uint backlog,
                                                uint port_timeout,
                                                std::string unix_sockname)
   : m_bind_addr_str(bind_addr_str),
     m_tcp_port(tcp_port),
+    m_extra_tcp_port(extra_tcp_port),
     m_backlog(backlog),
     m_port_timeout(port_timeout),
     m_unix_sockname(unix_sockname),
@@ -786,7 +793,7 @@ Mysqld_socket_listener::Mysqld_socket_listener(std::string bind_addr_str,
 
 bool Mysqld_socket_listener::setup_listener()
 {
-  // Setup tcp socket listener
+  // Setup tcp socket listeners
   if (m_tcp_port)
   {
     TCP_socket tcp_socket(m_bind_addr_str, m_tcp_port,
@@ -797,6 +804,19 @@ bool Mysqld_socket_listener::setup_listener()
       return true;
 
     m_socket_map.insert(std::pair<MYSQL_SOCKET,bool>(mysql_socket, false));
+  }
+  if (m_extra_tcp_port)
+  {
+    TCP_socket tcp_socket(m_bind_addr_str, m_extra_tcp_port, m_backlog,
+                          m_port_timeout);
+
+    MYSQL_SOCKET mysql_socket= tcp_socket.get_listener_socket();
+    if (mysql_socket.fd == INVALID_SOCKET)
+      return true;
+
+    m_socket_map.insert(std::pair<MYSQL_SOCKET,bool>(mysql_socket, false));
+
+    m_extra_tcp_port_fd = mysql_socket.fd;
   }
 #if defined(HAVE_SYS_UN_H)
   // Setup unix socket listener
@@ -987,4 +1007,10 @@ void Mysqld_socket_listener::close_listener()
 
   if (!m_socket_map.empty())
     m_socket_map.clear();
+}
+
+bool Mysqld_socket_listener::is_connection_extra_port(const Channel_info&
+                                                      channel_info) const
+{
+  return channel_info.get_socket_fd() == m_extra_tcp_port_fd;
 }

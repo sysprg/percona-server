@@ -9,6 +9,8 @@
 # Save the initial number of concurrent sessions
 --source include/count_sessions.inc
 
+# TODO laurynas save the initial value and restore that
+set global log_warnings=0;
 
 --disable_warnings
 drop table if exists t1,t2;
@@ -453,3 +455,4 @@ DROP USER wl6587@localhost;
 # Wait till all disconnects are completed
 --source include/wait_until_count_sessions.inc
 
+set global log_warnings=1;

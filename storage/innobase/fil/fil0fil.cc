@@ -252,10 +252,12 @@ static ulint	srv_data_written;
 
 /** Determine if user has explicitly disabled fsync(). */
 #ifndef _WIN32
-# define fil_buffering_disabled(s)	\
-	((s)->purpose == FIL_TYPE_TABLESPACE	\
-	 && srv_unix_file_flush_method	\
-	 == SRV_UNIX_O_DIRECT_NO_FSYNC)
+# define fil_buffering_disabled(s)					\
+	(((s)->purpose == FIL_TYPE_TABLESPACE				\
+	    && srv_unix_file_flush_method == SRV_UNIX_O_DIRECT_NO_FSYNC)\
+	  || ((s)->purpose == FIL_TYPE_LOG				\
+	    && srv_unix_file_flush_method == SRV_UNIX_ALL_O_DIRECT))
+
 #else /* _WIN32 */
 # define fil_buffering_disabled(s)	(0)
 #endif /* __WIN32 */
@@ -1190,6 +1192,73 @@ fil_space_free_low(
 	return(true);
 }
 
+/****************************************************************//**
+Drops files from the start of a file space, so that its size is cut by
+the amount given. */
+
+void
+fil_space_truncate_start(
+/*=====================*/
+	ulint	id,		/*!< in: space id */
+	ulint	trunc_len)	/*!< in: truncate by this much; it is an error
+				if this does not equal to the combined size of
+				some initial files in the space */
+{
+	fil_node_t*	node;
+	fil_space_t*	space;
+
+	mutex_enter(&fil_system->mutex);
+
+	space = fil_space_get_by_id(id);
+
+	ut_a(space);
+
+	while (trunc_len > 0) {
+		node = UT_LIST_GET_FIRST(space->chain);
+
+		ut_a(node->size * UNIV_PAGE_SIZE <= trunc_len);
+
+		trunc_len -= node->size * UNIV_PAGE_SIZE;
+
+		fil_node_free(node, fil_system, space);
+	}
+
+	mutex_exit(&fil_system->mutex);
+}
+
+// TODO laurynas log archiving
+/****************************************************************//**
+Check is there node in file space with given name. */
+
+ibool
+fil_space_contains_node(
+/*====================*/
+    ulint	id,		/*!< in: space id */
+    char*	node_name)	/*!< in: node name */
+{
+    fil_node_t*	node;
+    fil_space_t*	space;
+
+    mutex_enter(&fil_system->mutex);
+
+    space = fil_space_get_by_id(id);
+
+    ut_a(space);
+
+    for (node = UT_LIST_GET_FIRST(space->chain); node != NULL;
+	 node = UT_LIST_GET_NEXT(chain, node)) {
+
+	if (ut_strcmp(node->name, node_name) == 0) {
+	    mutex_exit(&fil_system->mutex);
+	    return(TRUE);
+	}
+
+    }
+
+    mutex_exit(&fil_system->mutex);
+    return(FALSE);
+}
+
 /** Frees a space object from the tablespace memory cache.
 Closes the files in the chain but does not delete them.
 There must not be any pending i/o's or flushes on the files.
@@ -1292,6 +1361,8 @@ fil_space_create(
 
 	HASH_INSERT(fil_space_t, name_hash, fil_system->name_hash,
 		    ut_fold_string(name), space);
+
+	space->is_corrupt = false;
 
 	UT_LIST_ADD_LAST(fil_system->space_list, space);
 
@@ -1683,6 +1754,9 @@ fil_close_all_files(void)
 {
 	fil_space_t*	space;
 
+	if (srv_track_changed_pages && srv_redo_log_thread_started)
+		os_event_wait(srv_redo_log_tracked_event);
+
 	mutex_enter(&fil_system->mutex);
 
 	space = UT_LIST_GET_FIRST(fil_system->space_list);
@@ -1718,6 +1792,9 @@ fil_close_log_files(
 	bool	free)	/*!< in: whether to free the memory object */
 {
 	fil_space_t*	space;
+
+	if (srv_track_changed_pages && srv_redo_log_thread_started)
+		os_event_wait(srv_redo_log_tracked_event);
 
 	mutex_enter(&fil_system->mutex);
 
@@ -2294,7 +2371,7 @@ fil_op_replay_rename(
 {
 #ifdef UNIV_HOTBACKUP
 	ulint		tablespace_flags = 0;
-	ut_ad(recv_replay_file_ops);
+	ut_ad(recv_replay_file_ops); // TODO laurynas 9e242a32
 #endif /* UNIV_HOTBACKUP */
 	ut_ad(first_page_no == 0);
 
@@ -4526,7 +4603,7 @@ fil_write_zeros(
 		success = os_aio(
 			OS_FILE_WRITE, OS_AIO_SYNC, node->name,
 			node->handle, buf, offset, n_bytes, read_only_mode,
-			NULL, NULL);
+			NULL, NULL, node->space->id, NULL);
 #endif /* UNIV_HOTBACKUP */
 
 		if (!success) {
@@ -5018,7 +5095,7 @@ else ignored
 @return DB_SUCCESS, DB_TABLESPACE_DELETED or DB_TABLESPACE_TRUNCATED
 if we are trying to do i/o on a tablespace which does not exist */
 dberr_t
-fil_io(
+_fil_io(
 	ulint			type,
 	bool			sync,
 	const page_id_t&	page_id,
@@ -5026,7 +5103,8 @@ fil_io(
 	ulint			byte_offset,
 	ulint			len,
 	void*			buf,
-	void*			message)
+	void*			message,
+	trx_t*			trx)
 {
 	ulint		mode;
 	fil_space_t*	space;
@@ -5234,10 +5312,44 @@ fil_io(
 
 	/* Do aio */
 
-	ut_a(byte_offset % OS_FILE_LOG_BLOCK_SIZE == 0);
-	ut_a((len % OS_FILE_LOG_BLOCK_SIZE) == 0);
+	ut_a(byte_offset % OS_MIN_LOG_BLOCK_SIZE == 0);
+	ut_a((len % OS_MIN_LOG_BLOCK_SIZE) == 0);
 
-#ifdef UNIV_HOTBACKUP
+#ifndef UNIV_HOTBACKUP
+	if (UNIV_UNLIKELY(space->is_corrupt && srv_pass_corrupt_table)) {
+
+		/* should ignore i/o for the crashed space */
+		if (srv_pass_corrupt_table == 1 ||
+		    type == OS_FILE_WRITE) {
+
+			mutex_enter(&fil_system->mutex);
+			fil_node_complete_io(node, fil_system, type);
+			mutex_exit(&fil_system->mutex);
+			if (mode == OS_AIO_NORMAL) {
+				ut_a(space->purpose == FIL_TYPE_TABLESPACE);
+				buf_page_io_complete(static_cast<buf_page_t *>
+						     (message));
+			}
+		}
+
+		if (srv_pass_corrupt_table == 1 && type == OS_FILE_READ) {
+
+			return(DB_TABLESPACE_DELETED);
+
+		} else if (type == OS_FILE_WRITE) {
+
+			return(DB_SUCCESS);
+		}
+	}
+
+	/* Queue the aio request */
+	ret = os_aio(type, mode | wake_later, node->name,
+		     node->handle, buf, offset, len,
+		     fsp_is_system_temporary(page_id.space())
+		     ? false : srv_read_only_mode,
+		     node, message, page_id.space(), trx);
+
+#else
 	/* In mysqlbackup do normal i/o, not aio */
 	if (type == OS_FILE_READ) {
 		ret = os_file_read(node->handle, buf, offset, len);
@@ -5247,13 +5359,6 @@ fil_io(
 		ret = os_file_write(node->name, node->handle, buf,
 				    offset, len);
 	}
-#else
-	/* Queue the aio request */
-	ret = os_aio(type, mode | wake_later, node->name,
-		     node->handle, buf, offset, len,
-		     fsp_is_system_temporary(page_id.space())
-		     ? false : srv_read_only_mode,
-		     node, message);
 #endif /* UNIV_HOTBACKUP */
 	ut_a(ret);
 
@@ -5290,6 +5395,7 @@ fil_aio_wait(
 	fil_node_t*	fil_node;
 	void*		message;
 	ulint		type;
+	ulint		space_id = 0;
 
 	ut_ad(fil_validate_skip());
 
@@ -5297,10 +5403,10 @@ fil_aio_wait(
 		srv_set_io_thread_op_info(segment, "native aio handle");
 #ifdef WIN_ASYNC_IO
 		ret = os_aio_windows_handle(
-			segment, 0, &fil_node, &message, &type);
+			segment, 0, &fil_node, &message, &type, &space_id);
 #elif defined(LINUX_NATIVE_AIO)
 		ret = os_aio_linux_handle(
-			segment, &fil_node, &message, &type);
+			segment, &fil_node, &message, &type, &space_id);
 #else
 		ut_error;
 		ret = 0; /* Eliminate compiler warning */
@@ -5309,7 +5415,7 @@ fil_aio_wait(
 		srv_set_io_thread_op_info(segment, "simulated aio handle");
 
 		ret = os_aio_simulated_handle(
-			segment, &fil_node, &message, &type);
+			segment, &fil_node, &message, &type, &space_id);
 	}
 
 	ut_a(ret);
@@ -6065,6 +6171,33 @@ fil_delete_file(
 	}
 }
 
+/*************************************************************************
+Return local hash table informations. */
+
+ulint
+fil_system_hash_cells(void)
+/*=======================*/
+{
+       if (fil_system) {
+               return (fil_system->spaces->n_cells
+                       + fil_system->name_hash->n_cells);
+       } else {
+               return 0;
+       }
+}
+
+ulint
+fil_system_hash_nodes(void)
+/*=======================*/
+{
+       if (fil_system) {
+               return (UT_LIST_GET_LEN(fil_system->space_list)
+                       * (sizeof(fil_space_t) + MEM_BLOCK_HEADER_SIZE));
+       } else {
+               return 0;
+       }
+}
+
 /**
 Iterate over all the spaces in the space list and fetch the
 tablespace names. It will return a copy of the name that must be
@@ -6481,3 +6614,45 @@ test_make_filepath()
 }
 #endif /* UNIV_COMPILE_TEST_FUNCS */
 /* @} */
+
+/*************************************************************************
+functions to access is_corrupt flag of fil_space_t*/
+
+ibool
+fil_space_is_corrupt(
+/*=================*/
+	ulint	space_id)
+{
+	fil_space_t*	space;
+	ibool		ret = FALSE;
+
+	mutex_enter(&fil_system->mutex);
+
+	space = fil_space_get_by_id(space_id);
+
+	if (UNIV_UNLIKELY(space && space->is_corrupt)) {
+		ret = TRUE;
+	}
+
+	mutex_exit(&fil_system->mutex);
+
+	return(ret);
+}
+
+void
+fil_space_set_corrupt(
+/*==================*/
+	ulint	space_id)
+{
+	fil_space_t*	space;
+
+	mutex_enter(&fil_system->mutex);
+
+	space = fil_space_get_by_id(space_id);
+
+	if (space) {
+		space->is_corrupt = TRUE;
+	}
+
+	mutex_exit(&fil_system->mutex);
+}

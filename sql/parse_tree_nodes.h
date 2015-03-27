@@ -210,7 +210,9 @@ public:
     pc->select->offset_limit= limit_options.opt_offset;
     pc->select->explicit_limit= true;
 
-    pc->thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_LIMIT);
+    if (pc->select->select_limit->fixed
+        && pc->select->select_limit->val_int() != 0)
+      pc->thd->lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_LIMIT);
     return false;
   }
 };
@@ -1214,6 +1216,15 @@ public:
         (opt_expr != NULL && opt_expr->itemize(pc, &opt_expr)))
       return true;
 
+    /*
+      Ignore SET STATEMENT variables list on slaves because system
+      variables are not replicated except certain variables set the
+      values of whose are written to binlog event header and nothing
+      additional is required to set them.
+    */
+    if (pc->thd->slave_thread && pc->thd->lex->set_statement)
+      return true;
+
     if (name->value.var && name->value.var != trg_new_row_fake_var)
     {
       /* It is a system variable. */
@@ -1616,7 +1627,6 @@ public:
   }
 };
 
-
 class PT_transaction_characteristic : public Parse_tree_node
 {
   typedef Parse_tree_node super;
@@ -1822,6 +1832,23 @@ public:
   }
 };
 
+class PT_start_set_stmt_option_value_list : public PT_start_option_value_list
+{
+  typedef PT_start_option_value_list super;
+
+  PT_start_option_value_list_following_option_type *list;
+
+public:
+  PT_start_set_stmt_option_value_list(
+    PT_start_option_value_list_following_option_type *list_arg)
+  : list(list_arg)
+  {}
+
+  virtual bool contextualize(Parse_context *pc)
+  {
+    return super::contextualize(pc) || list->contextualize(pc);
+  }
+};
 
 class PT_set : public Parse_tree_node
 {
@@ -1830,9 +1857,13 @@ class PT_set : public Parse_tree_node
   POS set_pos;
   PT_start_option_value_list *list;
 
+  bool  is_set_statement;
+
 public:
-  PT_set(const POS &set_pos_arg, PT_start_option_value_list *list_arg)
-  : set_pos(set_pos_arg), list(list_arg)
+  PT_set(const POS &set_pos_arg, PT_start_option_value_list *list_arg,
+         bool is_set_statement_arg)
+  : set_pos(set_pos_arg), list(list_arg),
+    is_set_statement(is_set_statement_arg)
   {}
 
   virtual bool contextualize(Parse_context *pc)
@@ -1844,11 +1875,28 @@ public:
     LEX *lex= thd->lex;
     lex->sql_command= SQLCOM_SET_OPTION;
     lex->option_type= OPT_SESSION;
-    lex->var_list.empty();
+    if (!is_set_statement || !lex->set_statement)
+      lex->var_list.empty();
     lex->one_shot_set= false;
     lex->autocommit= false;
+    lex->set_statement= is_set_statement;
 
-    sp_create_assignment_lex(thd, set_pos.raw.end);
+    if (is_set_statement)
+    {
+      sp_head* sp= lex->sphead;
+      if (sp && !sp->is_invoked())
+      {
+        // TODO laurynas
+#if 0
+        sp->m_parser_data.set_current_stmt_start_ptr(YY_TOKEN_START);
+        sp->m_parser_data.set_option_start_ptr(YY_TOKEN_END);
+#endif
+      }
+    }
+    else
+    {
+      sp_create_assignment_lex(thd, set_pos.raw.end);
+    }
     DBUG_ASSERT(pc->thd->lex->select_lex == pc->thd->lex->current_select());
     pc->select= pc->thd->lex->select_lex;
 

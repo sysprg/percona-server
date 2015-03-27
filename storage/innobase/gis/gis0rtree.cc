@@ -347,7 +347,7 @@ rtr_update_mbr_field(
 					btr_cur_get_page_cur(cursor),
 					index, offsets,
 					rec_offs_size(offsets),
-					false, mtr)) {
+					false, mtr, NULL)) { // TODO laurynas trx?
 
 				/* If there's not enought space for
 				inplace update zip page, we do delete

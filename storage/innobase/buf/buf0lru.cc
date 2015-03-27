@@ -48,6 +48,7 @@ Created 11/5/1995 Heikki Tuuri
 #include "page0zip.h"
 #include "log0recv.h"
 #include "srv0srv.h"
+#include "srv0start.h"
 #include "srv0mon.h"
 #include "lock0lock.h"
 
@@ -1182,7 +1183,7 @@ buf_LRU_get_free_only(
 	mutex_enter(&buf_pool->free_list_mutex);
 
 	block = reinterpret_cast<buf_block_t*>(
-		UT_LIST_GET_FIRST(buf_pool->free));
+		UT_LIST_GET_FIRST(buf_pool->free)); // TODO UT_LIST_GET_LAST!
 
 	while (block != NULL) {
 
@@ -1289,6 +1290,15 @@ buf_LRU_check_size_of_non_data_objects(
 	}
 }
 
+/** The maximum allowed backoff sleep time duration, microseconds */
+#define MAX_FREE_LIST_BACKOFF_SLEEP 10000
+
+/** The sleep reduction factor for high-priority waiter backoff sleeps */
+#define FREE_LIST_BACKOFF_HIGH_PRIO_DIVIDER 100
+
+/** The sleep reduction factor for low-priority waiter backoff sleeps */
+#define FREE_LIST_BACKOFF_LOW_PRIO_DIVIDER 1
+
 /******************************************************************//**
 Returns a free block from the buf_pool. The block is taken off the
 free list. If free list is empty, blocks are moved from the end of the
@@ -1349,7 +1359,75 @@ loop:
 	}
 
 	freed = false;
+
+	if (srv_empty_free_list_algorithm == SRV_EMPTY_FREE_LIST_BACKOFF
+	    && buf_page_cleaner_is_active
+	    && (srv_shutdown_state == SRV_SHUTDOWN_NONE
+		|| srv_shutdown_state == SRV_SHUTDOWN_CLEANUP)) {
+
+		/* Backoff to minimize the free list mutex contention while the
+		free list is empty */
+		ulint	priority = srv_current_thread_priority;
+
+		if (n_iterations < 3) {
+
+			os_thread_yield();
+			if (!priority) {
+				os_thread_yield();
+			}
+		} else {
+
+			ulint	i, b;
+
+			if (n_iterations < 6) {
+				i = n_iterations - 3;
+			} else if (n_iterations < 8) {
+				i = 4;
+			} else if (n_iterations < 11) {
+				i = 5;
+			} else {
+				i = n_iterations - 5;
+			}
+			b = 1 << i;
+			if (b > MAX_FREE_LIST_BACKOFF_SLEEP) {
+				b = MAX_FREE_LIST_BACKOFF_SLEEP;
+			}
+			os_thread_sleep(b / (priority
+				? FREE_LIST_BACKOFF_HIGH_PRIO_DIVIDER
+				: FREE_LIST_BACKOFF_LOW_PRIO_DIVIDER));
+		}
+
+		/* In case of backoff, do not ever attempt single page flushes
+		and wait for the cleaner to free some pages instead.  */
+
+		n_iterations++;
+
+		goto loop;
+	} else {
+
+		/* The LRU manager is not running or Oracle MySQL 5.6 algorithm
+		was requested, will perform a single page flush  */
+		ut_ad((srv_empty_free_list_algorithm
+		       == SRV_EMPTY_FREE_LIST_LEGACY)
+		      || !buf_page_cleaner_is_active
+		      || (srv_shutdown_state != SRV_SHUTDOWN_NONE
+			  && srv_shutdown_state != SRV_SHUTDOWN_CLEANUP));
+	}
+	if (buf_pool->init_flush[BUF_FLUSH_LRU]
+	    && srv_use_doublewrite_buf
+	    && buf_dblwr != NULL) {
+
+		/* If there is an LRU flush happening in the background
+		then we wait for it to end instead of trying a single
+		page flush. If, however, we are not using doublewrite
+		buffer then it is better to do our own single page
+		flush instead of waiting for LRU flush to end. */
+		buf_flush_wait_batch_end(buf_pool, BUF_FLUSH_LRU);
+		goto loop;
+	}
+
 	os_rmb;
+
 	if (buf_pool->try_LRU_scan || n_iterations > 0) {
 		/* If no block was in the free list, search from the
 		end of the LRU list and try to free a block there.

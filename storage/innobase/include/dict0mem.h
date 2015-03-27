@@ -28,6 +28,9 @@ Created 1/8/1996 Heikki Tuuri
 #define dict0mem_h
 
 #include "univ.i"
+
+#ifndef UNIV_INNOCHECKSUM
+
 #include "dict0types.h"
 #include "data0type.h"
 #include "mem0mem.h"
@@ -113,6 +116,8 @@ are described in fsp0fsp.h. */
 the Compact page format is used, i.e ROW_FORMAT != REDUNDANT */
 #define DICT_N_COLS_COMPACT	0x80000000UL
 
+#endif /* !UNIV_INNOCHECKSUM */
+
 /** Width of the COMPACT flag */
 #define DICT_TF_WIDTH_COMPACT		1
 
@@ -193,6 +198,8 @@ allows InnoDB to update_create_info() accordingly. */
 #define DICT_TF_GET_UNUSED(flags)			\
 		(flags >> DICT_TF_POS_UNUSED)
 /* @} */
+
+#ifndef UNIV_INNOCHECKSUM
 
 /** @brief Table Flags set number 2.
 
@@ -674,6 +681,10 @@ to start with. */
 initialized to 0, NULL or FALSE in dict_mem_index_create(). */
 struct dict_index_t{
 	index_id_t	id;	/*!< id of the index */
+	rw_lock_t*	search_latch; /*!< latch protecting the AHI partition
+				      corresponding to this index */
+	hash_table_t*	search_table; /*!< hash table protected by
+				      search_latch */
 	mem_heap_t*	heap;	/*!< memory heap */
 	const char*	name;	/*!< index name */
 	const char*	table_name;/*!< table name */
@@ -1378,6 +1389,9 @@ struct dict_table_t {
 	but just need a increased counter to track consistent view while
 	proceeding SELECT as part of UPDATE. */
 	ib_uint64_t				sess_trx_id;
+	/*----------------------*/
+
+	ibool		is_corrupt; // TODO laurynas corrupted above
 #endif /* !UNIV_HOTBACKUP */
 
 #ifdef UNIV_DEBUG
@@ -1415,3 +1429,4 @@ struct dict_foreign_add_to_referenced_table {
 #endif
 
 #endif /* dict0mem_h */
+#endif /* !UNIV_INNOCHECKSUM */

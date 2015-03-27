@@ -36,6 +36,7 @@ Created 10/21/1995 Heikki Tuuri
 #define os0file_h
 
 #include "univ.i"
+#include "trx0types.h"
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -72,15 +73,19 @@ extern ulint	os_n_pending_writes;
 /** File offset in bytes */
 typedef ib_uint64_t os_offset_t;
 #ifdef _WIN32
+#define SRV_PATH_SEPARATOR	'\\'
 /** File handle */
 # define os_file_t	HANDLE
+# define os_file_invalid	INVALID_HANDLE_VALUE
 /** Convert a C file descriptor to a native file handle
 @param fd file descriptor
 @return native file handle */
 # define OS_FILE_FROM_FD(fd) (HANDLE) _get_osfhandle(fd)
 #else
+#define SRV_PATH_SEPARATOR	'/'
 /** File handle */
 typedef int	os_file_t;
+# define os_file_invalid	(-1)
 /** Convert a C file descriptor to a native file handle
 @param fd file descriptor
 @return native file handle */
@@ -99,7 +104,7 @@ whole block gets written. This should be true even in most cases of a crash:
 if this fails for a log block, then it is equivalent to a media failure in the
 log. */
 
-#define OS_FILE_LOG_BLOCK_SIZE		512
+#define OS_FILE_LOG_BLOCK_SIZE		srv_log_block_size
 
 /** Options for os_file_create_func @{ */
 enum os_file_create_t {
@@ -207,11 +212,16 @@ extern ulint	os_n_file_reads;
 extern ulint	os_n_file_writes;
 extern ulint	os_n_fsyncs;
 
+#define OS_MIN_LOG_BLOCK_SIZE 512
+
+extern ulint	srv_log_block_size;
+
 #ifdef UNIV_PFS_IO
 /* Keys to register InnoDB I/O with performance schema */
 extern mysql_pfs_key_t	innodb_data_file_key;
 extern mysql_pfs_key_t	innodb_log_file_key;
 extern mysql_pfs_key_t	innodb_temp_file_key;
+extern mysql_pfs_key_t	innodb_bmp_file_key;
 
 /* Following four macros are instumentations to register
 various file I/O operations with performance schema.
@@ -315,13 +325,18 @@ The wrapper functions have the prefix of "innodb_". */
 	pfs_os_file_close_func(file, __FILE__, __LINE__)
 
 # define os_aio(type, mode, name, file, buf, offset,			\
-		n, read_only, message1, message2)			\
+		n, read_only, message1, message2, space_id, trx)	\
 	pfs_os_aio_func(type, mode, name, file, buf, offset,		\
-			n, read_only, message1, message2,		\
-			__FILE__, __LINE__)
+			n, read_only, message1, message2, space_id,	\
+			trx, __FILE__, __LINE__)
 
 # define os_file_read(file, buf, offset, n)				\
-	pfs_os_file_read_func(file, buf, offset, n, __FILE__, __LINE__)
+	pfs_os_file_read_func(file, buf, offset, n, NULL,		\
+			      __FILE__, __LINE__)
+
+# define os_file_read_trx(file, buf, offset, n, trx)			\
+	pfs_os_file_read_func(file, buf, offset, n, trx,		\
+			      __FILE__, __LINE__)
 
 # define os_file_read_no_error_handling(file, buf, offset, n)		\
 	pfs_os_file_read_no_error_handling_func(file, buf, offset, n,	\
@@ -364,12 +379,15 @@ to original un-instrumented file I/O APIs */
 # define os_file_close(file)	os_file_close_func(file)
 
 # define os_aio(type, mode, name, file, buf, offset,			\
-		n, read_only, message1, message2)			\
+		n, read_only, message1, message2, space_id, trx)	\
 	os_aio_func(type, mode, name, file, buf, offset,		\
-		n, read_only, message1, message2)
+		    n, read_only, message1, message2, space_id, trx)
 
-# define os_file_read(file, buf, offset, n)	\
-	os_file_read_func(file, buf, offset, n)
+# define os_file_read(file, buf, offset, n)				\
+	os_file_read_func(file, buf, offset, n, NULL)
+
+# define os_file_read_trx(file, buf, offset, n, trx)			\
+	os_file_read_func(file, buf, offset, n, trx)
 
 # define os_file_read_no_error_handling(file, buf, offset, n)		\
 	os_file_read_no_error_handling_func(file, buf, offset, n)
@@ -734,6 +752,7 @@ pfs_os_file_read_func(
 	void*		buf,	/*!< in: buffer where to read */
 	os_offset_t	offset,	/*!< in: file offset where to read */
 	ulint		n,	/*!< in: number of bytes to read */
+	trx_t*		trx,
 	const char*	src_file,/*!< in: file name where func invoked */
 	ulint		src_line);/*!< in: line where the func invoked */
 
@@ -785,6 +804,8 @@ pfs_os_aio_func(
 				(can be used to identify a completed
 				aio operation); ignored if mode is
                                 OS_AIO_SYNC */
+	ulint		space_id,
+	trx_t*		trx,
 	const char*	src_file,/*!< in: file name where func invoked */
 	ulint		src_line);/*!< in: line where the func invoked */
 /*******************************************************************//**
@@ -871,7 +892,6 @@ pfs_os_file_delete_if_exists_func(
 	ulint		src_line);/*!< in: line where the func invoked */
 #endif	/* UNIV_PFS_IO */
 
-#ifdef UNIV_HOTBACKUP
 /***********************************************************************//**
 Closes a file handle.
 @return TRUE if success */
@@ -880,7 +900,6 @@ bool
 os_file_close_no_error_handling(
 /*============================*/
 	os_file_t	file);	/*!< in, own: handle to a file */
-#endif /* UNIV_HOTBACKUP */
 /***********************************************************************//**
 Gets a file size.
 @return file size, or (os_offset_t) -1 on failure */
@@ -924,6 +943,16 @@ os_file_truncate(
 	const char*	pathname,	/*!< in: file path */
 	os_file_t	file,		/*!< in: file to be truncated */
 	os_offset_t	size);		/*!< in: size preserved in bytes */
+
+/***********************************************************************//**
+Truncates a file at the specified position.
+@return TRUE if success */
+
+ibool
+os_file_set_eof_at(
+	os_file_t	file,	/*!< in: handle to a file */
+	ib_uint64_t	new_len);/*!< in: new file length */
+
 /***********************************************************************//**
 NOTE! Use the corresponding macro os_file_flush(), not directly this function!
 Flushes the write buffers of a given file to the disk.
@@ -956,7 +985,8 @@ os_file_read_func(
 	os_file_t	file,	/*!< in: handle to a file */
 	void*		buf,	/*!< in: buffer where to read */
 	os_offset_t	offset,	/*!< in: file offset where to read */
-	ulint		n);	/*!< in: number of bytes to read */
+	ulint		n,	/*!< in: number of bytes to read */
+	trx_t*		trx);
 /*******************************************************************//**
 Rewind file to its start, read at most size - 1 bytes from it to str, and
 NUL-terminate str. All errors are silently ignored. This function is
@@ -1145,10 +1175,12 @@ os_aio_func(
 				(can be used to identify a completed
 				aio operation); ignored if mode is
 				OS_AIO_SYNC */
-	void*		message2);/*!< in: message for the aio handler
+	void*		message2,/*!< in: message for the aio handler
 				(can be used to identify a completed
 				aio operation); ignored if mode is
 				OS_AIO_SYNC */
+	ulint		space_id,
+	trx_t*		trx);
 /************************************************************************//**
 Wakes up all async i/o threads so that they know to exit themselves in
 shutdown. */
@@ -1208,7 +1240,8 @@ os_aio_windows_handle(
 				parameters are valid and can be used to
 				restart the operation, for example */
 	void**	message2,
-	ulint*	type);		/*!< out: OS_FILE_WRITE or ..._READ */
+	ulint*	type,		/*!< out: OS_FILE_WRITE or ..._READ */
+	ulint*	space_id);
 #endif
 
 /**********************************************************************//**
@@ -1230,7 +1263,8 @@ os_aio_simulated_handle(
 				parameters are valid and can be used to
 				restart the operation, for example */
 	void**	message2,
-	ulint*	type);		/*!< out: OS_FILE_WRITE or ..._READ */
+	ulint*	type,		/*!< out: OS_FILE_WRITE or ..._READ */
+	ulint*	space_id);
 /**********************************************************************//**
 Validates the consistency of the aio system.
 @return TRUE if ok */
@@ -1321,7 +1355,8 @@ os_aio_linux_handle(
 				aio operation failed, these output
 				parameters are valid and can be used to
 				restart the operation. */
-	ulint*	type);		/*!< out: OS_FILE_WRITE or ..._READ */
+	ulint*	type,		/*!< out: OS_FILE_WRITE or ..._READ */
+	ulint*	space_id);
 #endif /* LINUX_NATIVE_AIO */
 
 /** Normalizes a directory path for Windows: converts '/' to '\'.

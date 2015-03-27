@@ -89,6 +89,26 @@ class TC_LOG
      @return Error code on failure, zero on success.
    */
   virtual int prepare(THD *thd, bool all) = 0;
+
+  /**
+     Acquire an exclusive lock to block binary log updates and commits. This is
+     used by START TRANSACTION WITH CONSISTENT SNAPSHOT to create an atomic
+     snapshot.
+  */
+  virtual void xlock(void) = 0;
+
+  /** Release lock acquired with xlock(). */
+  virtual void xunlock(void) = 0;
+
+  /**
+     Acquire a shared lock to block commits. This is used when calling
+     ha_commit_low() to block commits if there's an exclusive lock acquired by
+     START TRANSACTION WITH CONSISTENT SNAPSHOT.
+  */
+  virtual void slock(void) = 0;
+
+  /** Release lock acquired with slock(). */
+  virtual void sunlock(void) = 0;
 };
 
 
@@ -107,6 +127,10 @@ public:
   int prepare(THD *thd, bool all) {
     return ha_prepare_low(thd, all);
   }
+  void xlock(void) {}
+  void xunlock(void) {}
+  void slock(void) {}
+  void sunlock(void) {}
 };
 
 class TC_LOG_MMAP: public TC_LOG
@@ -163,6 +187,10 @@ public:
   enum_result commit(THD *thd, bool all);
   int rollback(THD *thd, bool all)      { return ha_rollback_low(thd, all); }
   int prepare(THD *thd, bool all)       { return ha_prepare_low(thd, all); }
+  void xlock(void) { mysql_rwlock_wrlock(&LOCK_consistent_snapshot); }
+  void xunlock(void) { mysql_rwlock_unlock(&LOCK_consistent_snapshot); }
+  void slock(void) { mysql_rwlock_rdlock(&LOCK_consistent_snapshot); }
+  void sunlock(void) { mysql_rwlock_unlock(&LOCK_consistent_snapshot); }
   int recover();
   uint size() const;
 
@@ -309,7 +337,8 @@ enum enum_log_table_type
 class File_query_log
 {
   File_query_log(enum_log_table_type log_type)
-  : m_log_type(log_type), name(NULL), write_error(false), log_open(false)
+    : m_log_type(log_type), name(NULL), write_error(false), log_open(false),
+      cur_log_ext(-1)
   {
     memset(&log_file, 0, sizeof(log_file));
     mysql_mutex_init(key_LOG_LOCK_log, &LOCK_log, MY_MUTEX_INIT_SLOW);
@@ -326,6 +355,8 @@ class File_query_log
     DBUG_ASSERT(!is_open());
     mysql_mutex_destroy(&LOCK_log);
   }
+  int rotate(ulong max_size, bool *need_purge);
+  int new_file();
 
   /** @return true if the file log is open, false otherwise. */
   bool is_open() const { return log_open; }
@@ -398,6 +429,10 @@ class File_query_log
                   ulonglong query_utime, ulonglong lock_utime, bool is_command,
                   const char *sql_text, size_t sql_text_len);
 
+public:
+  static bool generate_new_name(char *new_name, const char *log_name,
+                                bool unique);
+
 private:
   /** Type of log file. */
   const enum_log_table_type m_log_type;
@@ -422,10 +457,14 @@ private:
   /** True if the file log is open, false otherwise. */
   volatile bool log_open;
 
+  ulong cur_log_ext;
+
 #ifdef HAVE_PSI_INTERFACE
   /** Instrumentation key to use for file io in @c log_file */
   PSI_file_key m_log_file_key;
 #endif
+
+  bool purge_up_to(ulong to_ext, const char *log_name);
 
   friend class Log_to_file_event_handler;
   friend class Query_logger;

@@ -47,3 +47,7 @@ libmemcached       plugin/innodb_memcached/daemon_memcached DAEMON_MEMCACHED
 innodb_engine      plugin/innodb_memcached/innodb_memcache INNODB_ENGINE
 validate_password  plugin/password_validation VALIDATE_PASSWORD validate_password
 mysql_no_login     plugin/mysql_no_login      MYSQL_NO_LOGIN    mysql_no_login
+auth_socket        plugin/auth        SOCKET_AUTH
+scalability_metrics plugin/scalability_metrics SCALABILITY_METRICS
+audit_log          plugin/audit_log   AUDIT_LOG             audit_log
+query_response_time plugin/query_response_time PLUGIN_QUERY_RESPONSE_TIME QUERY_RESPONSE_TIME_AUDIT,QUERY_RESPONSE_TIME,QUERY_RESPONSE_TIME_READ,QUERY_RESPONSE_TIME_WRITE

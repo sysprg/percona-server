@@ -245,6 +245,14 @@ bool change_password(THD *thd, const char *host, const char *user,
     goto end;
   }
 
+  /* trying to change the password of the utility user? */
+  if (acl_is_utility_user(acl_user->user, acl_user->host.get_host(), NULL))
+  {
+      mysql_mutex_unlock(&acl_cache->lock);
+      my_message(ER_PASSWORD_NO_MATCH, ER(ER_PASSWORD_NO_MATCH), MYF(0));
+      goto end;
+  }
+
   DBUG_ASSERT(acl_user->plugin.length != 0);
   if (new_password_len == 0)
   {
@@ -783,6 +791,23 @@ static int handle_grant_data(TABLE_LIST *tables, bool drop,
   int found;
   int ret;
   DBUG_ENTER("handle_grant_data");
+
+  /* Handle special utility user */
+  if (acl_utility_user.user)
+  {
+    if (user_from
+        && acl_is_utility_user(user_from->user.str, user_from->host.str, NULL))
+    {
+      result= -1;
+      goto end;
+    }
+    else if (user_to
+             && acl_is_utility_user(user_to->user.str, user_to->host.str, NULL))
+    {
+      result= -1;
+      goto end;
+    }
+  }
 
   /* Handle user table. */
   if ((found= handle_grant_table(tables, 0, drop, user_from, user_to)) < 0)

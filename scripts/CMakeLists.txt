@@ -226,7 +226,7 @@ ELSE()
 ENDIF()
 
 # Use cmake variables to inspect dependencies for 
-# mysqlclient library (add -l stuff)
+# perconaserverclient library (add -l stuff)
 SET(CLIENT_LIBS "")
 SET(LIBS "")
 
@@ -266,7 +266,7 @@ MACRO(EXTRACT_LINK_LIBRARIES target var)
   ENDIF()
 ENDMACRO()
 
-EXTRACT_LINK_LIBRARIES(mysqlclient CLIENT_LIBS)
+EXTRACT_LINK_LIBRARIES(perconaserverclient CLIENT_LIBS)
 EXTRACT_LINK_LIBRARIES(mysqlserver LIBS)
 
 SET(LIBMYSQLD_LIBS_USAGE "
@@ -316,6 +316,7 @@ ELSE()
     mysqldumpslow
     mysqld_multi
     mysqld_safe
+    ps_tokudb_admin
   )
   FOREACH(file ${BIN_SCRIPTS})
     IF(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${file}.sh)

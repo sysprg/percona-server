@@ -2304,10 +2304,22 @@ af_get_pct_for_lsn(
 	lsn_age_factor = (age * 100) / max_async_age;
 
 	ut_ad(srv_max_io_capacity >= srv_io_capacity);
-	return(static_cast<ulint>(
-		((srv_max_io_capacity / srv_io_capacity)
-		* (lsn_age_factor * sqrt((double)lsn_age_factor)))
-		/ 7.5));
+	switch ((srv_cleaner_lsn_age_factor_t)srv_cleaner_lsn_age_factor) {
+	case SRV_CLEANER_LSN_AGE_FACTOR_LEGACY:
+		return(static_cast<ulint>(
+			       ((srv_max_io_capacity / srv_io_capacity)
+				* (lsn_age_factor
+				   * sqrt((double)lsn_age_factor)))
+			       / 7.5));
+	case SRV_CLEANER_LSN_AGE_FACTOR_HIGH_CHECKPOINT:
+		return(static_cast<ulint>(
+			       ((srv_max_io_capacity / srv_io_capacity)
+				* (lsn_age_factor * lsn_age_factor
+				   * sqrt((double)lsn_age_factor)))
+			       / 700.5));
+	default:
+		ut_error;
+	}
 }
 
 /*********************************************************************//**
@@ -2389,7 +2401,9 @@ page_cleaner_flush_pages_recommendation(
 
 	/* Cap the maximum IO capacity that we are going to use by
 	max_io_capacity. */
-	n_pages = (PCT_IO(pct_total) + avg_page_rate) / 2;
+	n_pages = PCT_IO(pct_total);
+	if (age < log_get_max_modified_age_async())
+		n_pages = (n_pages + avg_page_rate) / 2;
 
 	if (n_pages > srv_max_io_capacity) {
 		n_pages = srv_max_io_capacity;
@@ -2747,6 +2761,10 @@ DECLARE_THREAD(buf_flush_page_cleaner_coordinator)(
 #ifdef UNIV_PFS_THREAD
 	pfs_register_thread(page_cleaner_thread_key);
 #endif /* UNIV_PFS_THREAD */
+
+	srv_cleaner_tid = os_thread_get_tid();
+
+	os_thread_set_priority(srv_cleaner_tid, srv_sched_priority_cleaner);
 
 #ifdef UNIV_DEBUG_THREAD_CREATION
 	ib::info() << "page_cleaner thread running, id "

@@ -597,6 +597,7 @@ SyncDebug::check_order(const latch_t* latch)
 	case SYNC_PAGE_CLEANER:
 	case SYNC_LOG:
 	case SYNC_LOG_FLUSH_ORDER:
+	case SYNC_LOG_ONLINE:
 	case SYNC_ANY_LATCH:
 	case SYNC_FILE_FORMAT_TAG:
 	case SYNC_DOUBLEWRITE:
@@ -860,7 +861,7 @@ SyncDebug::unlock(const latch_t* latch)
 Load the latch meta data. */
 static
 void
-sync_latch_meta_init()
+sync_latch_meta_init() // TODO laurynas xtradb latches
 /*==================*/
 {
 	// First add the mutexes
@@ -961,6 +962,10 @@ sync_latch_meta_init()
 	LATCH_ADD(SrvLatches, "ibuf_pessimistic_insert",
 		  SYNC_IBUF_PESS_INSERT_MUTEX,
 		  ibuf_pessimistic_insert_mutex_key);
+
+	LATCH_ADD(SrvLatches, "log_bmp_sys",
+		  SYNC_LOG_ONLINE,
+		  log_bmp_sys_mutex_key);
 
 	LATCH_ADD(SrvLatches, "log_sys",
 		  SYNC_LOG,

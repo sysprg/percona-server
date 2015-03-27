@@ -37,5 +37,6 @@ void end_connection(THD *thd);
 int get_or_create_user_conn(THD *thd, const char *user,
                             const char *host, const USER_RESOURCES *mqh);
 int check_for_max_user_connections(THD *thd, const USER_CONN *uc);
+void update_global_user_stats(THD* thd, bool create_user, time_t now);
 
 #endif /* SQL_CONNECT_INCLUDED */

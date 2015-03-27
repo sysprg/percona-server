@@ -42,6 +42,16 @@ extern ulong	srv_n_spin_wait_rounds;
 					srv_spin_wait_delay,		\
 					__FILE__, __LINE__)
 
+#define mutex_enter_first(M)		(M)->enter(			\
+					 srv_n_spin_wait_rounds,	\
+					 srv_spin_wait_delay,		\
+					 __FILE__, __LINE__, HIGH_PRIO)
+
+#define mutex_enter_last(M)		(M)->enter(			\
+					srv_n_spin_wait_rounds,		\
+					srv_spin_wait_delay,		\
+					__FILE__, __LINE__, LOW_PRIO)
+
 #define mutex_enter_nospin(M)		(M)->enter(			\
 					0,				\
 					0,				\

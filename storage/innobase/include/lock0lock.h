@@ -43,6 +43,8 @@ Created 5/7/1996 Heikki Tuuri
 // Forward declaration
 class ReadView;
 
+extern ulint	srv_n_lock_deadlock_count;
+
 /*********************************************************************//**
 Gets the size of a lock struct.
 @return size in bytes */
@@ -1075,6 +1077,7 @@ struct lock_sys_t{
 						lock */
 	LockMutex	wait_mutex;		/*!< Mutex protecting the
 						next two fields */
+	ulint		rec_num;
 	srv_slot_t*	waiting_threads;	/*!< Array  of user threads
 						suspended while waiting for
 						locks within InnoDB, protected

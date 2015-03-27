@@ -324,6 +324,7 @@ struct sql_ex_info
                                    3U +            /* type, microseconds */ + \
                                    1U + COMMIT_SEQ_LEN + \
                                                    /* type, commit timestamp */ \
+                                   1U + 8          /* type, query exec time */ + \
                                    1U + 16 + 1 + 60/* type, user_len, user, host_len, host */)
 #define MAX_LOG_EVENT_HEADER   ( /* in order of Query_log_event::write */ \
   LOG_EVENT_HEADER_LEN + /* write_header */ \
@@ -417,6 +418,10 @@ struct sql_ex_info
   on the slave.
  */
 #define Q_COMMIT_TS 14
+
+#ifndef DBUG_OFF
+#define Q_QUERY_EXEC_TIME 250
+#endif
 
 /*
   G_COMMIT_TS status variable stores the logical timestamp when the transaction

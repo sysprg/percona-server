@@ -279,6 +279,8 @@ ha_rows filesort(THD *thd, QEP_TAB *qep_tab, Filesort *filesort,
   else
     thd->inc_status_sort_scan();
 
+  thd->query_plan_flags|= QPLAN_FILESORT;
+
   // If number of rows is not known, use as much of sort buffer as possible. 
   num_rows= table->file->estimate_rows_upper_bound();
 
@@ -405,6 +407,8 @@ ha_rows filesort(THD *thd, QEP_TAB *qep_tab, Filesort *filesort,
   {
     /* filesort cannot handle zero-length records during merge. */
     DBUG_ASSERT(param.sort_length != 0);
+
+    thd->query_plan_flags|= QPLAN_FILESORT_DISK;
 
     // We will need an extra buffer in rr_unpack_from_tempfile()
     if (table_sort.using_addon_fields() &&
@@ -1805,11 +1809,13 @@ int merge_buffers(Sort_param *param, IO_CACHE *from_file,
   QUEUE queue;
   qsort2_cmp cmp;
   void *first_cmp_arg;
-  volatile THD::killed_state *killed= &current_thd->killed;
+  THD * const thd = current_thd;
+  volatile THD::killed_state *killed= &thd->killed;
   THD::killed_state not_killable;
   DBUG_ENTER("merge_buffers");
 
-  current_thd->inc_status_sort_merge_passes();
+  thd->inc_status_sort_merge_passes();
+  thd->query_plan_fsort_passes++;
   if (param->not_killable)
   {
     killed= &not_killable;

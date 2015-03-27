@@ -321,6 +321,7 @@ public:
     treatment - waiting is aborted if connection to client is lost.
   */
   enum enum_mdl_namespace { GLOBAL=0,
+                            BACKUP,
                             SCHEMA,
                             TABLE,
                             FUNCTION,
@@ -329,6 +330,7 @@ public:
                             EVENT,
                             COMMIT,
                             USER_LEVEL_LOCK,
+                            BINLOG,
                             /* This should be the last ! */
                             NAMESPACE_END };
 

@@ -33,6 +33,7 @@ Created 4/18/1996 Heikki Tuuri
 
 #include "dict0crea.h"
 #include "btr0btr.h"
+#include "btr0sea.h"
 #include "dict0load.h"
 #include "trx0trx.h"
 #include "srv0srv.h"
@@ -368,6 +369,7 @@ dict_boot(void)
 	dict_mem_index_add_field(index, "NAME", 0);
 
 	index->id = DICT_TABLES_ID;
+	btr_search_index_init(index);
 
 	error = dict_index_add_to_cache(table, index,
 					mtr_read_ulint(dict_hdr
@@ -382,6 +384,7 @@ dict_boot(void)
 	dict_mem_index_add_field(index, "ID", 0);
 
 	index->id = DICT_TABLE_IDS_ID;
+	btr_search_index_init(index);
 	error = dict_index_add_to_cache(table, index,
 					mtr_read_ulint(dict_hdr
 						       + DICT_HDR_TABLE_IDS,
@@ -414,6 +417,7 @@ dict_boot(void)
 	dict_mem_index_add_field(index, "POS", 0);
 
 	index->id = DICT_COLUMNS_ID;
+	btr_search_index_init(index);
 	error = dict_index_add_to_cache(table, index,
 					mtr_read_ulint(dict_hdr
 						       + DICT_HDR_COLUMNS,
@@ -446,6 +450,7 @@ dict_boot(void)
 	dict_mem_index_add_field(index, "ID", 0);
 
 	index->id = DICT_INDEXES_ID;
+	btr_search_index_init(index);
 	error = dict_index_add_to_cache(table, index,
 					mtr_read_ulint(dict_hdr
 						       + DICT_HDR_INDEXES,
@@ -474,6 +479,7 @@ dict_boot(void)
 	dict_mem_index_add_field(index, "POS", 0);
 
 	index->id = DICT_FIELDS_ID;
+	btr_search_index_init(index);
 	error = dict_index_add_to_cache(table, index,
 					mtr_read_ulint(dict_hdr
 						       + DICT_HDR_FIELDS,
