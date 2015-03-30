@@ -108,6 +108,8 @@ dict_mem_table_create(
 	dict_table_stats_latch_create(table, true);
 
 #ifndef UNIV_HOTBACKUP
+	table->autoinc_lock = static_cast<ib_lock_t*>(
+		mem_heap_alloc(heap, lock_get_size()));
 
 	mutex_create("autoinc", &table->autoinc_mutex);
 
