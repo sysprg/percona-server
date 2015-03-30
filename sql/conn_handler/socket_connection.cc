@@ -816,7 +816,7 @@ bool Mysqld_socket_listener::setup_listener()
 
     m_socket_map.insert(std::pair<MYSQL_SOCKET,bool>(mysql_socket, false));
 
-    m_extra_tcp_port_fd = mysql_socket.fd;
+    m_extra_tcp_port_fd= mysql_socket.fd;
   }
 #if defined(HAVE_SYS_UN_H)
   // Setup unix socket listener
@@ -1012,5 +1012,6 @@ void Mysqld_socket_listener::close_listener()
 bool Mysqld_socket_listener::is_connection_extra_port(const Channel_info&
                                                       channel_info) const
 {
-  return channel_info.get_socket_fd() == m_extra_tcp_port_fd;
+  return m_extra_tcp_port
+    ? (channel_info.get_socket_fd() == m_extra_tcp_port_fd) : false;
 }

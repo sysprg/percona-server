@@ -165,10 +165,7 @@ dict_mem_table_free(
 		}
 	}
 #ifndef UNIV_HOTBACKUP
-	if (table->autoinc_lock) {
-
-		mutex_free(&(table->autoinc_mutex));
-	}
+	mutex_free(&(table->autoinc_mutex));
 #endif /* UNIV_HOTBACKUP */
 
 	dict_table_stats_latch_destroy(table);
