@@ -166,7 +166,7 @@ log_group_archive_file_header_write(
 }
 
 /******************************************************//**
-							Writes a log file header to a completed archived log file. */
+Writes a log file header to a completed archived log file. */
 static
 void
 log_group_archive_completed_header_write(

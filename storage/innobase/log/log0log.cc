@@ -917,6 +917,15 @@ log_group_init(
 		group->file_header_bufs[i] = static_cast<byte*>(
 			ut_align(group->file_header_bufs_ptr[i],
 				 OS_FILE_LOG_BLOCK_SIZE));
+
+		group->archive_file_header_bufs_ptr[i] = static_cast<byte*>(
+			ut_zalloc_nokey(LOG_FILE_HDR_SIZE
+					+ OS_FILE_LOG_BLOCK_SIZE));
+
+		group->archive_file_header_bufs[i] = static_cast<byte*>(
+			ut_align(group->archive_file_header_bufs_ptr[i],
+				 OS_FILE_LOG_BLOCK_SIZE));
+
 	}
 
 	group->archive_space_id = archive_space_id;
@@ -2605,10 +2614,13 @@ log_group_close(
 
 	for (i = 0; i < group->n_files; i++) {
 		ut_free(group->file_header_bufs_ptr[i]);
+		ut_free(group->archive_file_header_bufs_ptr[i]);
 	}
 
 	ut_free(group->file_header_bufs_ptr);
 	ut_free(group->file_header_bufs);
+	ut_free(group->archive_file_header_bufs_ptr);
+	ut_free(group->archive_file_header_bufs);
 	ut_free(group->checkpoint_buf_ptr);
 	ut_free(group);
 }

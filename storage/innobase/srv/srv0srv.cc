@@ -1075,6 +1075,7 @@ srv_free(void)
 		os_event_destroy(srv_monitor_event);
 		os_event_destroy(srv_buf_dump_event);
 		os_event_destroy(buf_flush_event);
+		os_event_destroy(srv_checkpoint_completed_event);
 	}
 
 	os_event_destroy(srv_buf_resize_event);
