@@ -1669,6 +1669,8 @@ MDL_lock::get_unobtrusive_lock_increment(const MDL_request *request)
     case MDL_key::GLOBAL:
     case MDL_key::SCHEMA:
     case MDL_key::COMMIT:
+    case MDL_key::BACKUP:
+    case MDL_key::BINLOG:
       return m_scoped_lock_strategy.m_unobtrusive_lock_increment[request->type];
     default:
       return m_object_lock_strategy.m_unobtrusive_lock_increment[request->type];

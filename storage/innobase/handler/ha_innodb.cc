@@ -7696,7 +7696,8 @@ ha_innobase::update_row(
 
 	ha_statistic_increment(&SSV::ha_update_count);
 
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
 
@@ -7793,7 +7794,8 @@ func_exit:
 
 	innobase_active_small();
 
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
 
@@ -11031,7 +11033,8 @@ ha_innobase::truncate()
 		DBUG_RETURN(HA_ERR_TABLE_READONLY);
 	}
 
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
 
@@ -11053,7 +11056,8 @@ ha_innobase::truncate()
 
 	int	error;
 
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
 

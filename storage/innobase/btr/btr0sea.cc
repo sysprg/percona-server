@@ -1131,7 +1131,8 @@ retry:
 	/* Do a dirty check on block->index, return if the block is
 	not in the adaptive hash index. This is to avoid acquiring an AHI latch
 	for performance considerations. */
-	if (!block->index || block->index->disable_ahi) {
+	index = block->index;
+	if (!index || index->disable_ahi) {
 		return;
 	}
 
@@ -1140,7 +1141,6 @@ retry:
 	ut_ad(!rw_lock_own(btr_search_get_latch(index), RW_LOCK_X));
 #endif /* UNIV_SYNC_DEBUG */
 	rw_lock_s_lock(btr_search_get_latch(index));
-	index = block->index;
 
 	if (UNIV_UNLIKELY(index != block->index)) {
 

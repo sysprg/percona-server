@@ -2380,7 +2380,6 @@ public:
     table->field[8]->store(((inspect_thd->start_utime ?
                              now_utime - inspect_thd->start_utime : 0)/ 1000));
 
-    mysql_mutex_lock(&inspect_thd->LOCK_thd_data);
     /* ROWS_SENT */
     table->field[9]->store((ulonglong) inspect_thd->get_sent_row_count());
     /* ROWS_EXAMINED */

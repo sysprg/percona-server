@@ -9054,21 +9054,6 @@ bool change_master(THD* thd, Master_info* mi)
     }
   }
 
-  if (!thd->backup_binlog_lock.is_acquired())
-  {
-    const ulong timeout= thd->variables.lock_wait_timeout;
-
-    DBUG_PRINT("debug", ("Acquiring binlog protection lock"));
-    mysql_mutex_assert_not_owner(&mi->rli->data_lock);
-    if (thd->backup_binlog_lock.acquire_protection(thd, MDL_EXPLICIT,
-                                                   timeout))
-    {
-      goto err;
-    }
-
-    binlog_prot_acquired= true;
-  }
-
   /*
     When give a warning?
     CHANGE MASTER command is used in three ways:
@@ -9186,6 +9171,21 @@ bool change_master(THD* thd, Master_info* mi)
 
     relay_log_purge= save_relay_log_purge;
 
+    if (!thd->backup_binlog_lock.is_acquired())
+    {
+      const ulong timeout= thd->variables.lock_wait_timeout;
+
+      DBUG_PRINT("debug", ("Acquiring binlog protection lock"));
+      mysql_mutex_assert_not_owner(&mi->rli->data_lock);
+      if (thd->backup_binlog_lock.acquire_protection(thd, MDL_EXPLICIT,
+                                                     timeout))
+      {
+        goto err;
+      }
+
+      binlog_prot_acquired= true;
+    }
+
     /*
       Coordinates in rli were spoilt by the 'if (need_relay_log_purge)' block,
       so restore them to good values. If we left them to ''/0, that would work;
@@ -9253,6 +9253,11 @@ bool change_master(THD* thd, Master_info* mi)
     If we have reached here there was no error, so unlock and return
     false indicating success.
   */
+  if (binlog_prot_acquired)
+  {
+    DBUG_PRINT("debug", ("Releasing binlog protection lock"));
+    thd->backup_binlog_lock.release_protection(thd);
+  }
   unlock_slave_threads(mi);
   DBUG_RETURN(false);
 
