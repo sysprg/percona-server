@@ -12548,7 +12548,8 @@ ha_innobase::analyze(
 	THD*		thd,		/*!< in: connection thread handle */
 	HA_CHECK_OPT*	check_opt)	/*!< in: currently ignored */
 {
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		return(HA_ADMIN_CORRUPT);
 	}
 
@@ -12558,7 +12559,8 @@ ha_innobase::analyze(
 		HA_STATUS_TIME | HA_STATUS_CONST | HA_STATUS_VARIABLE,
 		true /* this is ANALYZE */);
 
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		return(HA_ADMIN_CORRUPT);
 	}
 
@@ -12853,7 +12855,8 @@ ha_innobase::check(
 		thd_set_kill_status(m_user_thd);
 	}
 
-	if (UNIV_UNLIKELY(m_share->ib_table->is_corrupt)) {
+	if (UNIV_UNLIKELY(m_share->ib_table
+			  && m_share->ib_table->is_corrupt)) {
 		return(HA_ADMIN_CORRUPT);
 	}
 

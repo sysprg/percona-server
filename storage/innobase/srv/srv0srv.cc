@@ -1405,10 +1405,10 @@ srv_printf_innodb_monitor(
 		(long) srv_conc_get_active_threads(),
 		srv_conc_get_waiting_threads());
 
-	mutex_enter(&trx_sys->mutex);
-
 	fprintf(file, "%lu read views open inside InnoDB\n",
 		trx_sys->mvcc->size());
+
+	mutex_enter(&trx_sys->mutex);
 
 	fprintf(file, "%lu RW transactions active inside InnoDB\n",
 		UT_LIST_GET_LEN(trx_sys->rw_trx_list));
