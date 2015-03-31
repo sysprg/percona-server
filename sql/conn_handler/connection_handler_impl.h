@@ -113,7 +113,10 @@ class Thread_pool_connection_handler : public Connection_handler
     operator=(const Thread_pool_connection_handler&);
 
  public:
-  Thread_pool_connection_handler() {}
+  Thread_pool_connection_handler()
+  {
+    tp_init();
+  }
   virtual ~Thread_pool_connection_handler() {}
 
  protected:

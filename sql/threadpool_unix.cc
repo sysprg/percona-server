@@ -1328,9 +1328,16 @@ bool Thread_pool_connection_handler::add_connection(Channel_info *channel_info)
 {
   DBUG_ENTER("Thread_pool_connection_handler::add_connection");
 
-  channel_info->set_prior_thr_create_utime();
+  channel_info->set_prior_thr_create_utime(); // TODO laurynas needed?
   THD* thd= channel_info->create_thd();
+  delete channel_info;
+
+  thd->set_new_thread_id();
+  thd->start_utime= thd->thr_create_utime= my_micro_time();
+
   Global_THD_manager::get_instance()->add_thd(thd);
+
+
   connection_t *connection= alloc_connection(thd);
 
   if (!connection)

@@ -144,6 +144,7 @@ bool Connection_handler_manager::init()
     break;
   case SCHEDULER_THREAD_POOL:
     connection_handler= new (std::nothrow) Thread_pool_connection_handler();
+    break;
   default:
     DBUG_ASSERT(false);
   }
