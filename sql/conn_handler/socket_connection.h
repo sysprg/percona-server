@@ -89,7 +89,7 @@ class Mysqld_socket_listener
   uint m_error_count; // Internal variable for maintaining error count.
 
 #ifdef HAVE_POLL
-  static const int MAX_SOCKETS=2;
+  static const int MAX_SOCKETS=3;
   struct poll_info_t
   {
     struct pollfd m_fds[MAX_SOCKETS];

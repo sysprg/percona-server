@@ -853,6 +853,9 @@ bool Mysqld_socket_listener::setup_listener()
       m_select_info.m_max_used_connection= mysql_socket_getfd(listen_socket);
 #endif // HAVE_POLL
   }
+#ifdef HAVE_POLL
+  DBUG_ASSERT(count <= MAX_SOCKETS);
+#endif // HAVE_POLL
   return false;
 }
 
