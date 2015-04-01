@@ -956,12 +956,61 @@ static size_t setval_get_size_for_value_type(int value_type)
 static int setval(const struct my_option *opts, const void *value,
                   char *argument, int option_modifier_flags)
 {
-  int err= 0, res= 0, value_type;
+  int err= 0, res= 0;
   bool error= 0;
   ulong var_type= opts->var_type & GET_TYPE_MASK;
 
   if (!argument)
     argument= enabled_my_option;
+
+  if (option_modifier_flags & OPT_MINIMUM)
+  {
+     value= getopt_constraint_get_min_value(opts->name, 0,
+                                 setval_get_size_for_value_type(var_type));
+     if (!value)
+     {
+       my_getopt_error_reporter(ERROR_LEVEL,
+                               "%s: Minimum value of '%s' cannot be set",
+                               my_progname, opts->name);
+       return EXIT_NO_PTR_TO_VARIABLE;
+     }
+  }
+  else if (option_modifier_flags & OPT_MAXIMUM)
+  {
+     value= getopt_constraint_get_max_value(opts->name, 0,
+                                 setval_get_size_for_value_type(var_type));
+     if (!value)
+     {
+       my_getopt_error_reporter(ERROR_LEVEL,
+                               "%s: Maximum value of '%s' cannot be set",
+                               my_progname, opts->name);
+       return EXIT_NO_PTR_TO_VARIABLE;
+     }
+  }
+  else if (option_modifier_flags & OPT_READONLY)
+  {
+    var_type= GET_BOOL;
+    value= getopt_constraint_get_readonly_value(opts->name, 0, TRUE);
+    if (!value)
+    {
+      my_getopt_error_reporter(ERROR_LEVEL,
+                               "%s: Readonly value of '%s' cannot be set",
+                               my_progname, opts->name);
+      return EXIT_NO_PTR_TO_VARIABLE;
+    }
+  }
+  else if (option_modifier_flags & OPT_HIDDEN)
+  {
+    var_type= GET_BOOL;
+    value= getopt_constraint_get_hidden_value(opts->name, 0, TRUE);
+    if (!value)
+    {
+      my_getopt_error_reporter(ERROR_LEVEL,
+                               "%s: Hidden value of '%s' cannot be set",
+                               my_progname, opts->name);
+      return EXIT_NO_PTR_TO_VARIABLE;
+    }
+  }
 
   /*
     Thus check applies only to options that have a defined value
@@ -984,68 +1033,13 @@ static int setval(const struct my_option *opts, const void *value,
        var_type == GET_ULL ||
        var_type == GET_DOUBLE ||
        var_type == GET_ENUM
+       )
       )
-     )
   {
     my_getopt_error_reporter(ERROR_LEVEL,
                              "%s: Empty value for '%s' specified",
                              my_progname, opts->name);
     return EXIT_ARGUMENT_REQUIRED;
-  }
-
-  if (option_modifier_flags & OPT_MINIMUM)
-  {
-     value_type= (opts->var_type & GET_TYPE_MASK);
-     value= getopt_constraint_get_min_value(opts->name, 0,
-                                 setval_get_size_for_value_type(value_type));
-     if (!value)
-     {
-       my_getopt_error_reporter(ERROR_LEVEL,
-                               "%s: Minimum value of '%s' cannot be set",
-                               my_progname, opts->name);
-       return EXIT_NO_PTR_TO_VARIABLE;
-     }
-  }
-  else if (option_modifier_flags & OPT_MAXIMUM)
-  {
-     value_type= (opts->var_type & GET_TYPE_MASK);
-     value= getopt_constraint_get_max_value(opts->name, 0,
-                                 setval_get_size_for_value_type(value_type));
-     if (!value)
-     {
-       my_getopt_error_reporter(ERROR_LEVEL,
-                               "%s: Maximum value of '%s' cannot be set",
-                               my_progname, opts->name);
-       return EXIT_NO_PTR_TO_VARIABLE;
-     }
-  }
-  else if (option_modifier_flags & OPT_READONLY)
-  {
-    value_type= GET_BOOL;
-    value= getopt_constraint_get_readonly_value(opts->name, 0, TRUE);
-    if (!value)
-    {
-      my_getopt_error_reporter(ERROR_LEVEL,
-                               "%s: Readonly value of '%s' cannot be set",
-                               my_progname, opts->name);
-      return EXIT_NO_PTR_TO_VARIABLE;
-    }
-  }
-  else if (option_modifier_flags & OPT_HIDDEN)
-  {
-    value_type= GET_BOOL;
-    value= getopt_constraint_get_hidden_value(opts->name, 0, TRUE);
-    if (!value)
-    {
-      my_getopt_error_reporter(ERROR_LEVEL,
-                               "%s: Hidden value of '%s' cannot be set",
-                               my_progname, opts->name);
-      return EXIT_NO_PTR_TO_VARIABLE;
-    }
-  }
-  else
-  {
-    value_type= (opts->var_type & GET_TYPE_MASK);
   }
 
   if (value)
