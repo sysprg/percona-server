@@ -1072,7 +1072,6 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
                                                com_statement_info[command].m_key);
 
   thd->set_command(command);
-
   /*
     Commands which always take a long time are logged into
     the slow log only if opt_log_slow_admin_statements is set.
@@ -3034,7 +3033,6 @@ case SQLCOM_PREPARE:
         goto end_with_restore_list;
       }
 
-      res= open_normal_and_derived_tables(thd, all_tables, 0);
       if (!(res= open_normal_and_derived_tables(thd, all_tables, 0)))
       {
         /* The table already exists */

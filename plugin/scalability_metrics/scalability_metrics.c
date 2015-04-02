@@ -109,7 +109,9 @@ sm_thd_data_t *sm_thd_data_get(MYSQL_THD thd)
   sm_thd_data_t *thd_data = (sm_thd_data_t *) (intptr) THDVAR(thd, thd_data);
   if (unlikely(thd_data == NULL))
   {
-    thd_data= calloc(sizeof(sm_thd_data_t), 1);
+    // TODO laurynas instrument?
+    thd_data= my_malloc(PSI_NOT_INSTRUMENTED, sizeof(sm_thd_data_t),
+                        MYF(MY_WME | MY_ZEROFILL));
     mysql_mutex_lock(&thd_list_mutex);
     thd_data->backref= list_push(thd_list_root, thd_data);
     mysql_mutex_unlock(&thd_list_mutex);

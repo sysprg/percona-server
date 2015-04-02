@@ -1772,7 +1772,7 @@ bool close_temporary_tables(THD *thd)
       close_temporary(table, 1, 1);
     }
 
-    thd->temporary_tables= 0;
+    thd->temporary_tables= 0; // TODO laurynas diff against upstream: modify_slave_open_temp_tables
     mysql_mutex_unlock(&thd->LOCK_temporary_tables);
 
     DBUG_RETURN(FALSE);
@@ -5169,9 +5169,6 @@ lock_table_names(THD *thd,
     mdl_requests.push_front(&table->mdl_request);
   }
 
-  if (mdl_requests.is_empty())
-    return FALSE;
-
   if (! (flags & MYSQL_OPEN_SKIP_SCOPED_MDL_LOCK) &&
       ! mdl_requests.is_empty())
   {
@@ -5502,12 +5499,6 @@ restart:
                                         &need_prelocking,
                                         &routine_modifies_data);
 
-
-        if (need_prelocking && ! thd->lex->requires_prelocking())
-          thd->lex->mark_as_requiring_prelocking(save_query_tables_last);
-
-        if (need_prelocking && ! *start)
-          *start= thd->lex->query_tables;
 
         if (need_prelocking && ! thd->lex->requires_prelocking())
           thd->lex->mark_as_requiring_prelocking(save_query_tables_last);
