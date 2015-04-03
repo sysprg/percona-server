@@ -358,10 +358,10 @@ DROP TABLE t1;
 DROP TABLE t2;
 SHOW BINLOG EVENTS LIMIT 7,3;
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
-master-bin.000001	665	Query	1	773	use `test`; INSERT INTO t2 VALUES (1,0), (2,0)
-master-bin.000001	773	Xid	1	804	COMMIT /* XID */
-master-bin.000001	804	Query	1	876	BEGIN
--- CHANGE MASTER TO MASTER_LOG_FILE='master-bin.000001', MASTER_LOG_POS=804;
+master-bin.000001	701	Query	1	809	use `test`; INSERT INTO t2 VALUES (1,0), (2,0)
+master-bin.000001	809	Xid	1	840	COMMIT /* XID */
+master-bin.000001	840	Query	1	921	BEGIN
+-- CHANGE MASTER TO MASTER_LOG_FILE='master-bin.000001', MASTER_LOG_POS=840;
 SELECT * FROM t1 ORDER BY a;
 a
 1

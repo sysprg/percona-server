@@ -1398,13 +1398,9 @@ static int binlog_clone_consistent_snapshot(handlerton *hton, THD *thd,
 
   cache_mngr= thd_get_cache_mngr(thd);
 
-  mysql_mutex_lock(&from_thd->LOCK_thd_data);
-
   pos= from_cache_mngr->binlog_info.pos;
   strmake(log_file_name, from_cache_mngr->binlog_info.log_file_name,
           sizeof(log_file_name) - 1);
-
-  mysql_mutex_unlock(&from_thd->LOCK_thd_data);
 
   mysql_mutex_lock(&thd->LOCK_thd_data);
 
