@@ -1,2 +1,2 @@
---replace_column 2 # 3 # 4 # 6 #
+--replace_column 2 # 3 # 4 # 5 # 6 # 8 #
 select * from INFORMATION_SCHEMA.XTRADB_RSEG;
