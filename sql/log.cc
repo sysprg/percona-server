@@ -770,8 +770,8 @@ bool File_query_log::write_slow(THD *thd, ulonglong current_utime,
   sprintf(lock_time_buff,  "%.6f", ulonglong2double(lock_utime)/1000000.0);
   if (my_b_printf(&log_file,
                   "# Schema: %s  Last_errno: %u  Killed: %u\n"
-                  "# Query_time: %s  Lock_time: %s Rows_sent: %llu"
-                  "Rows_examined: %llu  Rows_affected: %llu\n"
+                  "# Query_time: %s  Lock_time: %s  Rows_sent: %llu"
+                  "  Rows_examined: %llu  Rows_affected: %llu\n"
                   "# Bytes_sent: %lu",
                   (thd->db().str ? thd->db().str : ""),
                   thd->last_errno, (uint) thd->killed,
