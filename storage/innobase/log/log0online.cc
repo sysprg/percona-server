@@ -1279,7 +1279,7 @@ log_online_diagnose_inconsistent_dir(
 		"directory for a "
 		"INFORMATION_SCHEMA.INNODB_CHANGED_PAGES query"
 		"\n");
-	free(bitmap_files->files);
+	ut_free(bitmap_files->files);
 }
 
 /*********************************************************************//**
@@ -1865,6 +1865,6 @@ log_online_purge_changed_page_bitmaps(
 		mutex_exit(&log_bmp_sys->mutex);
 	}
 
-	free(bitmap_files.files);
+	ut_free(bitmap_files.files);
 	return result;
 }

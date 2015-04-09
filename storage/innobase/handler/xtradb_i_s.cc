@@ -48,19 +48,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 		DBUG_RETURN(1);	\
 	}
 
-#define RETURN_IF_INNODB_NOT_STARTED(plugin_name)			\
-do {									\
-	if (!srv_was_started) {						\
-		push_warning_printf(thd, Sql_condition::SL_WARNING,	\
-				    ER_CANT_FIND_SYSTEM_REC,		\
-				    "InnoDB: SELECTing from "		\
-				    "INFORMATION_SCHEMA.%s but "	\
-				    "the InnoDB storage engine "	\
-				    "is not installed", plugin_name);	\
-		DBUG_RETURN(0);						\
-	}								\
-} while (0)
-
 #if !defined __STRICT_ANSI__ && defined __GNUC__ && (__GNUC__) > 2 &&	\
 	!defined __INTEL_COMPILER && !defined __clang__
 #define STRUCT_FLD(name, value)	name: value
@@ -197,8 +184,6 @@ static int xtradb_read_view_fill_table(THD* thd, TABLE_LIST* tables, Item*)
 	table = tables->table;
 	fields = table->field;
 
-	RETURN_IF_INNODB_NOT_STARTED(table_name);
-
 	i_s_xtradb_read_view_t read_view;
 
 	if (read_fill_i_s_xtradb_read_view(&read_view) == NULL)
@@ -315,8 +300,6 @@ static int xtradb_internal_hash_tables_fill_table(THD* thd, TABLE_LIST* tables, 
 	table_name = tables->schema_table_name;
 	table = tables->table;
 	fields = table->field;
-
-	RETURN_IF_INNODB_NOT_STARTED(table_name);
 
 	/* Calculate AHI constant and variable memory allocations */
 
@@ -551,8 +534,6 @@ i_s_xtradb_rseg_fill(
 
 		DBUG_RETURN(0);
 	}
-
-	RETURN_IF_INNODB_NOT_STARTED(tables->schema_table_name);
 
 	for(int i=0; i < TRX_SYS_N_RSEGS; i++)
 	{

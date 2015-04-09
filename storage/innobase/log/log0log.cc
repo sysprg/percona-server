@@ -2185,7 +2185,13 @@ log_check_margins(void)
 	do {
 		log_flush_margin();
 		log_checkpoint_margin();
-		log_check_tracking_margin(0); // TODO laurynas arg, sleep
+		log_mutex_enter();
+		if (log_check_tracking_margin(0)) {
+			log_mutex_exit();
+			os_thread_sleep(10000);
+			continue;
+		}
+		log_mutex_exit();
 		log_archive_margin();
 		log_mutex_enter();
 		ut_ad(!recv_no_log_write);
