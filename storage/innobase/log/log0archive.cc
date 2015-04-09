@@ -27,6 +27,7 @@ log_pad_current_log_block(void)
 	ulint		i;
 	lsn_t		lsn;
 
+	ut_ad(log_mutex_own());
 	/* We retrieve lsn only because otherwise gcc crashed on HP-UX */
 	lsn = log_reserve_and_open(OS_FILE_LOG_BLOCK_SIZE);
 
@@ -615,8 +616,8 @@ loop:
 }
 
 /****************************************************************//**
-								  Writes the log contents to the archive at least up to the lsn when this
-								  function was called. */
+Writes the log contents to the archive at least up to the lsn when this
+function was called. */
 static
 void
 log_archive_all(void)
@@ -633,8 +634,6 @@ log_archive_all(void)
 	}
 
 	present_lsn = log_sys->lsn;
-
-	log_mutex_exit();
 
 	log_pad_current_log_block();
 

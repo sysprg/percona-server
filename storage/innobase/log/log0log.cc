@@ -2180,7 +2180,7 @@ objects! */
 void
 log_check_margins(void)
 {
-	bool	check;
+	bool	check	= true;
 
 	do {
 		log_flush_margin();

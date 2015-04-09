@@ -5,6 +5,7 @@ FLUSH PRIVILEGES;
 CREATE TABLE t1 (x INT) ENGINE=InnoDB;
 INSERT INTO t1 VALUES (1),(2),(3),(4),(5);
 FLUSH CHANGED_PAGE_BITMAPS;
+# restart
 Before RESET:
 ib_modified_log_1
 ib_modified_log_2
@@ -14,6 +15,7 @@ ib_modified_log_1
 RESET CHANGED_PAGE_BITMAPS;
 After 2nd RESET
 ib_modified_log_1
+# restart
 After RESETs and restart:
 ib_modified_log_1
 ib_modified_log_2
@@ -24,6 +26,7 @@ ib_modified_log_2
 PURGE CHANGED_PAGE_BITMAPS BEFORE 100000000;
 PURGE CHANGED_PAGE_BITMAPS BEFORE 100000000;
 INSERT INTO t1 VALUES (1),(2),(3),(4),(5);
+# restart
 After PURGE ... BEFORE 100000000 and restart:
 ib_modified_log_3
 ib_modified_log_4
@@ -72,7 +75,9 @@ PURGE CHANGED_PAGE_BITMAPS BEFORE 100000000;
 After the repeated PURGE:
 ib_modified_log_5
 call mtr.add_suppression("last tracked LSN");
+# restart
 INSERT INTO t1 VALUES (1),(2),(3),(4),(5);
+# restart
 Before the RESET while tracking disabled:
 ib_modified_log_5
 ib_modified_log_6
