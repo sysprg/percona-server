@@ -166,7 +166,6 @@ static ST_FIELD_INFO xtradb_read_view_fields_info[] =
 
 static int xtradb_read_view_fill_table(THD* thd, TABLE_LIST* tables, Item*)
 {
-	const char*		table_name;
 	Field**	fields;
 	TABLE* table;
 	char		trx_id[TRX_ID_MAX_LEN + 1];
@@ -180,7 +179,6 @@ static int xtradb_read_view_fill_table(THD* thd, TABLE_LIST* tables, Item*)
 		DBUG_RETURN(0);
 	}
 
-	table_name = tables->schema_table_name;
 	table = tables->table;
 	fields = table->field;
 
@@ -283,7 +281,6 @@ static ST_FIELD_INFO xtradb_internal_hash_tables_fields_info[] =
 
 static int xtradb_internal_hash_tables_fill_table(THD* thd, TABLE_LIST* tables, Item*)
 {
-	const char*	table_name;
 	Field**		fields;
 	TABLE*		table;
 	ulong		btr_search_sys_constant;
@@ -297,7 +294,6 @@ static int xtradb_internal_hash_tables_fill_table(THD* thd, TABLE_LIST* tables, 
 		DBUG_RETURN(0);
 	}
 
-	table_name = tables->schema_table_name;
 	table = tables->table;
 	fields = table->field;
 
