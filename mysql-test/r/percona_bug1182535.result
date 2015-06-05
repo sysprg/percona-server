@@ -15,7 +15,7 @@ EXECUTE stmt1;
 1
 SHOW STATUS LIKE 'Audit_null_general_log';
 Variable_name	Value
-Audit_null_general_log	7
+Audit_null_general_log	5
 DEALLOCATE PREPARE stmt1;
 DROP PROCEDURE simpleproc;
 UNINSTALL PLUGIN NULL_AUDIT;
