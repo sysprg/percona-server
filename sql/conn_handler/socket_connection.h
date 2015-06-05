@@ -174,8 +174,6 @@ public:
     Close the listener.
   */
   void close_listener();
-
-  bool is_connection_extra_port(const Channel_info& channel_info) const;
 };
 
 #endif // SOCKET_CONNECTION_INCLUDED.

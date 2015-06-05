@@ -66,9 +66,7 @@ public:
     {
       Channel_info *channel_info= m_listener->listen_for_connection_event();
       if (channel_info != NULL)
-        mgr->process_new_connection(channel_info,
-                                    m_listener->is_connection_extra_port(
-                                                              *channel_info));
+        mgr->process_new_connection(channel_info);
     }
   }
 };

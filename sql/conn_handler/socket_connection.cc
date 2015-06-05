@@ -204,8 +204,8 @@ public:
 
     @param connect_socket set connect socket descriptor.
   */
-  Channel_info_tcpip_socket(MYSQL_SOCKET connect_socket)
-  : m_connect_sock(connect_socket)
+  Channel_info_tcpip_socket(MYSQL_SOCKET connect_socket, bool on_extra_port)
+    : Channel_info(on_extra_port), m_connect_sock(connect_socket)
   { }
 
   virtual THD* create_thd()
@@ -977,7 +977,10 @@ Channel_info* Mysqld_socket_listener::listen_for_connection_event()
   if (is_unix_socket)
     channel_info= new (std::nothrow) Channel_info_local_socket(connect_sock);
   else
-    channel_info= new (std::nothrow) Channel_info_tcpip_socket(connect_sock);
+    channel_info= new (std::nothrow)
+      Channel_info_tcpip_socket(connect_sock,
+                                (mysql_socket_getfd(listen_sock)
+                                 == m_extra_tcp_port_fd));
   if (channel_info == NULL)
   {
     (void) mysql_socket_shutdown(connect_sock, SHUT_RDWR);
@@ -1010,11 +1013,4 @@ void Mysqld_socket_listener::close_listener()
 
   if (!m_socket_map.empty())
     m_socket_map.clear();
-}
-
-bool Mysqld_socket_listener::is_connection_extra_port(const Channel_info&
-                                                      channel_info) const
-{
-  return m_extra_tcp_port
-    ? (channel_info.get_socket_fd() == m_extra_tcp_port_fd) : false;
 }

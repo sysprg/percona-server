@@ -21,7 +21,7 @@
 #include "mysqld_error.h"              // ER_*
 #include "channel_info.h"              // Channel_info
 #include "connection_handler_impl.h"   // Per_thread_connection_handler
-#include "mysqld.h"                    // max_connections TODO laurynas extra_max_connections
+#include "mysqld.h"                    // max_connections
 #include "plugin_connection_handler.h" // Plugin_connection_handler
 #include "sql_callback.h"              // MYSQL_CALLBACK
 #include "sql_class.h"                 // THD
@@ -76,6 +76,7 @@ static void scheduler_wait_sync_end()
 
 bool Connection_handler_manager::valid_connection_count()
 {
+  // TODO laurynas; this needs to check extra connections for extra port
   bool connection_accepted= true;
   mysql_mutex_lock(&LOCK_connection_count);
   if (connection_count > max_connections)
@@ -88,7 +89,8 @@ bool Connection_handler_manager::valid_connection_count()
 }
 
 
-bool Connection_handler_manager::check_and_incr_conn_count()
+bool Connection_handler_manager::check_and_incr_conn_count(
+                                               bool extra_port_connection)
 {
   bool connection_accepted= true;
   mysql_mutex_lock(&LOCK_connection_count);
@@ -100,7 +102,19 @@ bool Connection_handler_manager::check_and_incr_conn_count()
     checked later during authentication where valid_connection_count()
     is called for non-SUPER users only.
   */
-  if (connection_count > max_connections)
+  if (extra_port_connection)
+  {
+    if (extra_connection_count > extra_max_connections)
+    {
+      connection_accepted= false;
+      m_connection_errors_max_connection++;
+    }
+    else
+    {
+      ++extra_connection_count;
+    }
+  }
+  else if (connection_count > max_connections)
   {
     connection_accepted= false;
     m_connection_errors_max_connection++;
@@ -239,17 +253,17 @@ bool Connection_handler_manager::unload_connection_handler()
 
 
 void
-Connection_handler_manager::process_new_connection(Channel_info* channel_info,
-                                                   bool extra_port_connection)
+Connection_handler_manager::process_new_connection(Channel_info* channel_info)
 {
-  if (abort_loop || !check_and_incr_conn_count())
+  if (abort_loop
+      || !check_and_incr_conn_count(channel_info->is_on_extra_port()))
   {
     channel_info->send_error_and_close_channel(ER_CON_COUNT_ERROR, 0, true);
     delete channel_info;
     return;
   }
 
-  Connection_handler* handler= extra_port_connection
+  Connection_handler* handler= channel_info->is_on_extra_port()
       ? m_extra_connection_handler : m_connection_handler;
 
   if (handler->add_connection(channel_info))
@@ -275,10 +289,10 @@ void destroy_channel_info(Channel_info* channel_info)
   delete channel_info;
 }
 
-
+// TODO laurynas: do not call this from extra connections
 void dec_connection_count()
 {
-  Connection_handler_manager::dec_connection_count();
+  Connection_handler_manager::dec_connection_count(false);
 }
 #endif // !EMBEDDED_LIBRARY
 

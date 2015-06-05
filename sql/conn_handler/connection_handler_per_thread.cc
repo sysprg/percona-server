@@ -251,7 +251,8 @@ pthread_handler_t handle_connection(void *arg)
     connection_errors_internal++;
     channel_info->send_error_and_close_channel(ER_OUT_OF_RESOURCES, 0, false);
     handler_manager->inc_aborted_connects();
-    Connection_handler_manager::dec_connection_count();
+    Connection_handler_manager
+      ::dec_connection_count(channel_info->is_on_extra_port());
     delete channel_info;
     pthread_exit(0);
     return NULL;
@@ -259,12 +260,14 @@ pthread_handler_t handle_connection(void *arg)
 
   for (;;)
   {
+    // Save this here as init_new_thd destroys channel_info
+    bool extra_port_connection= channel_info->is_on_extra_port();
     THD *thd= init_new_thd(channel_info);
     if (thd == NULL)
     {
       connection_errors_internal++;
       handler_manager->inc_aborted_connects();
-      Connection_handler_manager::dec_connection_count();
+      Connection_handler_manager::dec_connection_count(extra_port_connection);
       break; // We are out of resources, no sense in continuing.
     }
 
@@ -301,7 +304,7 @@ pthread_handler_t handle_connection(void *arg)
       end_connection(thd);
     }
     close_connection(thd);
-    Connection_handler_manager::dec_connection_count();
+    Connection_handler_manager::dec_connection_count(extra_port_connection);
 
     thd->get_stmt_da()->reset_diagnostics_area();
     thd->release_resources();
@@ -412,7 +415,8 @@ handle_error:
                       error);
     channel_info->send_error_and_close_channel(ER_CANT_CREATE_THREAD,
                                                error, true);
-    Connection_handler_manager::dec_connection_count();
+    Connection_handler_manager
+      ::dec_connection_count(channel_info->is_on_extra_port());
     DBUG_RETURN(true);
   }
 

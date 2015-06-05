@@ -67,9 +67,12 @@ class Connection_handler_manager
   /**
     Increment connection count if max_connections is not exceeded.
 
+    @param    extra_port_connection true if it is the extra connection count
+    which needs to be checked and bumped
+
     @retval   true if max_connections is not exceeded else false.
   */
-  bool check_and_incr_conn_count();
+  bool check_and_incr_conn_count(bool extra_port_connection);
 
   /**
     Constructor to instantiate an instance of this class.
@@ -176,11 +179,17 @@ public:
 
   /**
     Decrease the number of current connections.
+
+    @param extra_port_connection true if it is the extra connection count which
+    needs to be decreased
   */
-  static void dec_connection_count()
+  static void dec_connection_count(bool extra_port_connection)
   {
     mysql_mutex_lock(&LOCK_connection_count);
-    connection_count--;
+    if (extra_port_connection)
+      extra_connection_count--;
+    else
+      connection_count--;
     mysql_mutex_unlock(&LOCK_connection_count);
   }
 
@@ -224,7 +233,6 @@ public:
     @param channel_info    Pointer to Channel_info object containing
                            connection channel information.
   */
-  void process_new_connection(Channel_info* channel_info,
-                              bool extra_port_connection);
+  void process_new_connection(Channel_info* channel_info);
 };
 #endif // CONNECTION_HANDLER_MANAGER_INCLUDED.

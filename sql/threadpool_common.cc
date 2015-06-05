@@ -194,9 +194,7 @@ int threadpool_add_connection(THD* thd)
   if (!thd->mysys_var)
   {
     /* Out of memory? */
-    worker_context.restore();
-    // TODO laurynas delete thd!
-    return 1;
+    goto end;
   }
 
   /* Create new PSI thread for use with the THD. */
@@ -209,24 +207,19 @@ int threadpool_add_connection(THD* thd)
 
   /* Login. */
   thread_attach(thd);
-  ulonglong now= my_micro_time();
-  thd->start_utime= now;
-  thd->thr_create_utime= now;
+  thd->start_utime= thd->thr_create_utime= my_micro_time();
 
   if (thd->store_globals())
   {
     close_connection(thd, ER_OUT_OF_RESOURCES);
-    thd->release_resources();
-    delete thd;
-    return 1;
+    goto end;
   }
 
   if (thd_prepare_connection(thd))
   {
     // TODO laurynas close_connection?
-    thd->release_resources();
-    delete thd;
-    return 1;
+    // TODO laurynas inc_aborted_connects
+    goto end;
   }
 
   /*
@@ -243,6 +236,7 @@ int threadpool_add_connection(THD* thd)
     threadpool_init_net_server_extension(thd);
   }
 
+end:
   worker_context.restore();
   return retval;
 }
@@ -261,7 +255,7 @@ void threadpool_remove_connection(THD *thd)
   close_connection(thd, 0);
 
   thd->release_resources();
-  Connection_handler_manager::dec_connection_count();
+  Connection_handler_manager::dec_connection_count(false);
 
   Global_THD_manager::get_instance()->remove_thd(thd);
   delete thd;
