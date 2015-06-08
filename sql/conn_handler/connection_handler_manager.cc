@@ -259,6 +259,7 @@ Connection_handler_manager::process_new_connection(Channel_info* channel_info)
       || !check_and_incr_conn_count(channel_info->is_on_extra_port()))
   {
     channel_info->send_error_and_close_channel(ER_CON_COUNT_ERROR, 0, true);
+    sql_print_warning("%s", ER_DEFAULT(ER_CON_COUNT_ERROR));
     delete channel_info;
     return;
   }
