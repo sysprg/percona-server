@@ -678,6 +678,8 @@ bool Thread_pool_connection_handler::add_connection(Channel_info *channel_info)
   channel_info->set_prior_thr_create_utime();
   THD* thd= channel_info->create_thd();
 
+  thd->scheduler= &tp_event_functions;
+
   Global_THD_manager::get_instacne()->add_thd(thd);
 
   connection_t *con = (connection_t *)malloc(sizeof(connection_t));

@@ -341,18 +341,19 @@ end:
   return retval;
 }
 
-// TODO laurynas THD_event_functions: thd_wait_begin= tp_wait_begin etc.
+THD_event_functions tp_event_functions=
+{
+  tp_wait_begin, tp_wait_end, tp_post_kill_notification
+};
 
 // TODO laurynas
 #if 0
-void pool_of_threads_scheduler(struct scheduler_functions *func,
+void pool_of_threads_scheduler(
     ulong *arg_max_connections,
     uint *arg_connection_count)
 {
-  *func = tp_scheduler_functions;
   func->max_threads= threadpool_max_threads;
   func->max_connections= arg_max_connections;
   func->connection_count= arg_connection_count;
-  scheduler_init();
 }
 #endif

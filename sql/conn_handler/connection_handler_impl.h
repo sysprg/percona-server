@@ -117,7 +117,11 @@ class Thread_pool_connection_handler : public Connection_handler
   {
     tp_init();
   }
-  virtual ~Thread_pool_connection_handler() {}
+
+  virtual ~Thread_pool_connection_handler()
+  {
+    tp_end();
+  }
 
  protected:
   virtual bool add_connection(Channel_info* channel_info);

@@ -1223,7 +1223,9 @@ THD::THD(bool enable_plugins)
   thread_stack= 0;
   m_catalog.str= "std";
   m_catalog.length= 3;
-  scheduler= NULL; // TODO laurynas thread_scheduler;                 // Will be fixed later
+  // per-thread and one-thread scheduler callbacks are no-ops, so NULL works
+  // for them, threadpool scheduler will change this for its THDs.
+  scheduler= NULL;
   event_scheduler.data= 0;
   event_scheduler.m_psi= 0;
   skip_wait_timeout= false;
@@ -2193,8 +2195,7 @@ void THD::awake(THD::killed_state state_to_set)
 
     /* Send an event to the scheduler that a thread should be killed. */
     if (!slave_thread)
-      MYSQL_CALLBACK(Connection_handler_manager::event_functions,
-                     post_kill_notification, (this));
+      MYSQL_CALLBACK(this->scheduler, post_kill_notification, (this));
   }
 
   /* Interrupt target waiting inside a storage engine. */
@@ -4612,8 +4613,7 @@ extern "C" void thd_wait_begin(MYSQL_THD thd, int wait_type)
     if (unlikely(!thd))
       return;
   }
-  MYSQL_CALLBACK(Connection_handler_manager::event_functions,
-                 thd_wait_begin, (thd, wait_type));
+  MYSQL_CALLBACK(thd->scheduler, thd_wait_begin, (thd, wait_type));
 }
 
 /**
@@ -4631,8 +4631,7 @@ extern "C" void thd_wait_end(MYSQL_THD thd)
     if (unlikely(!thd))
       return;
   }
-  MYSQL_CALLBACK(Connection_handler_manager::event_functions,
-                 thd_wait_end, (thd));
+  MYSQL_CALLBACK(thd->scheduler, thd_wait_end, (thd));
 }
 #else
 extern "C" void thd_wait_begin(MYSQL_THD thd, int wait_type)

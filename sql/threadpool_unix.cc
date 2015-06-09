@@ -1335,8 +1335,9 @@ bool Thread_pool_connection_handler::add_connection(Channel_info *channel_info)
   thd->set_new_thread_id();
   thd->start_utime= thd->thr_create_utime= my_micro_time();
 
-  Global_THD_manager::get_instance()->add_thd(thd);
+  thd->scheduler= &tp_event_functions;
 
+  Global_THD_manager::get_instance()->add_thd(thd);
 
   connection_t *connection= alloc_connection(thd);
 

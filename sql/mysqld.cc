@@ -1090,8 +1090,8 @@ public:
     }
     mysql_mutex_lock(&killing_thd->LOCK_thd_data);
     killing_thd->killed= THD::KILL_CONNECTION;
-    MYSQL_CALLBACK(Connection_handler_manager::event_functions,
-                   post_kill_notification, (killing_thd));
+    MYSQL_CALLBACK(killing_thd->scheduler, post_kill_notification,
+                   (killing_thd));
     if (killing_thd->mysys_var)
     {
       mysql_mutex_lock(&killing_thd->mysys_var->mutex);

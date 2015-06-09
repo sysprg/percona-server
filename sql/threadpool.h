@@ -15,6 +15,8 @@
 #ifndef THREADPOOL_INCLUDED
 #define THREADPOOL_INCLUDED
 
+#include "conn_handler/connection_handler_manager.h"
+
 #define MAX_THREAD_GROUPS 128
 
 enum tp_high_prio_mode_t {
@@ -41,8 +43,6 @@ extern void threadpool_remove_connection(THD *thd);
 extern int  threadpool_process_request(THD *thd);
 extern int  threadpool_add_connection(THD *thd);
 
-class Channel_info;
-
 /*
   Functions used by scheduler. 
   OS-specific implementations are in
@@ -53,6 +53,8 @@ extern void tp_wait_begin(THD *, int);
 extern void tp_wait_end(THD*);
 extern void tp_post_kill_notification(THD *thd);
 extern void tp_end(void);
+
+extern THD_event_functions tp_event_functions;
 
 /* Used in SHOW for threadpool_idle_thread_count */
 extern int  tp_get_idle_thread_count();
