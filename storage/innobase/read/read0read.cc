@@ -383,7 +383,7 @@ ordered by TODO laurynas in descending order.
 void
 MVCC::view_add(const ReadView* view)
 {
-	ut_ad(mutex_own(&trx_sys->mutex));
+	ut_ad(trx_sys_mutex_own());
 
 	UT_LIST_ADD_FIRST(m_views, const_cast<ReadView *>(view));
 
@@ -699,11 +699,12 @@ trx_id_t element. <- TODO laurynas
 ReadView*
 ReadView::clone() const
 {
-	ut_ad(mutex_own(&trx_sys->mutex));
+	ut_ad(trx_sys_mutex_own());
 
 	ReadView* result= trx_sys->mvcc->get_view();
 
 	result->copy_prepare(*this);
+	trx_sys_mutex_exit();
 	result->copy_complete();
 
 	return result;

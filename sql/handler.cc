@@ -2224,6 +2224,12 @@ static int ha_clone_consistent_snapshot(THD *thd)
   }
 
   id= val->val_int();
+  if (thd->thread_id() == id)
+  {
+    my_error(ER_NO_SUCH_THREAD, MYF(0), id);
+    goto error;
+  }
+
   {
     Find_thd_with_id find_thd_with_id(id, true);
     from_thd= Global_THD_manager::get_instance()->find_thd(&find_thd_with_id);

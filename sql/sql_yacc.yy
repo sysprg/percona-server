@@ -8235,6 +8235,8 @@ start_transaction_option:
           }
         | WITH CONSISTENT_SYM SNAPSHOT_SYM FROM SESSION_SYM expr
           {
+            ITEMIZE($6, &$6);
+
             $$= MYSQL_START_TRANS_OPT_WITH_CONS_SNAPSHOT;
             Lex->value_list.empty();
             Lex->value_list.push_front($6);

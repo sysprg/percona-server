@@ -4046,7 +4046,7 @@ innobase_start_trx_and_clone_read_view(
 	} else {
 
 		lock_mutex_enter();
-		mutex_enter(&trx_sys->mutex);
+		trx_sys_mutex_enter();
 		trx_mutex_enter(from_trx);
 
 		if (!trx_clone_read_view(trx, from_trx)) {
@@ -4059,8 +4059,6 @@ innobase_start_trx_and_clone_read_view(
 					    "assigned a read view.");
 		}
 
-		trx_mutex_exit(from_trx);
-		mutex_exit(&trx_sys->mutex);
 		lock_mutex_exit();
 	}
 
