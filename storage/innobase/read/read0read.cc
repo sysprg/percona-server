@@ -331,7 +331,8 @@ ReadView::ReadView()
 	m_up_limit_id(),
 	m_creator_trx_id(),
 	m_ids(),
-	m_low_limit_no()
+	m_low_limit_no(),
+	m_cloned(false)
 {
 	ut_d(::memset(&m_view_list, 0x0, sizeof(m_view_list)));
 }
@@ -398,6 +399,7 @@ Copy the transaction ids from the source vector */
 void
 ReadView::copy_trx_ids(const trx_ids_t& trx_ids)
 {
+	ut_ad(!m_cloned);
 	ulint	size = trx_ids.size();
 
 	if (m_creator_trx_id > 0) {
@@ -459,6 +461,7 @@ point in time are seen in the view.
 void
 ReadView::prepare(trx_id_t id)
 {
+	ut_ad(!m_cloned);
 	ut_ad(mutex_own(&trx_sys->mutex));
 
 	m_creator_trx_id = id;
@@ -488,6 +491,7 @@ Complete the read view creation */
 void
 ReadView::complete()
 {
+	ut_ad(!m_cloned);
 	/* The first active transaction has the smallest id. */
 	m_up_limit_id = !m_ids.empty() ? m_ids.front() : m_low_limit_id;
 
@@ -527,6 +531,7 @@ MVCC::get_view()
 Release a view that is inactive but not closed. Caller must own
 the trx_sys_t::mutex.
 @param view		View to release */
+// TODO laurynas unused
 void
 MVCC::view_release(ReadView*& view)
 {
@@ -540,6 +545,7 @@ MVCC::view_release(ReadView*& view)
 	view = reinterpret_cast<ReadView*>(p & ~1);
 
 	ut_ad(view->m_closed);
+	ut_ad(!view->m_cloned);
 
 	/** RW transactions should not free their views here. Their views
 	should freed using view_close_view() */
@@ -689,25 +695,54 @@ ReadView::copy_complete()
 }
 
 /**
-Clones a read view object. This function will allocate space for two
-read views contiguously, one identical in size and content to this view
-(starting at returned pointer) and another view immediately following
-the trx_ids array. The second view will have space for an extra
-trx_id_t element. <- TODO laurynas
-@return	read view struct */
+Clones a read view object. The resulting read view has identical change
+visibility as the donor read view
+@param	result	pointer to resulting read view. If NULL, a view will be
+        allocated. If non-NULL, a view will overwrite a previously-existing
+        in-use or released view.
+@param	from_trx	transation owning the donor read view. */
 
-ReadView*
-ReadView::clone() const
+void
+ReadView::clone(ReadView*& result, trx_t* from_trx) const
 {
+	ut_ad(from_trx->read_view == this);
 	ut_ad(trx_sys_mutex_own());
 
-	ReadView* result= trx_sys->mvcc->get_view();
+	if (!result)
+		result = trx_sys->mvcc->get_view();
+	else {
+		result = reinterpret_cast<ReadView *>
+			(reinterpret_cast<uintptr_t>(result) & ~1);
+	}
+
+	// Set the creating trx id of the clone to that of donor.
+	trx_id_t from_trx_id;
+	if (from_trx->read_view->m_creator_trx_id != 0) {
+		// The donor transaction is RO, and a clone itself
+		from_trx_id = from_trx->read_view->m_creator_trx_id;
+	} else if (from_trx->id == 0) {
+		// The donor transaction is RO, thus does not have a trx ID
+		// yet which the cloned view must see, if it assigned later
+		if (!from_trx->preallocated_id) {
+			// Preallocate a transaction id for the donor
+			from_trx_id = from_trx->preallocated_id
+				= trx_sys_get_new_trx_id();
+		} else {
+			// This transaction has already been cloned
+			from_trx_id = from_trx->preallocated_id;
+		}
+	} else {
+		// The donor transaction is RW
+		from_trx_id = from_trx->id;
+	}
 
 	result->copy_prepare(*this);
-	trx_sys_mutex_exit();
-	result->copy_complete();
-
-	return result;
+	// Calling copy_complete would be redundant for us and would force
+	// a too early trx sys mutex release.
+	result->m_creator_trx_id = from_trx_id;
+	// If the clone transaction is RO and is later promoted to RW, make
+	// sure not to add its own id to its view
+	result->m_cloned = true;
 }
 
 /** Clones the oldest view and stores it in view. No need to
@@ -783,6 +818,7 @@ MVCC::view_close(ReadView*& view, bool own_mutex)
 		/* Note this can be called for a read view that
 		was already closed. */
 		ptr->m_closed = true;
+		ptr->m_cloned = false;
 
 		/* Set the view as closed. */
 		view = reinterpret_cast<ReadView*>(p | 0x1);
@@ -809,6 +845,7 @@ for views created by RW transactions.
 void
 MVCC::set_view_creator_trx_id(ReadView* view, trx_id_t id)
 {
+	ut_ad(!view->is_cloned());
 	ut_ad(id > 0);
 	ut_ad(mutex_own(&trx_sys->mutex));
 

@@ -231,13 +231,14 @@ public:
 	}
 
 	/**
-	Clones a read view object. This function will allocate space for two
-	read views contiguously, one identical in size and content to this view
-	(starting at returned pointer) and another view immediately following
-	the trx_ids array. The second view will have space for an extra
-	trx_id_t element. <- TODO laurynas
-	@return	read view struct */
-	ReadView* clone() const;
+	Clones a read view object. The resulting read view has identical change
+	visibility as the donor read view
+	@param	result	pointer to resulting read view. If NULL, a view will be
+	allocated. If non-NULL, a view will overwrite a previously-existing
+	in-use or released view.
+	@param	from_trx	transation owning the donor read view. */
+
+	void clone(ReadView*& result, trx_t* from_trx) const;
 
 #ifdef UNIV_DEBUG
 	/**
@@ -265,6 +266,12 @@ public:
 				m_ids.data()[i]);
 		}
 	}
+
+	bool is_cloned() const
+	{
+		return(m_cloned);
+	}
+
 private:
 	/**
 	Copy the transaction ids from the source vector */
@@ -330,6 +337,11 @@ private:
 
 	/** AC-NL-RO transaction view that has been "closed". */
 	bool		m_closed;
+
+	/** This is a view cloned by clone but not by
+	MVCC::clone_oldest_view. Used to make sure the cloned transaction does
+	not see its own changes. */
+	bool		m_cloned;
 
 	typedef UT_LIST_NODE_T(ReadView) node_t;
 
