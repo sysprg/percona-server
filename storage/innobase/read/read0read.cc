@@ -531,7 +531,6 @@ MVCC::get_view()
 Release a view that is inactive but not closed. Caller must own
 the trx_sys_t::mutex.
 @param view		View to release */
-// TODO laurynas unused
 void
 MVCC::view_release(ReadView*& view)
 {
