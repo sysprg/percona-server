@@ -1182,17 +1182,6 @@ The following options may be given as the first argument:
  -V, --version       Output version information and exit.
  --wait-timeout=#    The number of seconds the server waits for activity on a
  connection before closing it
- --xtradb-internal-hash-tables[=name] 
- Enable or disable XTRADB_INTERNAL_HASH_TABLES plugin.
- Possible values are ON, OFF, FORCE (don't start if the
- plugin fails to load).
- --xtradb-read-view[=name] 
- Enable or disable XTRADB_READ_VIEW plugin. Possible
- values are ON, OFF, FORCE (don't start if the plugin
- fails to load).
- --xtradb-rseg[=name] 
- Enable or disable XTRADB_RSEG plugin. Possible values are
- ON, OFF, FORCE (don't start if the plugin fails to load).
 
 Variables (--variable-name=value)
 abort-slave-event-count 0
@@ -1249,6 +1238,7 @@ end-markers-in-json FALSE
 enforce-gtid-consistency FALSE
 enforce-storage-engine (No default value)
 eq-range-index-dive-limit 200
+event-scheduler OFF
 executed-gtids-compression-period 1000
 expand-fast-index-creation FALSE
 expire-logs-days 0
@@ -1266,7 +1256,6 @@ ft-stopword-file (No default value)
 gdb FALSE
 general-log FALSE
 group-concat-max-len 1024
-gtid-deployment-step FALSE
 gtid-mode OFF
 help TRUE
 host-cache-size 279
@@ -1424,7 +1413,6 @@ performance-schema-max-rwlock-instances -1
 performance-schema-max-socket-classes 10
 performance-schema-max-socket-instances -1
 performance-schema-max-stage-classes 150
-performance-schema-max-statement-classes 189
 performance-schema-max-statement-stack 10
 performance-schema-max-table-handles -1
 performance-schema-max-table-instances -1
@@ -1531,9 +1519,6 @@ utility-user-schema-access (No default value)
 validate-user-plugins TRUE
 verbose TRUE
 wait-timeout 28800
-xtradb-internal-hash-tables ON
-xtradb-read-view ON
-xtradb-rseg ON
 
 To see what values a running MySQL server is using, type
 'mysqladmin variables' instead of 'mysqld --verbose --help'.

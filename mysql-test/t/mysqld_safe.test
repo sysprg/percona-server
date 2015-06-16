@@ -19,8 +19,9 @@ perl;
  my $dir = $ENV{'MYSQLTEST_VARDIR'};
  open ( OUTPUT, ">$dir/tmp/mysqld_path_file.inc") ;
  my $path = $ENV{MYSQLD};
- $path =~ /(.*?)(mysqld|mysqld-debug)$/i ;   
+ $path =~ /^(.*)\/([^\/]*)$/;
  print OUTPUT "let \$mysqld_path = $1;\n";
+ print OUTPUT "let \$mysqld_bin = $2;\n";
  close (OUTPUT);
 EOF
 
@@ -40,9 +41,8 @@ EOF
 --shutdown_server 10
 --source include/wait_until_disconnected.inc
 
-
 # 4) Run the mysqld_safe script with exec.
---exec sh $MYSQLD_SAFE --defaults-file=$MYSQLTEST_VARDIR/my.cnf --log-error=$MYSQLTEST_VARDIR/log/err.log --basedir=$MYSQL_BASEDIR --ledir=$mysqld_path --datadir=$MYSQLD_DATADIR --socket=$MYSQL_SOCKET --pid-file=$MYSQL_PIDFILE --port=$MYSQL_PORT --timezone=SYSTEM --log-output=file --loose-debug-sync-timeout=600 --default-storage-engine=InnoDB --default-tmp-storage-engine=InnoDB --loose-skip-log-bin --core-file --lc-messages-dir=$MYSQL_MESSAGESDIR --innodb-page-size=$other_page_size_nk < /dev/null > /dev/null 2>&1 &
+--exec sh $MYSQLD_SAFE --defaults-file=$MYSQLTEST_VARDIR/my.cnf --log-error=$MYSQLTEST_VARDIR/log/err.log --basedir=$MYSQL_BASEDIR --ledir=$mysqld_path --mysqld=$mysqld_bin --datadir=$MYSQLD_DATADIR --socket=$MYSQL_SOCKET --pid-file=$MYSQL_PIDFILE --port=$MYSQL_PORT --timezone=SYSTEM --log-output=file --loose-debug-sync-timeout=600 --default-storage-engine=InnoDB --default-tmp-storage-engine=InnoDB --loose-skip-log-bin --core-file --lc-messages-dir=$MYSQL_MESSAGESDIR --innodb-page-size=$other_page_size_nk < /dev/null > /dev/null 2>&1 &
 
 # mysqld_safe takes some time to start mysqld
 --enable_reconnect
