@@ -3,8 +3,7 @@
 connect (con1,localhost,root,,);
 --echo # Establish connection con2 (user=root)
 connect (con2,localhost,root,,);
---echo # Establish connection con3 (user=root)
-connect (con3,localhost,root,,);
+
 --echo # Drop test table
 --disable_warnings
 drop table if exists t;
@@ -18,6 +17,8 @@ insert into t values(1,2);
 
 #--echo # Save current deadlock count
 let $current = `SELECT VARIABLE_VALUE FROM INFORMATION_SCHEMA.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Innodb_deadlocks'`;
+
+SET GLOBAL innodb_monitor_reset = lock_deadlocks;
 
 --disable_result_log
 
@@ -49,13 +50,23 @@ connection con2;
 reap;
 ROLLBACK;
 
---echo # Switch to connection con3
-connection con3;
+--echo # Switch to connection default
+connection default;
+
+--disconnect con1
+--disconnect con2
+
 let $result = `SELECT VARIABLE_VALUE FROM INFORMATION_SCHEMA.GLOBAL_STATUS WHERE VARIABLE_NAME = 'Innodb_deadlocks'`;
 
 --enable_result_log
+
+SELECT NAME, COUNT FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME='lock_deadlocks';
 
 let $diff = `SELECT $result - $current`;
 echo Deadlocks: $diff;
 --echo # Drop test table
 drop table t;
+
+--disable_warnings
+SET GLOBAL innodb_monitor_reset = default;
+--enable_warnings

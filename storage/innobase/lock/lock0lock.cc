@@ -7091,8 +7091,6 @@ DeadlockChecker::check_and_resolve(const lock_t* lock, const trx_t* trx)
 
 			rollback_print(trx, lock);
 
-			MONITOR_INC(MONITOR_DEADLOCK);
-
 		} else if (victim_trx != 0 && victim_trx != trx) {
 
 			ut_ad(victim_trx == checker.m_wait_lock->trx);
@@ -7102,6 +7100,7 @@ DeadlockChecker::check_and_resolve(const lock_t* lock, const trx_t* trx)
 			lock_deadlock_found = true;
 
 			MONITOR_INC(MONITOR_DEADLOCK);
+			srv_stats.lock_deadlock_count.inc();
 		}
 
 	} while (victim_trx != NULL && victim_trx != trx);
@@ -7112,6 +7111,9 @@ DeadlockChecker::check_and_resolve(const lock_t* lock, const trx_t* trx)
 		print("*** WE ROLL BACK TRANSACTION (2)\n");
 
 		lock_deadlock_found = true;
+
+		MONITOR_INC(MONITOR_DEADLOCK);
+		srv_stats.lock_deadlock_count.inc();
 	}
 
 	return(victim_trx);
