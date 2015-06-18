@@ -43,8 +43,6 @@ Created 5/7/1996 Heikki Tuuri
 // Forward declaration
 class ReadView;
 
-extern ulint	srv_n_lock_deadlock_count;
-
 /*********************************************************************//**
 Gets the size of a lock struct.
 @return size in bytes */
