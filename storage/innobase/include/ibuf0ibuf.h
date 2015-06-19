@@ -442,16 +442,8 @@ Function to pass ibuf status variables */
 void
 ibuf_export_ibuf_status(
 /*====================*/
-	ulint*	size,
 	ulint*	free_list,
-	ulint*	segment_size,
-	ulint*	merges,
-	ulint*	merged_inserts,
-	ulint*	merged_delete_marks,
-	ulint*	merged_deletes,
-	ulint*	discarded_inserts,
-	ulint*	discarded_delete_marks,
-	ulint*	discarded_deletes);
+	ulint*	segment_size);
 
 /******************************************************************//**
 Checks the insert buffer bitmaps on IMPORT TABLESPACE.

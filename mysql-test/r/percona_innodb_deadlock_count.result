@@ -26,7 +26,6 @@ ROLLBACK;
 SELECT NAME, COUNT FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME='lock_deadlocks';
 NAME	COUNT
 lock_deadlocks	1
-Deadlocks: 1
 # Drop test table
 drop table t;
 SET GLOBAL innodb_monitor_reset = default;

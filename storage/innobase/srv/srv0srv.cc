@@ -1585,8 +1585,6 @@ srv_export_innodb_status(void)
 
 	export_vars.innodb_buffer_pool_pages_free = free_len;
 
-	export_vars.innodb_deadlocks = srv_stats.lock_deadlock_count;
-
 #ifdef UNIV_DEBUG
 	export_vars.innodb_buffer_pool_pages_latched =
 		buf_get_latched_pages_number();
@@ -1610,19 +1608,9 @@ srv_export_innodb_status(void)
 		= (log_sys->lsn - log_sys->last_checkpoint_lsn);
 	export_vars.innodb_checkpoint_max_age
 		= log_sys->max_checkpoint_age;
-	export_vars.innodb_history_list_length
-		= trx_sys->rseg_history_len;
 	ibuf_export_ibuf_status(
-			&export_vars.innodb_ibuf_size,
 			&export_vars.innodb_ibuf_free_list,
-			&export_vars.innodb_ibuf_segment_size,
-			&export_vars.innodb_ibuf_merges,
-			&export_vars.innodb_ibuf_merged_inserts,
-			&export_vars.innodb_ibuf_merged_delete_marks,
-			&export_vars.innodb_ibuf_merged_deletes,
-			&export_vars.innodb_ibuf_discarded_inserts,
-			&export_vars.innodb_ibuf_discarded_delete_marks,
-			&export_vars.innodb_ibuf_discarded_deletes);
+			&export_vars.innodb_ibuf_segment_size);
 	export_vars.innodb_lsn_current
 		= log_sys->lsn;
 	export_vars.innodb_lsn_flushed
@@ -1645,18 +1633,6 @@ srv_export_innodb_status(void)
 		= mutex_spin_round_count;
 	export_vars.innodb_mutex_spin_waits
 		= mutex_spin_wait_count;
-	export_vars.innodb_s_lock_os_waits
-		= rw_lock_stats.rw_s_os_wait_count;
-	export_vars.innodb_s_lock_spin_rounds
-		= rw_lock_stats.rw_s_spin_round_count;
-	export_vars.innodb_s_lock_spin_waits
-		= rw_lock_stats.rw_s_spin_wait_count;
-	export_vars.innodb_x_lock_os_waits
-		= rw_lock_stats.rw_x_os_wait_count;
-	export_vars.innodb_x_lock_spin_rounds
-		= rw_lock_stats.rw_x_spin_round_count;
-	export_vars.innodb_x_lock_spin_waits
-		= rw_lock_stats.rw_x_spin_wait_count;
 
 	mutex_enter(&trx_sys->mutex);
 	oldest_view = trx_sys->mvcc->get_oldest_view();
@@ -1666,8 +1642,6 @@ srv_export_innodb_status(void)
 
 	export_vars.innodb_purge_trx_id = purge_sys->limit.trx_no;
 	export_vars.innodb_purge_undo_no = purge_sys->limit.undo_no;
-	export_vars.innodb_current_row_locks
-		= lock_sys->rec_num;
 
 #ifdef HAVE_ATOMIC_BUILTINS
 	export_vars.innodb_have_atomic_builtins = 1;

@@ -130,8 +130,6 @@ struct srv_stats_t {
 	/** Number of rows inserted */
 	ulint_ctr_64_t		n_rows_inserted;
 
-	ulint_ctr_1_t		lock_deadlock_count;
-
 	ulint_ctr_1_t		n_lock_max_wait_time;
 };
 
@@ -972,19 +970,9 @@ struct export_var_t{
 	ulint innodb_checkpoint_max_age;
 	ulint innodb_dblwr_pages_written;	/*!< srv_dblwr_pages_written */
 	ulint innodb_dblwr_writes;		/*!< srv_dblwr_writes */
-	ulint innodb_deadlocks;
 	ibool innodb_have_atomic_builtins;	/*!< HAVE_ATOMIC_BUILTINS */
-	ulint innodb_history_list_length;
-	ulint innodb_ibuf_size;
 	ulint innodb_ibuf_free_list;
 	ulint innodb_ibuf_segment_size;
-	ulint innodb_ibuf_merges;
-	ulint innodb_ibuf_merged_inserts;
-	ulint innodb_ibuf_merged_delete_marks;
-	ulint innodb_ibuf_merged_deletes;
-	ulint innodb_ibuf_discarded_inserts;
-	ulint innodb_ibuf_discarded_delete_marks;
-	ulint innodb_ibuf_discarded_deletes;
 	ulint innodb_log_waits;			/*!< srv_log_waits */
 	ulint innodb_log_write_requests;	/*!< srv_log_write_requests */
 	ulint innodb_log_writes;		/*!< srv_log_writes */
@@ -1019,7 +1007,6 @@ struct export_var_t{
 						/ srv_n_lock_wait_count */
 	ulint innodb_row_lock_time_max;		/*!< srv_n_lock_max_wait_time
 						/ 1000 */
-	ulint innodb_current_row_locks;
 	ulint innodb_rows_read;			/*!< srv_n_rows_read */
 	ulint innodb_rows_inserted;		/*!< srv_n_rows_inserted */
 	ulint innodb_rows_updated;		/*!< srv_n_rows_updated */
@@ -1027,12 +1014,6 @@ struct export_var_t{
 	ulint innodb_num_open_files;		/*!< fil_n_file_opened */
 	ulint innodb_truncated_status_writes;	/*!< srv_truncated_status_writes */
 	ulint innodb_available_undo_logs;       /*!< srv_available_undo_logs */
-	ib_uint64_t innodb_s_lock_os_waits;
-	ib_uint64_t innodb_s_lock_spin_rounds;
-	ib_uint64_t innodb_s_lock_spin_waits;
-	ib_uint64_t innodb_x_lock_os_waits;
-	ib_uint64_t innodb_x_lock_spin_rounds;
-	ib_uint64_t innodb_x_lock_spin_waits;
 #ifdef UNIV_DEBUG
 	ulint innodb_purge_trx_id_age;		/*!< rw_max_trx_id - purged trx_id */
 	ulint innodb_purge_view_trx_id_age;	/*!< rw_max_trx_id

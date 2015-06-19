@@ -1758,8 +1758,7 @@ bool log_slow_applicable(THD *thd)
   {
     if (thd->lex->sql_command == SQLCOM_CALL)
     {
-      // TODO laurynas fishy below
-      if (thd->stmt_arena->is_stmt_prepare_or_first_sp_execute())
+      if (!thd->stmt_arena->is_conventional())
       {
         int sql_command= ((sp_lex_instr *)thd->stmt_arena)->get_command();
         if (sql_command == SQLCOM_CALL || sql_command == -1)
