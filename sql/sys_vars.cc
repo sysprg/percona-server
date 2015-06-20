@@ -4601,8 +4601,12 @@ void init_log_slow_verbosity()
 }
 static Sys_var_set Sys_slow_query_log_use_global_control(
        "slow_query_log_use_global_control",
-       "Choose flags, wich always use the global variables. Multiple flags allowed in a comma-separated string. [none, log_slow_filter, log_slow_rate_limit, log_slow_verbosity, long_query_time, min_examined_row_limit, all]",
-       GLOBAL_VAR(opt_slow_query_log_use_global_control), CMD_LINE(REQUIRED_ARG),
+       "Choose flags, wich always use the global variables. Multiple flags "
+       "allowed in a comma-separated string. [none, log_slow_filter, "
+       "log_slow_rate_limit, log_slow_verbosity, long_query_time, "
+       "min_examined_row_limit, all]",
+       GLOBAL_VAR(opt_slow_query_log_use_global_control),
+       CMD_LINE(REQUIRED_ARG),
        slow_query_log_use_global_control_name, DEFAULT(0),
         NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0),
        ON_UPDATE(update_slow_query_log_use_global_control));
