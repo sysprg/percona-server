@@ -1627,6 +1627,7 @@ public:
   }
 };
 
+
 class PT_transaction_characteristic : public Parse_tree_node
 {
   typedef Parse_tree_node super;
