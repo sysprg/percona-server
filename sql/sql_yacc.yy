@@ -13426,13 +13426,13 @@ keyword_sp:
 set:
           SET start_option_value_list
           {
-            $$= NEW_PTN PT_set(@1, $2, false);
+            $$= NEW_PTN PT_set(@1, @1, $2, false);
           }
         | SET STATEMENT_SYM option_value_following_option_type
           set_stmt_option_value_list_continued
           FOR_SYM statement 
           {
-            $$= NEW_PTN PT_set(@1,
+            $$= NEW_PTN PT_set(@1, @2,
               NEW_PTN PT_start_set_stmt_option_value_list(
                 NEW_PTN PT_start_option_value_list_following_option_type_eq($3,
                                                                             @3,

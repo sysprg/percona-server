@@ -1856,14 +1856,17 @@ class PT_set : public Parse_tree_node
   typedef Parse_tree_node super;
 
   POS set_pos;
+  POS set_statement_end_pos;
   PT_start_option_value_list *list;
 
   bool  is_set_statement;
 
 public:
-  PT_set(const POS &set_pos_arg, PT_start_option_value_list *list_arg,
+  PT_set(const POS &set_pos_arg, const POS &set_statement_end_pos_arg,
+         PT_start_option_value_list *list_arg,
          bool is_set_statement_arg)
-  : set_pos(set_pos_arg), list(list_arg),
+  : set_pos(set_pos_arg), set_statement_end_pos(set_statement_end_pos_arg),
+    list(list_arg),
     is_set_statement(is_set_statement_arg)
   {}
 
@@ -1874,12 +1877,17 @@ public:
   
     THD *thd= pc->thd;
     LEX *lex= thd->lex;
-    lex->sql_command= SQLCOM_SET_OPTION;
-    lex->option_type= OPT_SESSION;
+    if (!is_set_statement)
+    {
+      /* Only set the context for non SET STATEMENT FOR sets. Otherwise our
+      context has already been set, do not overwrite it. */
+      lex->sql_command= SQLCOM_SET_OPTION;
+      lex->option_type= OPT_SESSION;
+      lex->one_shot_set= false;
+      lex->autocommit= false;
+    }
     if (!is_set_statement || !lex->set_statement)
       lex->var_list.empty();
-    lex->one_shot_set= false;
-    lex->autocommit= false;
     lex->set_statement= is_set_statement;
 
     if (is_set_statement)
@@ -1887,11 +1895,8 @@ public:
       sp_head* sp= lex->sphead;
       if (sp && !sp->is_invoked())
       {
-        // TODO laurynas
-#if 0
-        sp->m_parser_data.set_current_stmt_start_ptr(YY_TOKEN_START);
-        sp->m_parser_data.set_option_start_ptr(YY_TOKEN_END);
-#endif
+        sp->m_parser_data.set_current_stmt_start_ptr(set_pos.raw.start);
+        sp->m_parser_data.set_option_start_ptr(set_statement_end_pos.raw.end);
       }
     }
     else
