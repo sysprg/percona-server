@@ -9,3 +9,4 @@
 #  Do not use any TAB characters for whitespace.
 #
 ##############################################################################
+percona_mysqlbinlog_rewritedb   : laurynas disabled until 5.7.8 merge
