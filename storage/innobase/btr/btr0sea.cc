@@ -228,7 +228,12 @@ btr_search_sys_resize(
 		hash_table_free(btr_search_sys->hash_tables[i]);
 
 		btr_search_sys->hash_tables[i]
-			= ib_create(hash_size, 0, MEM_HEAP_FOR_BTR_SEARCH, 0);
+			= ib_create(hash_size, NULL, 0,
+				    MEM_HEAP_FOR_BTR_SEARCH);
+
+#if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
+		btr_search_sys->hash_tables[i]->adaptive = TRUE;
+#endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
 	}
 
 	btr_search_x_unlock_all();

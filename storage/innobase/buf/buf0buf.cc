@@ -1766,9 +1766,6 @@ buf_page_realloc(
 
 	ut_ad(buf_pool_withdrawing);
 	ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
-#ifdef UNIV_SYNC_DEBUG
-	ut_ad(btr_search_own_all(RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 	ut_ad(!btr_search_enabled);
 
 	new_block = buf_LRU_get_free_only(buf_pool);
