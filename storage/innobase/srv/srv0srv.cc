@@ -1019,10 +1019,8 @@ srv_init(void)
 
 		srv_checkpoint_completed_event = os_event_create(0);
 
-		if (srv_track_changed_pages) {
-			srv_redo_log_tracked_event = os_event_create(0);
-			os_event_set(srv_redo_log_tracked_event);
-		}
+		srv_redo_log_tracked_event = os_event_create(0);
+		os_event_set(srv_redo_log_tracked_event);
 	}
 
 	srv_buf_resize_event = os_event_create(0);
@@ -1076,6 +1074,7 @@ srv_free(void)
 		os_event_destroy(srv_buf_dump_event);
 		os_event_destroy(buf_flush_event);
 		os_event_destroy(srv_checkpoint_completed_event);
+		os_event_destroy(srv_redo_log_tracked_event);
 	}
 
 	os_event_destroy(srv_buf_resize_event);
