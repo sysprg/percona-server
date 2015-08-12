@@ -18,8 +18,7 @@ perl;
   # their paths may vary:
   @skipvars=qw/basedir open-files-limit general-log-file plugin-dir
                pid-file slow-query-log-file
-               datadir slave-load-tmpdir tmpdir socket table-definition-cache
-               performance-schema-max-statement-classes table-open-cache/;
+               datadir slave-load-tmpdir tmpdir socket table-definition-cache table-open-cache/;
                
   # Variables which we don't want to display in result file since
   # they depend on type of build

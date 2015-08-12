@@ -95,7 +95,9 @@ select * from performance_schema.replication_execute_status_by_worker;
 --enable_result_log
 
 # This has a stable output, printing the result:
-show variables like "performance_schema%";
+show variables where
+    `Variable_name` != "performance_schema_max_statement_classes" and
+    `Variable_name` like "performance_schema%";
 
 # This has an unrepeatable output, it does depends too much on
 # - the platform hardware (sizeof structures, padding)

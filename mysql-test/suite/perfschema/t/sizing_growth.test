@@ -420,11 +420,13 @@ select @cond_per_share;
 select @file_per_share <= 3;
 
 #
-# Expecting 4:
+# Expecting 6:
 # - wait/synch/mutex/mysys/my_thread_var::mutex
 # - wait/synch/mutex/mysys/THR_LOCK::mutex
 # - wait/synch/mutex/sql/THD::LOCK_thd_data
 # - wait/synch/mutex/sql/THD::LOCK_temporary_tables
+# - wait/synch/mutex/sql/THD::LOCK_thd_query
+# - wait/synch/mutex/sql/THD::LOCK_query_plan
 #
 select @mutex_per_con;
 
