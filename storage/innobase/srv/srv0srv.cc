@@ -2128,8 +2128,8 @@ DECLARE_THREAD(srv_redo_log_follow_thread)(
 			if (!log_online_follow_redo_log()) {
 				/* TODO: sync with I_S log tracking status? */
 				ib_logf(IB_LOG_LEVEL_ERROR,
-					"log tracking bitmap write failed, "
-					"stopping log tracking thread!\n");
+					"Log tracking bitmap write failed, "
+					"stopping log tracking thread!");
 				break;
 			}
 			os_event_set(srv_redo_log_tracked_event);
