@@ -201,6 +201,17 @@ fil_name_process(
 	ulint	space_id,
 	bool	deleted)
 {
+	/* The first condition is true during normal server operation, the
+	second one during server startup after
+	recv_recovery_from_checkpoint_start has completed. */
+	if (!recv_recovery_is_on() || recv_lsn_checks_on)
+	{
+		/* We are being called from online log tracking, file name
+		processing is a no-op, and specifically do not cause any DD
+		changes. */
+		return;
+	}
+
 	/* We will also insert space=NULL into the map, so that
 	further checks can ensure that a MLOG_FILE_NAME record was
 	scanned before applying any page records for the space_id. */
@@ -2338,7 +2349,8 @@ recv_parse_log_rec(
 		return(1);
 	case MLOG_CHECKPOINT:
 		*type = static_cast<mlog_id_t>(*ptr);
-		return(SIZE_OF_MLOG_CHECKPOINT);
+		return ((end_ptr - ptr < SIZE_OF_MLOG_CHECKPOINT)
+			? 0 : SIZE_OF_MLOG_CHECKPOINT);
 	case MLOG_MULTI_REC_END | MLOG_SINGLE_REC_FLAG:
 	case MLOG_DUMMY_RECORD | MLOG_SINGLE_REC_FLAG:
 	case MLOG_CHECKPOINT | MLOG_SINGLE_REC_FLAG:
@@ -2563,9 +2575,6 @@ loop:
 			/* Do nothing */
 			break;
 		case MLOG_CHECKPOINT:
-			if (end_ptr < ptr + SIZE_OF_MLOG_CHECKPOINT) {
-				return(false);
-			}
 #if SIZE_OF_MLOG_CHECKPOINT != 1 + 8
 # error SIZE_OF_MLOG_CHECKPOINT != 1 + 8
 #endif

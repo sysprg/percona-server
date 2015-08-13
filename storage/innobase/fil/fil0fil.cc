@@ -1308,6 +1308,7 @@ fil_space_create(
 	if (space != NULL) {
 		mutex_exit(&fil_system->mutex);
 
+		ut_ad(space->id != id);
 		ib::warn() << "Tablespace '" << name << "' exists in the cache"
 			" with id " << space->id << " != " << id;
 
