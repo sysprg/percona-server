@@ -838,9 +838,7 @@ log_online_rec_page_means_page(
 #ifdef UNIV_LOG_LSN_DEBUG
 		&& type != MLOG_LSN
 #endif
-		&& type != MLOG_FILE_RENAME2
-		&& type != MLOG_FILE_DELETE
-		&& type != MLOG_FILE_NAME;
+		;
 }
 
 /*********************************************************************//**

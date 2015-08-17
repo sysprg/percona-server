@@ -540,11 +540,11 @@ i_s_xtradb_rseg_fill(
 	  table->field[0]->store(rseg->id);
 	  table->field[1]->store(rseg->space);
 	  table->field[2]->store(rseg->page_size.physical());
-	  table->field[2]->store(rseg->page_size.logical());
-	  table->field[2]->store(rseg->page_size.is_compressed());
-	  table->field[3]->store(rseg->page_no);
-	  table->field[4]->store(rseg->max_size);
-	  table->field[5]->store(rseg->curr_size);
+	  table->field[3]->store(rseg->page_size.logical());
+	  table->field[4]->store(rseg->page_size.is_compressed());
+	  table->field[5]->store(rseg->page_no);
+	  table->field[6]->store(rseg->max_size);
+	  table->field[7]->store(rseg->curr_size);
 
 	  if (schema_table_store_record(thd, table)) {
 	    status = 1;
