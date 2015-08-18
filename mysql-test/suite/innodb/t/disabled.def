@@ -11,4 +11,4 @@
 ##############################################################################
 innodb_mysql : BUG#18449085 disabled this on 2014-04-01 due to failing too often
 percona_changed_page_bmp : laurynas disabled until 5.7.6 merge (19265668 / 73341)
-percona_changed_page_bmp_debug : laurynas temporarily disabled until 78056
+percona_changed_page_bmp_debug : laurynas disabled until 5.7.9 merge (78056)
