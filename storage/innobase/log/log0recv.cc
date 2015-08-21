@@ -3306,16 +3306,13 @@ recv_recovery_from_checkpoint_start(
 	log_group_t*	group;
 	log_group_t*	max_cp_group;
 	ulint		max_cp_field;
-	ulint		log_hdr_log_block_size;
 	lsn_t		checkpoint_lsn;
 	bool		rescan;
 	ib_uint64_t	checkpoint_no;
 	lsn_t		contiguous_lsn;
 	lsn_t		archived_lsn;
 	byte*		buf;
-	byte*		log_hdr_buf;
-	byte*		log_hdr_buf_base = static_cast<byte *>
-		(alloca(LOG_FILE_HDR_SIZE + OS_FILE_LOG_BLOCK_SIZE));
+	byte*		log_hdr_buf[LOG_FILE_HDR_SIZE];
 	dberr_t		err;
 
 	/* Initialize red-black tree for fast insertions into the
@@ -3323,9 +3320,6 @@ recv_recovery_from_checkpoint_start(
 	buf_flush_init_flush_rbt();
 
 	ut_when_dtor<recv_dblwr_t> tmp(recv_sys->dblwr);
-
-	log_hdr_buf = static_cast<byte *>
-		(ut_align(log_hdr_buf_base, OS_FILE_LOG_BLOCK_SIZE));
 
 	if (srv_force_recovery >= SRV_FORCE_NO_LOG_REDO) {
 
@@ -3404,23 +3398,6 @@ recv_recovery_from_checkpoint_start(
 	known to be contiguously written to all log groups. */
 
 	recv_sys->mlog_checkpoint_lsn = 0;
-
-	log_hdr_log_block_size
-		= mach_read_from_4(log_hdr_buf
-				   + LOG_FILE_OS_FILE_LOG_BLOCK_SIZE);
-	if (log_hdr_log_block_size == 0) {
-		/* 0 means default value */
-		log_hdr_log_block_size = 512;
-	}
-
-	if (UNIV_UNLIKELY(log_hdr_log_block_size != srv_log_block_size)) {
-		fprintf(stderr,
-			"InnoDB: Error: The block size of ib_logfile (" ULINTPF
-			") is not equal to innodb_log_block_size.\n"
-			"InnoDB: Error: Suggestion - Recreate log files.\n",
-			log_hdr_log_block_size);
-		return(DB_ERROR);
-	}
 
 	group = UT_LIST_GET_FIRST(log_sys->log_groups);
 

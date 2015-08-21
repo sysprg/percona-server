@@ -5313,8 +5313,8 @@ _fil_io(
 
 	/* Do aio */
 
-	ut_a(byte_offset % OS_MIN_LOG_BLOCK_SIZE == 0);
-	ut_a((len % OS_MIN_LOG_BLOCK_SIZE) == 0);
+	ut_a(byte_offset % OS_FILE_LOG_BLOCK_SIZE == 0);
+	ut_a((len % OS_FILE_LOG_BLOCK_SIZE) == 0);
 
 #ifndef UNIV_HOTBACKUP
 	if (UNIV_UNLIKELY(space->is_corrupt && srv_pass_corrupt_table)) {

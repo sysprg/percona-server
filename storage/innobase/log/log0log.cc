@@ -189,7 +189,7 @@ log_buffer_extend(
 {
 	ulint	move_start;
 	ulint	move_end;
-	byte*	tmp_buf = static_cast<byte *>(alloca(OS_FILE_LOG_BLOCK_SIZE));
+	byte*	tmp_buf[OS_FILE_LOG_BLOCK_SIZE];
 
 	log_mutex_enter();
 
@@ -1053,9 +1053,6 @@ log_group_file_header_flush(
 	/* Wipe over possible label of mysqlbackup --restore */
 	memset(buf + LOG_FILE_WAS_CREATED_BY_HOT_BACKUP, 0x20, 4);
 
-	mach_write_to_4(buf + LOG_FILE_OS_FILE_LOG_BLOCK_SIZE,
-			srv_log_block_size);
-
 	dest_offset = nth_file * group->file_size;
 
 	DBUG_PRINT("ib_log", ("write " LSN_PF
@@ -1679,7 +1676,9 @@ log_group_checkpoint(
 
 	ut_ad(!srv_read_only_mode);
 	ut_ad(log_mutex_own());
-	ut_a(LOG_CHECKPOINT_SIZE <= OS_FILE_LOG_BLOCK_SIZE);
+#if LOG_CHECKPOINT_SIZE > OS_FILE_LOG_BLOCK_SIZE
+# error "LOG_CHECKPOINT_SIZE > OS_FILE_LOG_BLOCK_SIZE"
+#endif
 
 	DBUG_PRINT("ib_log", ("checkpoint " UINT64PF " at " LSN_PF
 			      " written to group " ULINTPF,

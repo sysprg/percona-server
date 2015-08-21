@@ -139,8 +139,6 @@ static ulong innobase_commit_concurrency = 0;
 static ulong innobase_read_io_threads;
 static ulong innobase_write_io_threads;
 
-static ulong innobase_log_block_size;
-
 static long long innobase_buffer_pool_size, innobase_log_file_size;
 
 /** Percentage of the buffer pool to reserve for 'old' blocks.
@@ -3312,36 +3310,6 @@ innobase_init(
 		DBUG_RETURN(innobase_init_abort());
 	}
 #endif /* DBUG_OFF */
-
-	srv_log_block_size = 0;
-	if (innobase_log_block_size != (1 << 9)) { /*!=512*/
-		uint	n_shift;
-
-		fprintf(stderr,
-			"InnoDB: Warning: innodb_log_block_size has been "
-			"changed from default value 512. (###EXPERIMENTAL### "
-			"operation)\n");
-		for (n_shift = 9; n_shift <= UNIV_PAGE_SIZE_SHIFT_MAX;
-		     n_shift++) {
-			if (innobase_log_block_size == ((ulong)1 << n_shift)) {
-				srv_log_block_size = (1 << n_shift);
-				fprintf(stderr,
-					"InnoDB: The log block size is set to "
-					ULINTPF ".\n",srv_log_block_size);
-				break;
-			}
-		}
-	} else {
-		srv_log_block_size = 512;
-	}
-	ut_ad (srv_log_block_size >= OS_MIN_LOG_BLOCK_SIZE);
-
-	if (!srv_log_block_size) {
-		ib::error() << innobase_log_block_size << " is not a valid "
-			"value for innodb_log_block_size. A valid value is a "
-			"power of 2 from 512 to 16384.";
-		DBUG_RETURN(innobase_init_abort());
-	}
 
 	/* Check that values don't overflow on 32-bit systems. */
 	if (sizeof(ulint) == 4) {
@@ -17242,12 +17210,6 @@ static MYSQL_SYSVAR_BOOL(checksums, innobase_use_checksums,
   " Disable with --skip-innodb-checksums.",
   NULL, NULL, TRUE);
 
-static MYSQL_SYSVAR_ULONG(log_block_size, innobase_log_block_size,
-  PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
-  "###EXPERIMENTAL###: The log block size of the transaction log file. Changing for created log file is not supported. Use on your own risk!",
-  NULL, NULL, (1 << 9)/*512*/, OS_MIN_LOG_BLOCK_SIZE,
-  (1 << UNIV_PAGE_SIZE_SHIFT_MAX), 0);
-
 static MYSQL_SYSVAR_STR(data_home_dir, innobase_data_home_dir,
   PLUGIN_VAR_READONLY,
   "The common part for InnoDB table spaces.",
@@ -18239,7 +18201,6 @@ static	MYSQL_SYSVAR_ENUM(corrupt_table_action, srv_pass_corrupt_table,
   "except for the deletion.",
   NULL, NULL, 0, &corrupt_table_action_typelib);
 static struct st_mysql_sys_var* innobase_system_variables[]= {
-  MYSQL_SYSVAR(log_block_size),
   MYSQL_SYSVAR(api_trx_level),
   MYSQL_SYSVAR(api_bk_commit_interval),
   MYSQL_SYSVAR(autoextend_increment),

@@ -278,9 +278,6 @@ ulint	srv_n_write_io_threads	= ULINT_MAX;
 /* Switch to enable random read ahead. */
 my_bool	srv_random_read_ahead	= FALSE;
 
-/* The log block size */
-ulint	srv_log_block_size	= 0;
-
 /* User settable value of the number of pages that must be present
 in the buffer cache and accessed sequentially for InnoDB to trigger a
 readahead request. */

@@ -104,7 +104,7 @@ whole block gets written. This should be true even in most cases of a crash:
 if this fails for a log block, then it is equivalent to a media failure in the
 log. */
 
-#define OS_FILE_LOG_BLOCK_SIZE		srv_log_block_size
+#define OS_FILE_LOG_BLOCK_SIZE		512
 
 /** Options for os_file_create_func @{ */
 enum os_file_create_t {
@@ -211,10 +211,6 @@ enum os_file_create_t {
 extern ulint	os_n_file_reads;
 extern ulint	os_n_file_writes;
 extern ulint	os_n_fsyncs;
-
-#define OS_MIN_LOG_BLOCK_SIZE 512
-
-extern ulint	srv_log_block_size;
 
 #ifdef UNIV_PFS_IO
 /* Keys to register InnoDB I/O with performance schema */
