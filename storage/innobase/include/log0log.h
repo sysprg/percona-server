@@ -725,7 +725,6 @@ struct log_group_t{
 	byte**		file_header_bufs_ptr;/*!< unaligned buffers */
 	byte**		file_header_bufs;/*!< buffers for each file
 					header in the group */
-#ifdef UNIV_LOG_ARCHIVE // todo laurynas remove define
 	/*-----------------------------*/
 	byte**		archive_file_header_bufs_ptr;/*!< unaligned buffers */
 	byte**		archive_file_header_bufs;/*!< buffers for each file
@@ -746,7 +745,6 @@ struct log_group_t{
 					completion function then sets the new
 					value to ..._file_no */
 	lsn_t		next_archived_offset; /*!< like the preceding field */
-#endif /* UNIV_LOG_ARCHIVE */
 	/*-----------------------------*/
 	lsn_t		scanned_lsn;	/*!< used only in recovery: recovery scan
 					succeeded up to this lsn in this log

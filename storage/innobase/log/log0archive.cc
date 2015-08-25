@@ -207,7 +207,7 @@ log_group_archive_completed_header_write(
 }
 
 /******************************************************//**
-							Does the archive writes for a single log group. */
+Does the archive writes for a single log group. */
 static
 void
 log_group_archive(
@@ -379,8 +379,8 @@ log_archive_groups(void)
 }
 
 /*****************************************************//**
-						       Completes the archiving write phase for (each log group), currently,
-						       the first log group. */
+Completes the archiving write phase for (each log group), currently,
+the first log group. */
 static
 void
 log_archive_write_complete_groups(void)

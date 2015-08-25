@@ -685,6 +685,12 @@ log_group_set_fields(
 	group->lsn = lsn;
 }
 
+/* Extra margin, in addition to one log file, used in archiving */
+#define LOG_ARCHIVE_EXTRA_MARGIN	(4 * UNIV_PAGE_SIZE)
+
+/* This parameter controls asynchronous writing to the archive */
+#define LOG_ARCHIVE_RATIO_ASYNC		16
+
 /*****************************************************************//**
 Calculates the recommended highest values for lsn - last_checkpoint_lsn
 and lsn - buf_get_oldest_modification().
@@ -701,6 +707,8 @@ log_calc_max_ages(void)
 	ulint		free;
 	bool		success	= true;
 	lsn_t		smallest_capacity;
+	lsn_t		archive_margin;
+	lsn_t		smallest_archive_margin;
 
 	log_mutex_enter();
 
@@ -709,11 +717,21 @@ log_calc_max_ages(void)
 	ut_ad(group);
 
 	smallest_capacity = LSN_MAX;
+	smallest_archive_margin = LSN_MAX;
 
 	while (group) {
 		if (log_group_get_capacity(group) < smallest_capacity) {
 
 			smallest_capacity = log_group_get_capacity(group);
+		}
+
+		archive_margin = log_group_get_capacity(group)
+		    - (group->file_size - LOG_FILE_HDR_SIZE)
+		    - LOG_ARCHIVE_EXTRA_MARGIN;
+
+		if (archive_margin < smallest_archive_margin) {
+
+		    smallest_archive_margin = archive_margin;
 		}
 
 		group = UT_LIST_GET_NEXT(log_groups, group);
@@ -750,6 +768,10 @@ log_calc_max_ages(void)
 		/ LOG_POOL_CHECKPOINT_RATIO_ASYNC;
 	log_sys->max_checkpoint_age = margin;
 
+	log_sys->max_archived_lsn_age = smallest_archive_margin;
+
+	log_sys->max_archived_lsn_age_async = smallest_archive_margin
+	    - smallest_archive_margin / LOG_ARCHIVE_RATIO_ASYNC;
 failure:
 	log_mutex_exit();
 
@@ -877,7 +899,7 @@ log_group_init(
 	ulint	space_id,		/*!< in: space id of the file space
 					which contains the log files of this
 					group */
-	ulint	archive_space_id __attribute__((unused)))
+	ulint	archive_space_id)
 					/*!< in: space id of the file space
 					which contains some archived log
 					files for this group; currently, only
@@ -2137,6 +2159,11 @@ loop:
 		is > the expression below, so the typecast is ok */
 		len = (ulint) (group->file_size -
 			(source_offset % group->file_size));
+	}
+
+	if (type == LOG_ARCHIVE) {
+
+		log_sys->n_pending_archive_ios++;
 	}
 
 	log_sys->n_log_ios++;
