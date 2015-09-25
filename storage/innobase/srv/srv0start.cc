@@ -2023,6 +2023,10 @@ innobase_start_or_create_for_mysql(void)
 		ut_a(fil_validate());
 		ut_a(log_space);
 
+		/* Create the file space object for archived logs. */
+		ut_a(fil_space_create("arch_log_space", SRV_LOG_SPACE_FIRST_ID + 1,
+				      0, FIL_TYPE_LOG));
+
 		/* srv_log_file_size is measured in pages; if page size is 16KB,
 		then we have a limit of 64TB on 32 bit systems */
 		ut_a(srv_log_file_size <= ULINT_MAX);
@@ -2445,6 +2449,9 @@ files_checked:
 		srv_start_state_set(SRV_START_STATE_MONITOR);
 	}
 
+	/* wake main loop of page cleaner up */
+	os_event_set(buf_flush_event);
+
 	/* Create the SYS_FOREIGN and SYS_FOREIGN_COLS system tables */
 	err = dict_create_or_check_foreign_constraint_tables();
 	if (err != DB_SUCCESS) {
@@ -2496,9 +2503,6 @@ files_checked:
 	} else {
 		purge_sys->state = PURGE_STATE_DISABLED;
 	}
-
-	/* wake main loop of page cleaner up */
-	os_event_set(buf_flush_event);
 
 	sum_of_data_file_sizes = srv_sys_space.get_sum_of_sizes();
 	ut_a(sum_of_new_sizes != ULINT_UNDEFINED);

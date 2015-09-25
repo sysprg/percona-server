@@ -444,7 +444,7 @@ log_archive_write_complete_groups(void)
 }
 
 /******************************************************//**
-							Completes an archiving i/o. */
+Completes an archiving i/o. */
 static
 void
 log_archive_check_completion_low(void)
@@ -618,7 +618,7 @@ loop:
 /****************************************************************//**
 Writes the log contents to the archive at least up to the lsn when this
 function was called. */
-static
+
 void
 log_archive_all(void)
 /*=================*/

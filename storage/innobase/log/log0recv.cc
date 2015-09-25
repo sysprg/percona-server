@@ -3312,7 +3312,7 @@ recv_recovery_from_checkpoint_start(
 	lsn_t		contiguous_lsn;
 	lsn_t		archived_lsn;
 	byte*		buf;
-	byte*		log_hdr_buf[LOG_FILE_HDR_SIZE];
+	byte		log_hdr_buf[LOG_FILE_HDR_SIZE];
 	dberr_t		err;
 
 	/* Initialize red-black tree for fast insertions into the

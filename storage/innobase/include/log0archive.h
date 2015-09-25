@@ -48,6 +48,14 @@ log_archive_do(
 	ulint*	n_bytes);/*!< out: archive log buffer size, 0 if nothing to
 			 archive */
 
+/****************************************************************//**
+Writes the log contents to the archive at least up to the lsn when this
+function was called. */
+
+void
+log_archive_all(void);
+
+
 /*****************************************************//**
 Closes the possible open archive log file (for each group) the first group,
 and if it was open, increments the group file count by 2, if desired. */

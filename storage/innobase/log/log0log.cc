@@ -343,6 +343,7 @@ loop:
 
 			ut_ad(++count < 50);
 
+			log_mutex_enter();
 			goto loop;
 		}
 	}
@@ -358,6 +359,7 @@ loop:
 
 		os_thread_sleep(10000);
 
+		log_mutex_enter();
 		goto loop;
 	}
 
@@ -2383,6 +2385,8 @@ loop:
 
 		goto loop;
 	}
+
+	log_archive_all();
 
 	if (srv_fast_shutdown == 2) {
 		if (!srv_read_only_mode) {

@@ -12264,6 +12264,8 @@ purge_archive_option:
           }
         | BEFORE_SYM expr
           {
+            ITEMIZE($2, &$2);
+
             LEX *lex= Lex;
             lex->value_list.empty();
             lex->value_list.push_front($2);
