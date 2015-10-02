@@ -213,7 +213,9 @@ enum enum_object_type
   OBJECT_TYPE_GLOBAL= 7,
   OBJECT_TYPE_SCHEMA= 8,
   OBJECT_TYPE_COMMIT= 9,
-  OBJECT_TYPE_USER_LEVEL_LOCK= 10
+  OBJECT_TYPE_USER_LEVEL_LOCK= 10,
+  OBJECT_TYPE_BACKUP= 11,
+  OBJECT_TYPE_BINLOG= 12,
 };
 /** Integer, first value of @sa enum_object_type. */
 #define FIRST_OBJECT_TYPE (static_cast<int> (OBJECT_TYPE_EVENT))
