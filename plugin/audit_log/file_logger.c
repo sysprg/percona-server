@@ -130,8 +130,7 @@ LOGGER_HANDLE *logger_open(const char *path,
     return 0;
   }
 
-  // TODO laurynas instrument?
-  if (!(l_perm= (LOGGER_HANDLE *) my_malloc(PSI_NOT_INSTRUMENTED,
+  if (!(l_perm= (LOGGER_HANDLE *) my_malloc(key_memory_audit_log_logger_handle,
                                             sizeof(LOGGER_HANDLE), MYF(0))))
   {
     my_close(new_log.file, MYF(0));
@@ -333,7 +332,7 @@ void logger_init_mutexes()
 {
 #if defined(HAVE_PSI_INTERFACE) && !defined(FLOGGER_NO_PSI) && !defined(FLOGGER_NO_THREADSAFE)
   if (PSI_server)
-    PSI_server->register_mutex("audit_logger", mutex_list, 1);
+    PSI_server->register_mutex(PSI_CATEGORY, mutex_list, 1);
 #endif /*HAVE_PSI_INTERFACE && !FLOGGER_NO_PSI*/
 }
 

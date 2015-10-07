@@ -60,6 +60,14 @@ char default_audit_log_syslog_ident[] = "percona-audit";
 ulong audit_log_syslog_facility= 0;
 ulong audit_log_syslog_priority= 0;
 
+PSI_memory_key key_memory_audit_log_logger_handle;
+
+#ifdef HAVE_PSI_INTERFACE
+static PSI_memory_info all_audit_log_memory[]=
+{
+  {&key_memory_audit_log_logger_handle, "audit_log_logger_handle", 0}
+};
+#endif
 
 static int audit_log_syslog_facility_codes[]=
   { LOG_USER,   LOG_AUTHPRIV, LOG_CRON,   LOG_DAEMON, LOG_FTP,
@@ -639,6 +647,11 @@ int audit_log_plugin_init(void *arg __attribute__((unused)))
   char buf[1024];
   size_t len;
 
+#ifdef HAVE_PSI_INTERFACE
+  int count;
+  count= array_elements(all_audit_log_memory);
+  mysql_memory_register(PSI_CATEGORY, all_audit_log_memory, count);
+#endif
   logger_init_mutexes();
 
   if (init_new_log_file())

@@ -31,7 +31,14 @@ static volatile ulonglong busytime= 0;
 static volatile ulonglong totaltime= 0;
 static volatile ulonglong queries= 0;
 
+static PSI_memory_key key_memory_sm_thd_data;
+
 #ifdef HAVE_PSI_INTERFACE
+static PSI_memory_info all_scalability_metrics_memory[]=
+{
+  {&key_memory_sm_thd_data, "scalability_metrics_thd_data", 0}
+};
+
 PSI_mutex_key key_thd_list_mutex;
 #endif
 mysql_mutex_t thd_list_mutex;
@@ -109,8 +116,7 @@ sm_thd_data_t *sm_thd_data_get(MYSQL_THD thd)
   sm_thd_data_t *thd_data = (sm_thd_data_t *) (intptr) THDVAR(thd, thd_data);
   if (unlikely(thd_data == NULL))
   {
-    // TODO laurynas instrument?
-    thd_data= my_malloc(PSI_NOT_INSTRUMENTED, sizeof(sm_thd_data_t),
+    thd_data= my_malloc(key_memory_sm_thd_data, sizeof(sm_thd_data_t),
                         MYF(MY_WME | MY_ZEROFILL));
     mysql_mutex_lock(&thd_list_mutex);
     thd_data->backref= list_push(thd_list_root, thd_data);
@@ -187,6 +193,12 @@ void sm_ctl_update(MYSQL_THD thd __attribute__((unused)),
 static
 int sm_plugin_init(void *arg __attribute__((unused)))
 {
+#ifdef HAVE_PSI_INTERFACE
+  int count;
+  count= array_elements(all_scalability_metrics_memory);
+  mysql_memory_register("scalability_metrics", all_scalability_metrics_memory,
+                        count);
+#endif
   mysql_mutex_init(key_thd_list_mutex, &thd_list_mutex, MY_MUTEX_INIT_FAST);
 
   sm_reset();
