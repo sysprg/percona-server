@@ -189,6 +189,7 @@ public:
 	{
 		ut_ad(m_creator_trx_id != TRX_ID_MAX);
 		m_creator_trx_id = TRX_ID_MAX;
+		m_cloned = false;
 	}
 
 	/**

@@ -4578,7 +4578,7 @@ int ha_partition::end_bulk_insert()
       error= tmp;
   }
   bitmap_clear_all(&m_bulk_insert_started);
-  DBUG_EXECUTE_IF("ha_partition_end_bulk_insert_fail", error= 1;);
+  DBUG_EXECUTE_IF("ha_partition_end_bulk_insert_fail", { error= 1; my_errno= EPERM; } );
   DBUG_RETURN(error);
 }
 

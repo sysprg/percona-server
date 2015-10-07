@@ -156,7 +156,6 @@ master-bin.000001	#	Begin_load_query	#	#	;file_id=#;block_len=#
 master-bin.000001	#	Execute_load_query	#	#	use `test`; LOAD DATA INFILE 'MYSQLTEST_VARDIR/tmp/f\'le.txt' INTO TABLE `db1``; select 'oops!'`.`t``1` FIELDS TERMINATED BY ',' ENCLOSED BY '\'' ESCAPED BY '\\' LINES TERMINATED BY '\n' (`a``1`, `b``2`) SET `c``3`= concat('|', "b""a'z", "!") ;file_id=#
 master-bin.000001	#	Xid	#	#	COMMIT /* XID */
 /*!50530 SET @@SESSION.PSEUDO_SLAVE_MODE=1*/;
-/*!40019 SET @@session.max_insert_delayed_threads=0*/;
 /*!50003 SET @OLD_COMPLETION_TYPE=@@COMPLETION_TYPE,COMPLETION_TYPE=0*/;
 DELIMITER /*!*/;
 ROLLBACK/*!*/;
@@ -246,7 +245,6 @@ master-bin.000001	#	User var	#	#	@```d```=_latin1 0x7878787878787878787878787878
 master-bin.000001	#	Query	#	#	use `db1``; select 'oops!'`; INSERT INTO t1 VALUES (@`a``1`+1, @`a``2`*100, @`a``3`-1, @`a``4`-1, @`b```/2, @```c`, substr(@```d```, 2, 98))
 master-bin.000001	#	Xid	#	#	COMMIT /* XID */
 /*!50530 SET @@SESSION.PSEUDO_SLAVE_MODE=1*/;
-/*!40019 SET @@session.max_insert_delayed_threads=0*/;
 /*!50003 SET @OLD_COMPLETION_TYPE=@@COMPLETION_TYPE,COMPLETION_TYPE=0*/;
 DELIMITER /*!*/;
 ROLLBACK/*!*/;
@@ -318,7 +316,7 @@ a`
 # The DELETE statement should be correctly quoted
 include/show_binlog_events.inc
 Log_name	Pos	Event_type	Server_id	End_log_pos	Info
-master-bin.000002	#	Query	#	#	use `test`; DELETE FROM `db1``; select 'oops!'`.`t``1`
+master-bin.000002	#	Query	#	#	use `db1``; select 'oops!'`; DELETE FROM `db1``; select 'oops!'`.`t``1`
 include/start_slave.inc
 # The table should be empty on the slave also.
 SELECT * FROM `db1``; select 'oops!'`.`t``1`;

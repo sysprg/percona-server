@@ -1223,7 +1223,7 @@ public:
       additional is required to set them.
     */
     if (pc->thd->slave_thread && pc->thd->lex->set_statement)
-      return true;
+      return false;
 
     if (name->value.var && name->value.var != trg_new_row_fake_var)
     {
