@@ -1018,13 +1018,14 @@ bool thd_init_client_charset(THD *thd, uint cs_number)
   SYNOPSIS
     check_connection()
     thd  thread handle
+    extra_port_connection if true, the client is connecting on extra_port
 
   RETURN
      0  success, thd is updated.
      1  error
 */
 
-static int check_connection(THD *thd)
+static int check_connection(THD *thd, bool extra_port_connection)
 {
   uint connect_errors= 0;
   int auth_rc;
@@ -1196,7 +1197,7 @@ static int check_connection(THD *thd)
     return 1; /* The error is set by alloc(). */
   }
 
-  auth_rc= acl_authenticate(thd, 0);
+  auth_rc= acl_authenticate(thd, 0, extra_port_connection);
   if (auth_rc == 0 && connect_errors != 0)
   {
     /*
@@ -1217,6 +1218,7 @@ static int check_connection(THD *thd)
   SYNOPSIS
    login_connection()
    thd        Thread handler
+   extra_port_connection if true, the client is connecting on extra_port
 
   NOTES
     Connection is not closed in case of errors
@@ -1227,7 +1229,7 @@ static int check_connection(THD *thd)
 */
 
 
-static bool login_connection(THD *thd)
+static bool login_connection(THD *thd, bool extra_port_connection)
 {
   NET *net= &thd->net;
   int error;
@@ -1239,7 +1241,7 @@ static bool login_connection(THD *thd)
   my_net_set_read_timeout(net, connect_timeout);
   my_net_set_write_timeout(net, connect_timeout);
 
-  error= check_connection(thd);
+  error= check_connection(thd, extra_port_connection);
   thd->protocol->end_statement();
 
   if (error)
@@ -1380,11 +1382,11 @@ static void prepare_new_connection_state(THD* thd)
 }
 
 
-bool thd_prepare_connection(THD *thd)
+bool thd_prepare_connection(THD *thd, bool extra_port_connection)
 {
   bool rc;
   lex_start(thd);
-  rc= login_connection(thd);
+  rc= login_connection(thd, extra_port_connection);
   MYSQL_AUDIT_NOTIFY_CONNECTION_CONNECT(thd);
   if (rc)
     return rc;

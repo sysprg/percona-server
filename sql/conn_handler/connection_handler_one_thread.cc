@@ -76,7 +76,7 @@ bool One_thread_connection_handler::add_connection(Channel_info* channel_info)
 
   bool error= false;
   bool create_user= true;
-  if (thd_prepare_connection(thd))
+  if (thd_prepare_connection(thd, false))
   {
     error= true; // Returning true causes inc_aborted_connects() to be called.
     create_user= false;

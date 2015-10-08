@@ -74,12 +74,20 @@ static void scheduler_wait_sync_end()
 }
 
 
-bool Connection_handler_manager::valid_connection_count()
+bool Connection_handler_manager::valid_connection_count(
+                                               bool extra_port_connection)
 {
-  // TODO laurynas; this needs to check extra connections for extra port
   bool connection_accepted= true;
   mysql_mutex_lock(&LOCK_connection_count);
-  if (connection_count > max_connections)
+  if (extra_port_connection)
+  {
+    if (extra_connection_count > extra_max_connections)
+    {
+      connection_accepted= false;
+      m_connection_errors_max_connection++;
+    }
+  }
+  else if (connection_count > max_connections)
   {
     connection_accepted= false;
     m_connection_errors_max_connection++;

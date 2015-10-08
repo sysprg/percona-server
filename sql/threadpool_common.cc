@@ -215,7 +215,7 @@ int threadpool_add_connection(THD* thd)
     goto end;
   }
 
-  if (thd_prepare_connection(thd))
+  if (thd_prepare_connection(thd, false))
   {
     // TODO laurynas close_connection?
     // TODO laurynas inc_aborted_connects

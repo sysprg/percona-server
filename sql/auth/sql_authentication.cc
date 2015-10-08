@@ -2055,12 +2055,14 @@ check_password_lifetime(THD *thd, const ACL_USER *acl_user)
                                  (without the first, command, byte) or 0
                                  if it's not a COM_CHANGE_USER (that is, if
                                  it's a new connection)
+  @param extra_port_connection   true if the client is connecting on extra_port
 
   @retval 0  success, thd is updated.
   @retval 1  error
 */
 int
-acl_authenticate(THD *thd, size_t com_change_user_pkt_len)
+acl_authenticate(THD *thd, size_t com_change_user_pkt_len,
+                 bool extra_port_connection)
 {
   int res= CR_OK;
   MPVIO_EXT mpvio;
@@ -2376,7 +2378,8 @@ acl_authenticate(THD *thd, size_t com_change_user_pkt_len)
       !(thd->main_security_ctx.master_access & SUPER_ACL))
   {
 #ifndef EMBEDDED_LIBRARY
-    if (!Connection_handler_manager::get_instance()->valid_connection_count())
+    if (!Connection_handler_manager::get_instance()
+        ->valid_connection_count(extra_port_connection))
     {                                         // too many connections
       release_user_connection(thd);
       my_error(ER_CON_COUNT_ERROR, MYF(0));

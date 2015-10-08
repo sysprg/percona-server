@@ -1173,7 +1173,7 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
     LEX_CSTRING save_db= thd->db();
     Security_context save_security_ctx= *thd->security_ctx;
 
-    auth_rc= acl_authenticate(thd, packet_length);
+    auth_rc= acl_authenticate(thd, packet_length, false);
     MYSQL_AUDIT_NOTIFY_CONNECTION_CHANGE_USER(thd);
     if (auth_rc)
     {

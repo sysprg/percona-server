@@ -291,7 +291,7 @@ pthread_handler_t handle_connection(void *arg)
 
     thd_manager->add_thd(thd);
 
-    if (thd_prepare_connection(thd))
+    if (thd_prepare_connection(thd, extra_port_connection))
       handler_manager->inc_aborted_connects();
     else
     {

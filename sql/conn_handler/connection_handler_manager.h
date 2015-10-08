@@ -167,9 +167,12 @@ public:
     Check if the current number of connections are below or equal
     the value given by the max_connections server system variable.
 
+    @param extra_port_connection true if it is the extra port connections which
+    need to be validated
+
     @return true if a new connection can be accepted, false otherwise.
   */
-  bool valid_connection_count();
+  bool valid_connection_count(bool extra_port_connection);
 
   /**
     Reset the max_used_connections counter to the number of current
