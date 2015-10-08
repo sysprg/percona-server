@@ -1252,7 +1252,7 @@ static bool login_connection(THD *thd, bool extra_port_connection)
     if (vio_type(net->vio) == VIO_TYPE_NAMEDPIPE)
       my_sleep(1000);       /* must wait after eof() */
 #endif
-    thd->diff_denied_connections++; // TODO laurynas
+    thd->diff_denied_connections++;
     DBUG_RETURN(1);
   }
   /* Connect completed, set read/write timeouts back to default */

@@ -239,7 +239,6 @@ JOIN::optimize()
       an impact to our decision to switch to row- based. We can only
       suppress warning here.
     */
-    // TODO laurynas: move to SELECT_LEX::prepare?
     if (select_lex->select_limit &&
         select_lex->select_limit->fixed &&
         select_lex->select_limit->val_int() &&

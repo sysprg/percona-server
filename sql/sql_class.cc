@@ -1773,7 +1773,7 @@ void THD::update_stats(bool ran_command)
   }
   // diff_commit_trans is updated in handler.cc.
   // diff_rollback_trans is updated in handler.cc.
-  // diff_denied_connections is updated in sql_parse.cc.
+  // diff_denied_connections is updated in sql_connect.cc.
   // diff_lost_connections is updated in sql_parse.cc.
   // diff_access_denied_errors is updated in sql_parse.cc.
 

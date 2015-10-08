@@ -42,6 +42,7 @@
 #include "binlog.h"             // generate_new_log_name
 #include "sp_instr.h"           // sp_lex_instr
 #include "sql_prepare.h"        // Prepared_statement
+#include "mysqld.h" // max_binlog_files etc
 
 #include <my_dir.h>
 #include <stdarg.h>
@@ -54,14 +55,6 @@
 
 using std::min;
 using std::max;
-
-#if 0 // TODO laurynas
-#include "sql_plugin.h"
-#include "rpl_handler.h"
-#include "debug_sync.h"
-#include "sql_show.h"
-#endif
-#include "mysqld.h" // max_binlog_files etc
 
 #ifndef _WIN32
 static int   log_syslog_facility= 0;
