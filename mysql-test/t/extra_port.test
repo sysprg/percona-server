@@ -1,0 +1,125 @@
+# Test the interaction between max_connections, extra_port, and extra_max_connections
+--source include/count_sessions.inc
+
+call mtr.add_suppression("Too many connections");
+
+CREATE USER nonprivuser@localhost;
+
+FLUSH STATUS;
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+
+let $default_id= `SELECT connection_id()`;
+
+send SELECT sleep(500000);
+--sleep 2.5
+
+--disable_abort_on_error
+--disable_result_log
+--disable_query_log
+connect(con2,localhost,nonprivuser,,);
+--enable_query_log
+--enable_result_log
+--enable_abort_on_error
+let $error = $mysql_errno;
+if (!$error)
+{
+  --echo # -- Error: non-SUPER user connected with max_connections already being connected
+}
+if ($error)
+{
+  --echo # -- Success: non-SUPER user failed to connect with max_connections already being connected
+}
+
+connect(con2,localhost,root,,);
+connection con2;
+
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+
+let $con2_id= `SELECT connection_id()`;
+send SELECT sleep(500000);
+--sleep 2.5
+
+--disable_abort_on_error
+--disable_result_log
+--disable_query_log
+connect(con3,localhost,root,,);
+--enable_query_log
+--enable_result_log
+--enable_abort_on_error
+let $error = $mysql_errno;
+if (!$error)
+{
+  --echo # -- Error: managed to establish more than max_connections + 1 SUPER connection on the main port
+}
+if ($error)
+{
+  --echo # -- Success: only max_connections + 1 SUPER connections allowed on the main port
+}
+
+connect(extracon,127.0.0.1,nonprivuser,,test,$MASTER_EXTRA_PORT,);
+connection extracon;
+--echo Regular user connected on extra_port
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+
+let $extracon_id= `SELECT connection_id()`;
+send SELECT sleep(500000);
+--sleep 2.5
+
+--disable_abort_on_error
+--disable_result_log
+--disable_query_log
+connect(extracon2,127.0.0.1,nonprivuser,,test,$MASTER_EXTRA_PORT,);
+--enable_query_log
+--enable_result_log
+--enable_abort_on_error
+let $error = $mysql_errno;
+if (!$error)
+{
+  --echo # -- Error: non-SUPER user connected on extra_port with extra_max_connections already being connected
+}
+if ($error)
+{
+  --echo # -- Success: non-SUPER user failed to connect on extra_port with extra_max_connections already being connected
+}
+
+connect(extracon2,127.0.0.1,root,,test,$MASTER_EXTRA_PORT,);
+connection extracon2;
+--echo SUPER user connected on extra_port
+
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+
+--echo KILL QUERY \$default_id
+--disable_query_log
+eval KILL QUERY $default_id;
+--enable_query_log
+
+--echo KILL QUERY \$con2_id
+--disable_query_log
+eval KILL QUERY $con2_id;
+--enable_query_log
+
+--echo KILL QUERY \$extracon_id
+--disable_query_log
+eval KILL QUERY $extracon_id;
+--enable_query_log
+
+DROP USER nonprivuser@localhost;
+--disconnect extracon2
+
+--connection extracon
+--reap
+--disconnect extracon
+
+--connection con2
+--reap
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+--disconnect con2
+
+--connection default
+--reap
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+--source include/wait_until_count_sessions.inc

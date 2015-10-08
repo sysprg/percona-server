@@ -1,0 +1,51 @@
+call mtr.add_suppression("Too many connections");
+CREATE USER nonprivuser@localhost;
+FLUSH STATUS;
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+Variable_name	Value
+Connection_errors_max_connections	0
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+Variable_name	Value
+Threads_connected	1
+SELECT sleep(500000);
+# -- Success: non-SUPER user failed to connect with max_connections already being connected
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+Variable_name	Value
+Connection_errors_max_connections	1
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+Variable_name	Value
+Threads_connected	2
+SELECT sleep(500000);
+# -- Success: only max_connections + 1 SUPER connections allowed on the main port
+Regular user connected on extra_port
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+Variable_name	Value
+Connection_errors_max_connections	2
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+Variable_name	Value
+Threads_connected	2
+SELECT sleep(500000);
+# -- Success: non-SUPER user failed to connect on extra_port with extra_max_connections already being connected
+SUPER user connected on extra_port
+SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
+Variable_name	Value
+Connection_errors_max_connections	3
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+Variable_name	Value
+Threads_connected	2
+KILL QUERY $default_id
+KILL QUERY $con2_id
+KILL QUERY $extracon_id
+DROP USER nonprivuser@localhost;
+sleep(500000)
+1
+sleep(500000)
+1
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+Variable_name	Value
+Threads_connected	2
+sleep(500000)
+1
+SHOW GLOBAL STATUS LIKE 'Threads_connected';
+Variable_name	Value
+Threads_connected	1
