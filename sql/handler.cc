@@ -4985,8 +4985,9 @@ void handler::update_global_table_stats()
                                                      (uchar*)key,
                                                      strlen(key))))
   {
-    if (!(table_stats = ((TABLE_STATS *) // TODO laurynas instrument?
-                         my_malloc(PSI_NOT_INSTRUMENTED, sizeof(TABLE_STATS),
+    if (!(table_stats = ((TABLE_STATS *)
+                         my_malloc(key_memory_userstat_table_stats,
+                                   sizeof(TABLE_STATS),
                                    MYF(MY_WME | MY_ZEROFILL)))))
     {
       // Out of memory.
@@ -5048,8 +5049,8 @@ void handler::update_global_index_stats()
                                                          (uchar *) key,
                                                          strlen(key))))
       {
-        if (!(index_stats = ((INDEX_STATS *)// TODO Laurynas instrument?
-                             my_malloc(PSI_NOT_INSTRUMENTED,
+        if (!(index_stats = ((INDEX_STATS *)
+                             my_malloc(key_memory_userstat_index_stats,
                                        sizeof(INDEX_STATS),
                                        MYF(MY_WME | MY_ZEROFILL)))))
         {

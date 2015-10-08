@@ -399,8 +399,9 @@ static int increment_count_by_name(const char *name, const char *role_name,
       return 0;
 
     // First connection for this user or client
-    if (!(user_stats = ((USER_STATS *) // TODO laurynas instrument?
-                        my_malloc(PSI_NOT_INSTRUMENTED, sizeof(USER_STATS),
+    if (!(user_stats = ((USER_STATS *)
+                        my_malloc(key_memory_userstat_user_stats,
+                                  sizeof(USER_STATS),
                                   MYF(MY_WME | MY_ZEROFILL)))))
     {
       return 1; // Out of memory
@@ -445,8 +446,9 @@ static int increment_count_by_id(my_thread_id id,
       return 0;
 
     // First connection for this user or client
-    if (!(thread_stats = ((THREAD_STATS *) // TODO laurynas instrument?
-                          my_malloc(PSI_NOT_INSTRUMENTED, sizeof(THREAD_STATS),
+    if (!(thread_stats = ((THREAD_STATS *)
+                          my_malloc(key_memory_userstat_thread_stats,
+                                    sizeof(THREAD_STATS),
                                     MYF(MY_WME | MY_ZEROFILL)))))
     {
       return 1; // Out of memory
