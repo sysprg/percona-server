@@ -298,7 +298,6 @@ void destroy_channel_info(Channel_info* channel_info)
   delete channel_info;
 }
 
-// TODO laurynas: do not call this from extra connections
 void dec_connection_count()
 {
   Connection_handler_manager::dec_connection_count(false);
