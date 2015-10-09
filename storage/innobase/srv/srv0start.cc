@@ -2306,6 +2306,11 @@ files_checked:
 
 			RECOVERY_CRASH(4);
 
+			/* If log tracking is enabled, make it catch up with
+			the old logs synchronously. */
+			if (srv_track_changed_pages)
+				log_online_follow_redo_log();
+
 			/* Close and free the redo log files, so that
 			we can replace them. */
 			fil_close_log_files(true);
