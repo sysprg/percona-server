@@ -397,8 +397,5 @@ void vio_end(void)
   ERR_free_strings();
   EVP_cleanup();
   CRYPTO_cleanup_all_ex_data();
-#ifndef EMBEDDED_LIBRARY
-  sk_SSL_COMP_free(SSL_COMP_get_compression_methods());
-#endif
 #endif
 }
