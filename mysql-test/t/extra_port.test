@@ -31,7 +31,9 @@ if ($error)
   --echo # -- Success: non-SUPER user failed to connect with max_connections already being connected
 }
 
-connect(con2,localhost,root,,);
+--let $con_name=con2
+--let $con_user_name=root
+--source include/connect2.inc
 connection con2;
 
 SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
