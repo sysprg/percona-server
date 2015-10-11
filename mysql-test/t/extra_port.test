@@ -87,7 +87,10 @@ if ($error)
   --echo # -- Success: non-SUPER user failed to connect on extra_port with extra_max_connections already being connected
 }
 
-connect(extracon2,127.0.0.1,root,,test,$MASTER_EXTRA_PORT,);
+--let $con_name=extracon2
+--let $con_user_name=root
+--let $con_port=$MASTER_EXTRA_PORT
+--source include/connect2.inc
 connection extracon2;
 --echo SUPER user connected on extra_port
 

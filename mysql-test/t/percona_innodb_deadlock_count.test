@@ -1,4 +1,5 @@
 --source include/have_innodb.inc
+--source include/count_sessions.inc
 --echo # Establish connection con1 (user=root)
 connect (con1,localhost,root,,);
 --echo # Establish connection con2 (user=root)
@@ -52,6 +53,7 @@ connection default;
 
 --disconnect con1
 --disconnect con2
+--source include/wait_until_count_sessions.inc
 
 --enable_result_log
 

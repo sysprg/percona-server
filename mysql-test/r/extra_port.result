@@ -28,6 +28,8 @@ Variable_name	Value
 Threads_connected	2
 SELECT sleep(500000);
 # -- Success: non-SUPER user failed to connect on extra_port with extra_max_connections already being connected
+# -- Establishing connection 'extracon2' (user: root)...
+# -- Connection 'extracon2' has been established.
 SUPER user connected on extra_port
 SHOW GLOBAL STATUS LIKE 'Connection_errors_max_connections';
 Variable_name	Value
