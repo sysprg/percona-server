@@ -281,6 +281,8 @@ struct TrxFactory {
 		trx->lock.table_pool.~lock_pool_t();
 
 		trx->lock.table_locks.~lock_pool_t();
+
+		ut_ad(!trx->distinct_page_access_hash);
 	}
 
 	/** Enforce any invariants here, this is called before the transaction
@@ -2037,6 +2039,12 @@ trx_commit_in_memory(
 
 	trx->state = TRX_STATE_NOT_STARTED;
 
+	if (UNIV_LIKELY_NULL(trx->distinct_page_access_hash)) {
+
+		ut_free(trx->distinct_page_access_hash);
+		trx->distinct_page_access_hash= NULL;
+	}
+
 	/* trx->in_mysql_trx_list would hold between
 	trx_allocate_for_mysql() and trx_free_for_mysql(). It does not
 	hold for recovered transactions or system transactions. */
@@ -3236,8 +3244,8 @@ trx_set_rw_mode(
 	trx_sys->rw_trx_set.insert(TrxTrack(trx->id, trx));
 
 	/* So that we can see our own changes unless our view is a clone */
-	if (trx->read_view && !trx->read_view->is_cloned()
-	    && MVCC::is_view_active(trx->read_view)) {
+	if (MVCC::is_view_active(trx->read_view)
+	    && !trx->read_view->is_cloned()) {
 		MVCC::set_view_creator_trx_id(trx->read_view, trx->id);
 	}
 

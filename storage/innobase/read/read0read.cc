@@ -742,6 +742,7 @@ ReadView::clone(ReadView*& result, trx_t* from_trx) const
 	// If the clone transaction is RO and is later promoted to RW, make
 	// sure not to add its own id to its view
 	result->m_cloned = true;
+	result->m_closed = false;
 }
 
 /** Clones the oldest view and stores it in view. No need to

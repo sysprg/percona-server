@@ -660,6 +660,7 @@ Check transaction state */
 	ut_ad((t)->lock.wait_thr == NULL);				\
 	ut_ad(UT_LIST_GET_LEN((t)->lock.trx_locks) == 0);		\
 	ut_ad((t)->dict_operation == TRX_DICT_OP_NONE);			\
+	ut_ad(!(t)->distinct_page_access_hash);				\
 } while(0)
 
 /** Check if transaction is in-active so that it can be freed and put back to
