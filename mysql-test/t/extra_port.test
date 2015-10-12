@@ -40,6 +40,12 @@ SELECT VARIABLE_VALUE INTO @cemc_2 FROM INFORMATION_SCHEMA.GLOBAL_STATUS
 --let $assert_text= Connection_errors_max_connections should have increased by 1
 --let $assert_cond= @cemc_2 - @cemc_1 = 1
 --source include/assert.inc
+
+# Threads_connected might be at 3 if server is still finishing cleaning up the failed con3
+# attempt above. Wait for it to settle.
+--let $status_var= Threads_connected
+--let $status_var_value= 2
+--source include/wait_for_status_var.inc
 SHOW GLOBAL STATUS LIKE 'Threads_connected';
 
 # The cleanup of the refused connection above in the server is async with the testsuite
@@ -87,6 +93,9 @@ SELECT VARIABLE_VALUE INTO @cemc_4 FROM INFORMATION_SCHEMA.GLOBAL_STATUS
 connect(extracon,127.0.0.1,nonprivuser,,test,$MASTER_EXTRA_PORT,);
 connection extracon;
 --echo Regular user connected on extra_port
+--let $status_var= Threads_connected
+--let $status_var_value= 3
+--source include/wait_for_status_var.inc
 SHOW GLOBAL STATUS LIKE 'Threads_connected';
 
 let $extracon_id= `SELECT connection_id()`;
@@ -116,6 +125,9 @@ SELECT VARIABLE_VALUE INTO @cemc_5 FROM INFORMATION_SCHEMA.GLOBAL_STATUS
 --let $assert_text= Connection_errors_max_connections should have increased by 1
 --let $assert_cond= @cemc_5 - @cemc_4 = 1
 --source include/assert.inc
+--let $status_var= Threads_connected
+--let $status_var_value= 3
+--source include/wait_for_status_var.inc
 SHOW GLOBAL STATUS LIKE 'Threads_connected';
 
 --let $con_name=extracon2
