@@ -57,7 +57,13 @@ connection default;
 
 --enable_result_log
 
+SELECT COUNT INTO @lock_deadlocks_var FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME='lock_deadlocks';
+--let $innodb_debug= 1
+--let $assert_text= Exactly one deadlock should have been found
+--let $assert_cond= @lock_deadlocks_var = 1
+--source include/assert.inc
 SELECT NAME, COUNT FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME='lock_deadlocks';
+
 
 --echo # Drop test table
 drop table t;

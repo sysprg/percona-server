@@ -9,6 +9,7 @@
 # --let $assert_text= Relay_Log_Pos must be between min_pos and max_pos
 # --let $assert_cond= [SHOW SLAVE STATUS, Relay_Log_Pos, 1] >= $min_pos AND <1> <= $max_pos
 # [--let $rpl_debug= 1]
+# [--let $innodb_debug= 1]
 # --source include/assert.inc
 #
 # Parameters:
@@ -58,6 +59,10 @@ if (!$eval_result)
   if ($show_rpl_debug_info)
   {
     --source include/show_rpl_debug_info.inc
+  }
+  if ($innodb_debug)
+  {
+    SHOW ENGINE INNODB STATUS;
   }
   --echo Assertion text: '$assert_text'
   --echo Assertion condition: '$assert_cond'

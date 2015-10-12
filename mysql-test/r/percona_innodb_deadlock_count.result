@@ -23,6 +23,8 @@ ROLLBACK;
 # Switch to connection con2
 ROLLBACK;
 # Switch to connection default
+SELECT COUNT INTO @lock_deadlocks_var FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME='lock_deadlocks';
+include/assert.inc [Exactly one deadlock should have been found]
 SELECT NAME, COUNT FROM INFORMATION_SCHEMA.INNODB_METRICS WHERE NAME='lock_deadlocks';
 NAME	COUNT
 lock_deadlocks	1
