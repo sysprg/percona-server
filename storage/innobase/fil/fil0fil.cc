@@ -1226,7 +1226,6 @@ fil_space_truncate_start(
 	mutex_exit(&fil_system->mutex);
 }
 
-// TODO laurynas log archiving
 /****************************************************************//**
 Check is there node in file space with given name. */
 
@@ -2372,7 +2371,7 @@ fil_op_replay_rename(
 {
 #ifdef UNIV_HOTBACKUP
 	ulint		tablespace_flags = 0;
-	ut_ad(recv_replay_file_ops); // TODO laurynas 9e242a32
+	ut_ad(recv_replay_file_ops);
 #endif /* UNIV_HOTBACKUP */
 	ut_ad(first_page_no == 0);
 

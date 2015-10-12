@@ -378,8 +378,7 @@ MVCC::~MVCC()
 	ut_a(UT_LIST_GET_LEN(m_views) == 0);
 }
 
-/** Insert the view in the proper order into the view list. It is
-ordered by TODO laurynas in descending order.
+/** Insert the view in the proper order into the view list.
 @param	view	view to add */
 void
 MVCC::view_add(const ReadView* view)
@@ -852,7 +851,6 @@ MVCC::set_view_creator_trx_id(ReadView* view, trx_id_t id)
 	view->creator_trx_id(id);
 }
 
-// TODO laurynas how does this thing iterate?!
 i_s_xtradb_read_view_t*
 read_fill_i_s_xtradb_read_view(i_s_xtradb_read_view_t* rv)
 {

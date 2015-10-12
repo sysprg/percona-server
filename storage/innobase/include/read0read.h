@@ -43,8 +43,7 @@ public:
 	Free all the views in the m_free list */
 	~MVCC();
 
-	/** Insert the view in the proper order into the view list. It is
-	ordered by TODO laurynas in descending order.
+	/** Insert the view in the proper order into the view list.
 	@param	view	view to add */
 	void view_add(const ReadView* view);
 
@@ -112,7 +111,7 @@ public:
 	Get the oldest view in the system. It will also move the delete
 	marked read views from the views list to the freed list.
 	@return oldest view if found or NULL */
-	ReadView* get_oldest_view() const; // TODO laurynas perf implications of un-inlining?
+	ReadView* get_oldest_view() const;
 
 private:
 	// Prevent copying

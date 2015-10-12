@@ -861,7 +861,7 @@ SyncDebug::unlock(const latch_t* latch)
 Load the latch meta data. */
 static
 void
-sync_latch_meta_init() // TODO laurynas xtradb latches
+sync_latch_meta_init()
 /*==================*/
 {
 	// First add the mutexes

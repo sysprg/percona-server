@@ -307,12 +307,6 @@ log_write_checkpoint_info(
 mtr_buf_t*
 log_append_on_checkpoint(
 	mtr_buf_t*	buf);
-/******************************************************//**
-Writes checkpoint info to groups. */
-
-void
-log_groups_write_checkpoint_info(void); // TODO laurynas
-/*==================================*/
 
 #else /* !UNIV_HOTBACKUP */
 /******************************************************//**

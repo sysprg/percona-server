@@ -1409,11 +1409,6 @@ srv_printf_innodb_monitor(
 	fprintf(file, "%lu RW transactions active inside InnoDB\n",
 		UT_LIST_GET_LEN(trx_sys->rw_trx_list));
 
-	// TODO laurynas we can approximate the RO trx count by substracting
-	// rw_trx_list len from mysql_trx_list len, but since neither one is a
-	// superset of the other, it can result in wrong or wrapped around
-	// values in the corner cases
-
 	ReadView*	oldest_view = trx_sys->mvcc->get_oldest_view();
 	if (oldest_view) {
 
@@ -2856,7 +2851,7 @@ srv_task_execute(void)
 		os_atomic_inc_ulint(
 			&purge_sys->pq_mutex, &purge_sys->n_completed, 1);
 
-		srv_inc_activity_count(); // todo laurynas fixed already in upstream?
+		srv_inc_activity_count();
 	}
 
 	return(thr != NULL);

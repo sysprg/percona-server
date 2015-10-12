@@ -3729,8 +3729,7 @@ btr_cur_update_alloc_zip_func(
 	ulint		length,	/*!< in: size needed */
 	bool		create,	/*!< in: true=delete-and-insert,
 				false=update-in-place */
-	mtr_t*		mtr,	/*!< in/out: mini-transaction */
-	trx_t*		trx)	/*!< in: NULL or transaction */
+	mtr_t*		mtr)	/*!< in/out: mini-transaction */
 {
 	const page_t*	page = page_cur_get_page(cursor);
 
@@ -3824,7 +3823,6 @@ btr_cur_update_in_place(
 	roll_ptr_t	roll_ptr	= 0;
 	ulint		was_delete_marked;
 	ibool		is_hashed;
-	trx_t*		trx;
 
 	rec = btr_cur_get_rec(cursor);
 	index = cursor->index;
@@ -3851,14 +3849,13 @@ btr_cur_update_in_place(
 
 	block = btr_cur_get_block(cursor);
 	page_zip = buf_block_get_page_zip(block);
-	trx = thr_get_trx(thr);
 
 	/* Check that enough space is available on the compressed page. */
 	if (page_zip) {
 		if (!btr_cur_update_alloc_zip(
 			    page_zip, btr_cur_get_page_cur(cursor),
 			    index, offsets, rec_offs_size(offsets),
-			    false, mtr, trx)) {
+			    false, mtr)) {
 			return(DB_ZIP_OVERFLOW);
 		}
 
@@ -4083,7 +4080,7 @@ any_extern:
 	if (page_zip) {
 		if (!btr_cur_update_alloc_zip(
 			    page_zip, page_cursor, index, *offsets,
-			    new_rec_size, true, mtr, thr_get_trx(thr))) {
+			    new_rec_size, true, mtr)) {
 			return(DB_ZIP_OVERFLOW);
 		}
 

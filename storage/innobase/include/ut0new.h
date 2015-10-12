@@ -169,6 +169,8 @@ extern PSI_memory_key	mem_key_std;
 extern PSI_memory_key	mem_key_sync_debug_latches;
 extern PSI_memory_key	mem_key_trx_sys_t_rw_trx_ids;
 
+extern PSI_memory_key	mem_key_log_online_modified_pages;
+
 /** Setup the internal objects needed for UT_NEW() to operate.
 This must be called before the first call to UT_NEW(). */
 void

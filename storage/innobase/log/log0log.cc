@@ -872,7 +872,7 @@ log_init(void)
 
 	log_sys->archive_buf_size = LOG_ARCHIVE_BUF_SIZE;
 
-	log_sys->archiving_on = os_event_create(0); // TODO laurynas annotate?
+	log_sys->archiving_on = os_event_create("log_archiving_on");
 
 	log_sys->tracked_lsn = 0;
 

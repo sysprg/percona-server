@@ -2247,8 +2247,7 @@ trx_clone_read_view(
 	ut_ad(trx_sys_mutex_own());
 	ut_ad(trx_mutex_own(from_trx));
 
-	// TODO laurynas srv_read_only_mode
-	if (srv_read_only_mode) {
+	if (UNIV_UNLIKELY(srv_read_only_mode)) {
 
 		ut_ad(trx->read_view == NULL);
 		trx_sys_mutex_exit();

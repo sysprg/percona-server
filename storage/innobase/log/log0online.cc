@@ -217,8 +217,9 @@ log_online_set_page_bit(
 		}
 		else {
 			new_node = static_cast<ib_rbt_node_t *>
-				(ut_malloc_nokey // TODO laurynas instrument for PFS?
-				 (SIZEOF_NODE(log_bmp_sys->modified_pages)));
+				(ut_malloc
+				 (SIZEOF_NODE(log_bmp_sys->modified_pages),
+				  mem_key_log_online_modified_pages));
 		}
 		memset(new_node, 0, SIZEOF_NODE(log_bmp_sys->modified_pages));
 
