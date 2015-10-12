@@ -217,8 +217,6 @@ int threadpool_add_connection(THD* thd)
 
   if (thd_prepare_connection(thd, false))
   {
-    // TODO laurynas close_connection?
-    // TODO laurynas inc_aborted_connects
     goto end;
   }
 
@@ -237,6 +235,12 @@ int threadpool_add_connection(THD* thd)
   }
 
 end:
+  if (retval)
+  {
+    Connection_handler_manager *handler_manager=
+      Connection_handler_manager::get_instance();
+    handler_manager->inc_aborted_connects();
+  }
   worker_context.restore();
   return retval;
 }
@@ -345,15 +349,3 @@ THD_event_functions tp_event_functions=
 {
   tp_wait_begin, tp_wait_end, tp_post_kill_notification
 };
-
-// TODO laurynas
-#if 0
-void pool_of_threads_scheduler(
-    ulong *arg_max_connections,
-    uint *arg_connection_count)
-{
-  func->max_threads= threadpool_max_threads;
-  func->max_connections= arg_max_connections;
-  func->connection_count= arg_connection_count;
-}
-#endif

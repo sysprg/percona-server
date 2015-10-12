@@ -545,6 +545,8 @@ extern PSI_memory_key key_memory_userstat_thread_stats;
 
 extern PSI_memory_key key_memory_per_query_vars;
 
+extern PSI_memory_key key_memory_thread_pool_connection;
+
 extern PSI_memory_key key_memory_Sys_var_charptr_value;
 extern PSI_memory_key key_memory_THD_db;
 extern PSI_memory_key key_memory_user_var_entry;

@@ -1303,9 +1303,9 @@ connection_t *alloc_connection(THD *thd)
 {
   DBUG_ENTER("alloc_connection");
 
-  // TODO laurynas instrument?
-  connection_t* connection = (connection_t *)my_malloc(PSI_NOT_INSTRUMENTED,
-                                                       sizeof(connection_t),0);
+  connection_t* connection = (connection_t *)
+      my_malloc(key_memory_thread_pool_connection,
+                sizeof(connection_t),0);
   if (connection)
   {
     connection->thd = thd;
@@ -1328,7 +1328,6 @@ bool Thread_pool_connection_handler::add_connection(Channel_info *channel_info)
 {
   DBUG_ENTER("Thread_pool_connection_handler::add_connection");
 
-  channel_info->set_prior_thr_create_utime(); // TODO laurynas needed?
   THD* thd= channel_info->create_thd();
   delete channel_info;
 
@@ -1593,8 +1592,6 @@ static void *worker_main(void *param)
 {
   
   worker_thread_t this_thread;
-  // TODO laurynas
-  // pthread_detach_this_thread();
   my_thread_init();
   
   DBUG_ENTER("worker_main");
@@ -1646,8 +1643,6 @@ bool tp_init()
 {
   DBUG_ENTER("tp_init");
   threadpool_started= true;
-  // TODO laurynas
-  // scheduler_init();
 
   for(uint i=0; i < array_elements(all_groups); i++)
   {

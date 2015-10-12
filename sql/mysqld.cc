@@ -8598,6 +8598,8 @@ PSI_memory_key key_memory_userstat_thread_stats;
 
 PSI_memory_key key_memory_per_query_vars;
 
+PSI_memory_key key_memory_thread_pool_connection;
+
 #ifdef HAVE_PSI_INTERFACE
 static PSI_memory_info all_server_memory[]=
 {
@@ -8656,6 +8658,8 @@ static PSI_memory_info all_server_memory[]=
   { &key_memory_userstat_thread_stats, "userstat_thread_stats", 0},
 
   { &key_memory_per_query_vars, "per_query_variables", 0},
+
+  { &key_memory_thread_pool_connection, "thread_pool_connection", 0},
 
   { &key_memory_Sort_param_tmp_buffer, "Sort_param::tmp_buffer", 0},
   { &key_memory_Filesort_info_merge, "Filesort_info::merge", 0},
