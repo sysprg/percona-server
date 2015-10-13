@@ -1,4 +1,4 @@
-CREATE TABLE t1 (a INT PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE t1 (a INT PRIMARY KEY);
 SET binlog_format= mixed;
 RESET MASTER;
 XA START 'xatest';

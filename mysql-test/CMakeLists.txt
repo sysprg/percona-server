@@ -94,6 +94,7 @@ ADD_CUSTOM_TARGET(test-mtr
 ## ADD_TEST(xxx perl ./mysql-test-run.pl --force
 ##          ${VS_CONFIG} ${DEBUG_SERVER} ${EXP})
 
+
 # Process .in files with includes in collections/
 
 MACRO(PROCESS_COLLECTION_INCLUDE collin collection)
