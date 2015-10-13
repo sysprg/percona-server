@@ -55,6 +55,7 @@ ERROR 42000: Access denied; you need (at least one of) the SUPER privilege(s) fo
 PURGE CHANGED_PAGE_BITMAPS BEFORE 100000000;
 ERROR 42000: Access denied; you need (at least one of) the SUPER privilege(s) for this operation
 DROP USER mysqltest_1@localhost;
+# restart:--innodb_track_changed_pages=FALSE
 SELECT @@GLOBAL.innodb_track_changed_pages;
 @@GLOBAL.innodb_track_changed_pages
 0
@@ -78,6 +79,7 @@ call mtr.add_suppression("last tracked LSN");
 # restart
 INSERT INTO t1 VALUES (1),(2),(3),(4),(5);
 # restart
+# restart:--innodb_track_changed_pages=FALSE
 Before the RESET while tracking disabled:
 ib_modified_log_5
 ib_modified_log_6

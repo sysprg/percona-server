@@ -233,6 +233,7 @@ end_lsn BIGINT(21) NOT NULL,
 INDEX page_id(space_id, page_id)) ENGINE=InnoDB;
 INSERT INTO ICP_COPY SELECT * FROM INFORMATION_SCHEMA.INNODB_CHANGED_PAGES
 WHERE END_LSN <= @max_end_lsn;
+# restart:--innodb_track_changed_pages=FALSE
 SELECT @@global.innodb_track_changed_pages;
 @@global.innodb_track_changed_pages
 0

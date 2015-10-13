@@ -15,12 +15,9 @@ if ($archived_logs_count == 0)
   die "0 archived logs have been produced";
 }
 
---exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---shutdown_server
---source include/wait_until_disconnected.inc
---enable_reconnect
---exec echo "restart: --innodb_log_archive=ON --innodb_log_arch_dir=logs_archive --innodb-log-file-size=1M" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---source include/wait_until_connected_again.inc
+--let $restart_parameters=restart: --innodb_log_archive=ON --innodb_log_arch_dir=logs_archive --innodb-log-file-size=1M
+--source include/restart_mysqld.inc
+--let $restart_parameters=
 
 PURGE ARCHIVED LOGS BEFORE NOW();
 

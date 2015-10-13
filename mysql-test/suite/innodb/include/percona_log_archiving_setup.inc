@@ -8,13 +8,9 @@ call mtr.add_suppression("InnoDB: Starting to delete and rewrite log files");
 call mtr.add_suppression("InnoDB: New log files created");
 call mtr.add_suppression("InnoDB: The log sequence numbers [0-9]+ and [0-9]+ in ibdata files do not match the log sequence number [0-9]+ in the ib_logfiles");
 
---exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---shutdown_server
---source include/wait_until_disconnected.inc
-# Do something while server is down
---enable_reconnect
---exec echo "restart: --innodb_log_archive=ON --innodb_log_arch_dir=logs_archive --innodb-log-file-size=1M" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---source include/wait_until_connected_again.inc
+--let $restart_parameters=restart: --innodb_log_archive=ON --innodb_log_arch_dir=logs_archive --innodb-log-file-size=1M
+--source include/restart_mysqld.inc
+--let $restart_parameters=
 
 --disable_warnings
 drop table if exists t;
