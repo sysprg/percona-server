@@ -1,5 +1,3 @@
-$AUDIT_LOG_OPT
-$AUDIT_LOG_LOAD
 --audit_log_file=test_audit.log
---audit-log-format=JSON
+--audit-log-format=CSV
 --audit_log_strategy=SEMISYNCHRONOUS
