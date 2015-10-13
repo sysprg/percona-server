@@ -7,8 +7,6 @@
 
 set debug_sync= 'RESET';
 
-INSTALL PLUGIN scalability_metrics SONAME 'scalability_metrics.so';
-
 SHOW STATUS LIKE 'scalability_metrics%';
 SET GLOBAL scalability_metrics_control = ON;
 
@@ -62,7 +60,5 @@ disconnect con1;
 
 SET GLOBAL scalability_metrics_control = OFF;
 SHOW STATUS LIKE 'scalability_metrics%';
-
-UNINSTALL PLUGIN scalability_metrics;
 
 set debug_sync= 'RESET';

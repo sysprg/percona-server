@@ -1,5 +1,4 @@
 set debug_sync= 'RESET';
-INSTALL PLUGIN scalability_metrics SONAME 'scalability_metrics.so';
 SHOW STATUS LIKE 'scalability_metrics%';
 Variable_name	Value
 scalability_metrics_busytime	0
@@ -40,7 +39,4 @@ scalability_metrics_concurrency	1
 scalability_metrics_elapsedtime	0
 scalability_metrics_queries	0
 scalability_metrics_totaltime	0
-UNINSTALL PLUGIN scalability_metrics;
-Warnings:
-Warning	1620	Plugin is busy and will be uninstalled on shutdown
 set debug_sync= 'RESET';
