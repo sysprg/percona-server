@@ -15,6 +15,7 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA */
 
 #include "buffer.h"
+#include "audit_log.h"
 
 #include <my_pthread.h>
 #include <my_sys.h>
@@ -114,8 +115,9 @@ void *audit_log_flush_worker(void *arg)
 audit_log_buffer_t *audit_log_buffer_init(size_t size, int drop_if_full,
                                  audit_log_write_func write_func, void *data)
 {
-  audit_log_buffer_t *log= (audit_log_buffer_t*) 
-                                 calloc(sizeof(audit_log_buffer_t) + size, 1);
+  audit_log_buffer_t *log= (audit_log_buffer_t*)
+    my_malloc(key_memory_audit_log_buffer,
+              sizeof(audit_log_buffer_t) + size, MY_ZEROFILL);
 
 #ifdef HAVE_PSI_INTERFACE
   if(PSI_server)
@@ -156,7 +158,7 @@ void audit_log_buffer_shutdown(audit_log_buffer_t *log)
   mysql_cond_destroy(&log->written_cond);
   mysql_mutex_destroy(&log->mutex);
 
-  free(log);
+  my_free(log);
 }
 
 

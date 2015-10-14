@@ -56,8 +56,6 @@
 #include <my_sys.h> // PSI_memory_key
 #include <my_dir.h>
 
-extern PSI_memory_key key_memory_audit_log_logger_handle;
-
 #define PSI_CATEGORY "audit_logger"
 
 #ifdef __cplusplus

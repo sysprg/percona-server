@@ -27,6 +27,7 @@
 #include <my_pthread.h>
 #include <syslog.h>
 
+#include "audit_log.h"
 #include "logger.h"
 #include "buffer.h"
 #include "audit_handler.h"
@@ -61,13 +62,15 @@ ulong audit_log_syslog_facility= 0;
 ulong audit_log_syslog_priority= 0;
 
 PSI_memory_key key_memory_audit_log_logger_handle;
+PSI_memory_key key_memory_audit_log_handler;
+PSI_memory_key key_memory_audit_log_buffer;
 
-#ifdef HAVE_PSI_INTERFACE
 static PSI_memory_info all_audit_log_memory[]=
 {
-  {&key_memory_audit_log_logger_handle, "audit_log_logger_handle", 0}
+  {&key_memory_audit_log_logger_handle, "audit_log_logger_handle", 0},
+  {&key_memory_audit_log_handler, "audit_log_handler", 0},
+  {&key_memory_audit_log_buffer, "audit_log_buffer", 0},
 };
-#endif
 
 static int audit_log_syslog_facility_codes[]=
   { LOG_USER,   LOG_AUTHPRIV, LOG_CRON,   LOG_DAEMON, LOG_FTP,
@@ -100,6 +103,7 @@ static const char *audit_log_syslog_priority_names[]=
   { "LOG_INFO",   "LOG_ALERT", "LOG_CRIT", "LOG_ERR", "LOG_WARNING",
     "LOG_NOTICE", "LOG_EMERG", "LOG_DEBUG", 0 };
 
+static MYSQL_PLUGIN plugin_ptr;
 
 static
 void init_record_id(off_t size)
@@ -120,23 +124,6 @@ ulonglong next_record_id()
 
 
 static
-void fprintf_timestamp(FILE *file)
-{
-  char timebuf[50];
-  struct tm tm;
-  time_t curtime;
-
-  memset(&tm, 0, sizeof(tm));
-  time(&curtime);
-  localtime_r(&curtime, &tm);
-
-  strftime(timebuf, sizeof(timebuf), "%FT%T", gmtime_r(&curtime, &tm));
-
-  fprintf(file, "%s audit_log: ", timebuf);
-}
-
-
-static
 char *make_timestamp(char *buf, size_t buf_len, time_t t)
 {
   struct tm tm;
@@ -154,7 +141,7 @@ char *make_record_id(char *buf, size_t buf_len)
   size_t len;
 
   memset(&tm, 0, sizeof(tm));
-  len= snprintf(buf, buf_len, "%llu_", next_record_id());
+  len= my_snprintf(buf, buf_len, "%llu_", next_record_id());
 
   strftime(buf + len, buf_len - len,
            "%FT%T", gmtime_r(&log_file_time, &tm));
@@ -275,6 +262,13 @@ char *escape_string(const char *in, size_t inlen,
   return out;
 }
 
+static
+void my_plugin_perror(void)
+{
+  char errbuf[MYSYS_STRERROR_SIZE];
+  my_strerror(errbuf, sizeof(errbuf), errno);
+  my_plugin_log_message(plugin_ptr, MY_ERROR_LEVEL, "Error: %s", errbuf);
+}
 
 static
 void audit_log_write(const char *buf, size_t len)
@@ -288,9 +282,9 @@ void audit_log_write(const char *buf, size_t len)
       if (!write_error)
       {
         write_error= 1;
-        fprintf_timestamp(stderr);
-        fprintf(stderr, "Error writing to file %s. ", audit_log_file);
-        perror("Error: ");
+        my_plugin_log_message(plugin_ptr, MY_ERROR_LEVEL,
+                              "Error writing to file %s. ", audit_log_file);
+        my_plugin_perror();
       }
     }
     else
@@ -594,9 +588,9 @@ int init_new_log_file()
     log_handler= audit_handler_file_open(&opts);
     if (log_handler == NULL)
     {
-      fprintf_timestamp(stderr);
-      fprintf(stderr, "Cannot open file %s. ", audit_log_file);
-      perror("Error: ");
+      my_plugin_log_message(plugin_ptr, MY_ERROR_LEVEL,
+                            "Cannot open file %s. ", audit_log_file);
+      my_plugin_perror();
       return(1);
     }
   }
@@ -612,9 +606,9 @@ int init_new_log_file()
     log_handler= audit_handler_syslog_open(&opts);
     if (log_handler == NULL)
     {
-      fprintf_timestamp(stderr);
-      fprintf(stderr, "Cannot open syslog. ");
-      perror("Error: ");
+      my_plugin_log_message(plugin_ptr, MY_ERROR_LEVEL,
+                            "Cannot open syslog. ");
+      my_plugin_perror();
       return(1);
     }
   }
@@ -630,9 +624,9 @@ int reopen_log_file()
   {
     if (audit_handler_flush(log_handler))
     {
-      fprintf_timestamp(stderr);
-      fprintf(stderr, "Cannot open file %s. ", audit_log_file);
-      perror("Error: ");
+      my_plugin_log_message(plugin_ptr, MY_ERROR_LEVEL,
+                            "Cannot open file %s. ", audit_log_file);
+      my_plugin_perror();
       return(1);
     }
   }
@@ -642,16 +636,16 @@ int reopen_log_file()
 
 
 static
-int audit_log_plugin_init(void *arg __attribute__((unused)))
+int audit_log_plugin_init(MYSQL_PLUGIN plugin_info)
 {
   char buf[1024];
   size_t len;
-
-#ifdef HAVE_PSI_INTERFACE
   int count;
+
+  plugin_ptr= plugin_info;
+
   count= array_elements(all_audit_log_memory);
   mysql_memory_register(PSI_CATEGORY, all_audit_log_memory, count);
-#endif
   logger_init_mutexes();
 
   if (init_new_log_file())
