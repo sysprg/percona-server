@@ -54,17 +54,18 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include <string.h>
 #include "auth_pam_common.h"
+#include <my_sys.h>
 
 int auth_pam_client_talk_init(void **talk_data)
 {
-  int *num_talks= calloc(1, sizeof(int));
+  int *num_talks= my_malloc(PSI_NOT_INSTRUMENTED, sizeof(int), MY_ZEROFILL);
   *talk_data= (void*)num_talks;
   return (num_talks != NULL) ? PAM_SUCCESS : PAM_BUF_ERR;
 }
 
 void auth_pam_client_talk_finalize(void *talk_data)
 {
-  free(talk_data);
+  my_free(talk_data);
 }
 
 int auth_pam_talk_perform(const struct pam_message *msg,
@@ -88,7 +89,7 @@ int auth_pam_talk_perform(const struct pam_message *msg,
         < 0)
       return PAM_CONV_ERR;
 
-    resp->resp= malloc(pkt_len + 1);
+    resp->resp= my_malloc(key_memory_pam_packet, pkt_len + 1, 0);
     if (resp->resp == NULL)
       return PAM_BUF_ERR;
 
@@ -108,6 +109,13 @@ int auth_pam_talk_perform(const struct pam_message *msg,
   return PAM_SUCCESS;
 }
 
+static
+int auth_pam_compat_init(MYSQL_PLUGIN plugin_info __attribute__((unused)))
+{
+  auth_pam_common_init("auth_pam_compat");
+  return 0;
+}
+
 static struct st_mysql_auth pam_auth_handler=
 {
   MYSQL_AUTHENTICATION_INTERFACE_VERSION,
@@ -123,7 +131,7 @@ mysql_declare_plugin(auth_pam)
   "Percona, Inc.",
   "PAM authentication plugin",
   PLUGIN_LICENSE_GPL,
-  NULL,
+  auth_pam_compat_init,
   NULL,
   0x0001,
   NULL,

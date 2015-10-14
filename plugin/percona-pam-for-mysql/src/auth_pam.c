@@ -56,11 +56,19 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 #include <string.h>
 #include "auth_pam_common.h"
+#include <my_sys.h>
 
 /** The maximum length of buffered PAM messages, i.e. any messages up to the
     next PAM reply-requiring message. 10K should be more than enough by order
     of magnitude. */
 enum { max_pam_buffered_msg_len = 10240 };
+
+static PSI_memory_key key_memory_pam_msg_buf;
+
+static PSI_memory_info pam_auth_memory[]=
+{
+  {&key_memory_pam_msg_buf, "auth_pam_msg_buf", 0},
+};
 
 struct pam_msg_buf {
     unsigned char buf[max_pam_buffered_msg_len];
@@ -76,7 +84,9 @@ static char pam_msg_style_to_char (int pam_msg_style)
 
 int auth_pam_client_talk_init(void **talk_data)
 {
-  struct pam_msg_buf *msg_buf= calloc(1, sizeof(struct pam_msg_buf));
+  struct pam_msg_buf *msg_buf= my_malloc(key_memory_pam_msg_buf,
+					 sizeof(struct pam_msg_buf),
+					 MY_ZEROFILL);
   *talk_data= (void*)msg_buf;
   if (msg_buf != NULL)
   {
@@ -88,7 +98,7 @@ int auth_pam_client_talk_init(void **talk_data)
 
 void auth_pam_client_talk_finalize(void *talk_data)
 {
-  free(talk_data);
+  my_free(talk_data);
 }
 
 int auth_pam_talk_perform(const struct pam_message *msg,
@@ -131,7 +141,7 @@ int auth_pam_talk_perform(const struct pam_message *msg,
         < 0)
       return PAM_CONV_ERR;
 
-    resp->resp= malloc(pkt_len + 1);
+    resp->resp= my_malloc(key_memory_pam_packet, pkt_len + 1, 0);
     if (resp->resp == NULL)
       return PAM_BUF_ERR;
 
@@ -145,6 +155,16 @@ int auth_pam_talk_perform(const struct pam_message *msg,
   }
 
   return PAM_SUCCESS;
+}
+
+static
+int auth_pam_init(MYSQL_PLUGIN plugin_info __attribute__((unused)))
+{
+  int count;
+  auth_pam_common_init("auth_pam");
+  count= array_elements(pam_auth_memory);
+  mysql_memory_register("auth_pam", pam_auth_memory, count);
+  return 0;
 }
 
 static struct st_mysql_auth pam_auth_handler=
@@ -162,7 +182,7 @@ mysql_declare_plugin(auth_pam)
   "Percona, Inc.",
   "PAM authentication plugin",
   PLUGIN_LICENSE_GPL,
-  NULL,
+  auth_pam_init,
   NULL,
   0x0001,
   NULL,

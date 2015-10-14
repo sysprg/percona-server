@@ -20,14 +20,37 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #endif
 
 #include <string.h>
+#include <my_global.h>
+#include <my_sys.h>
+#include <mysql/psi/psi.h>
+#include <mysql/psi/mysql_memory.h>
 #include "auth_pam_common.h"
 #include "auth_mapping.h"
 #include "groups.h"
 
 /* The server plugin */
 
+PSI_memory_key key_memory_pam_mapping_iter;
+PSI_memory_key key_memory_pam_packet;
+PSI_memory_key key_memory_pam_group_iter;
+PSI_memory_key key_memory_pam_response;
+
+static PSI_memory_info common_pam_memory[]=
+{
+  {&key_memory_pam_mapping_iter, "auth_pam_mapping_iterator", 0},
+  {&key_memory_pam_packet, "auth_pam_packet", 0},
+  {&key_memory_pam_group_iter, "auth_pam_group_iterator", 0},
+  {&key_memory_pam_response, "auth_pam_response", 0},
+};
+
 /** The MySQL service name for PAM configuration */
 static const char* service_name_default= "mysqld";
+
+void auth_pam_common_init(const char *psi_category)
+{
+  int count= array_elements(common_pam_memory);
+  mysql_memory_register(psi_category, common_pam_memory, count);
+}
 
 static int valid_pam_msg_style (int pam_msg_style)
 {
@@ -52,9 +75,9 @@ static void free_pam_response (struct pam_response ** resp, int n)
   int i;
   for (i = 0; i < n; i++)
   {
-    free((*resp)[i].resp);
+    my_free((*resp)[i].resp);
   }
-  free(*resp);
+  my_free(*resp);
   *resp= NULL;
 }
 
@@ -72,7 +95,8 @@ static int vio_server_conv (int num_msg, const struct pam_message **msg,
     return PAM_CONV_ERR;
   }
 
-  *resp = calloc (sizeof (struct pam_response), num_msg);
+  *resp = my_malloc (key_memory_pam_response,
+                     sizeof (struct pam_response) * num_msg, MY_ZEROFILL);
   if (*resp == NULL)
     return PAM_BUF_ERR;
 

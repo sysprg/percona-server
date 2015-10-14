@@ -37,13 +37,10 @@ can compile against unconfigured MySQL source tree.  */
 #include <security/openpam.h>
 #endif
 
+#include <my_global.h>
 #include <mysql/plugin.h>
 #include <mysql/plugin_auth.h>
 #include <mysql/client_plugin.h>
-
-#include <assert.h>
-
-#define MY_ASSERT_UNREACHABLE() assert(0)
 
 #ifdef __cplusplus
 extern "C" {
@@ -53,6 +50,13 @@ struct pam_conv_data {
     MYSQL_PLUGIN_VIO *vio;
     MYSQL_SERVER_AUTH_INFO *info;
 };
+
+extern PSI_memory_key key_memory_pam_mapping_iter;
+extern PSI_memory_key key_memory_pam_packet;
+extern PSI_memory_key key_memory_pam_group_iter;
+extern PSI_memory_key key_memory_pam_response;
+
+void auth_pam_common_init(const char *psi_category);
 
 /** Define following three functions for your specific client plugin */
 
