@@ -1241,7 +1241,7 @@ struct trx_t {
 	ulint		distinct_page_access;
 #define	DPAH_SIZE	8192
 	byte*		distinct_page_access_hash;
-	ibool		take_stats;
+	bool		take_stats;
 	ulint		magic_n;
 };
 

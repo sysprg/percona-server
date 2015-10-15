@@ -155,9 +155,9 @@ log_buf_pool_get_oldest_modification(void)
 Checks if the log groups have a big enough margin of free space in
 so that a new log entry can be written without overwriting log data
 that is not read by the changed page bitmap thread.
-@return TRUE if there is not enough free space. */
+@return true if there is not enough free space. */
 static
-ibool
+bool
 log_check_tracking_margin(
 	ulint	lsn_advance)	/*!< in: an upper limit on how much log data we
 				plan to write.  If zero, the margin will be
@@ -167,7 +167,7 @@ log_check_tracking_margin(
 	lsn_t	tracked_lsn_age;
 
 	if (!srv_track_changed_pages) {
-		return FALSE;
+		return false;
 	}
 
 	ut_ad(mutex_own(&(log_sys->mutex)));
@@ -339,7 +339,7 @@ loop:
 			ut_ad(len_upper_limit
 			      <= log_sys->max_archived_lsn_age);
 
-			log_archive_do(TRUE, &dummy);
+			log_archive_do(true, &dummy);
 
 			ut_ad(++count < 50);
 
@@ -2458,7 +2458,7 @@ loop:
 	}
 
 	log_mutex_enter();
-	log_archive_close_groups(TRUE);
+	log_archive_close_groups(true);
 	log_mutex_exit();
 
 	/* Check that the background threads stay suspended */

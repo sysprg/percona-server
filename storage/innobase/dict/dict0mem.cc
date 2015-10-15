@@ -133,7 +133,7 @@ dict_mem_table_create(
 		table->fts = NULL;
 	}
 
-	table->is_corrupt = FALSE;
+	table->is_corrupt = false;
 
 #endif /* !UNIV_HOTBACKUP */
 

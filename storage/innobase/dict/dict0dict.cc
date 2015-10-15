@@ -5828,10 +5828,10 @@ void
 dict_table_set_corrupt_by_space(
 /*============================*/
 	ulint	space_id,
-	ibool	need_mutex)
+	bool	need_mutex)
 {
 	dict_table_t*	table;
-	ibool		found = FALSE;
+	bool		found = false;
 
 	ut_a(space_id != 0 && space_id < SRV_LOG_SPACE_FIRST_ID);
 
@@ -5842,8 +5842,8 @@ dict_table_set_corrupt_by_space(
 
 	while (table) {
 		if (table->space == space_id) {
-			table->is_corrupt = TRUE;
-			found = TRUE;
+			table->is_corrupt = true;
+			found = true;
 		}
 
 		table = UT_LIST_GET_NEXT(table_LRU, table);

@@ -153,6 +153,7 @@ log_archived_get_offset(
 	return;
 }
 
+static
 void
 log_group_archive_file_header_write(
 /*================================*/
@@ -176,7 +177,8 @@ log_group_archive_file_header_write(
 	mach_write_to_8(buf + LOG_FILE_START_LSN, start_lsn);
 	mach_write_to_4(buf + LOG_FILE_NO, file_no);
 
-	mach_write_to_4(buf + LOG_FILE_ARCH_COMPLETED, FALSE);
+	mach_write_to_4(buf + LOG_FILE_ARCH_COMPLETED,
+			static_cast<ulint>(FALSE));
 
 	dest_offset = nth_file * group->file_size;
 
@@ -214,7 +216,8 @@ log_group_archive_completed_header_write(
 
 	buf = *(group->archive_file_header_bufs + nth_file);
 
-	mach_write_to_4(buf + LOG_FILE_ARCH_COMPLETED, TRUE);
+	mach_write_to_4(buf + LOG_FILE_ARCH_COMPLETED,
+			static_cast<ulint>(TRUE));
 	mach_write_to_8(buf + LOG_FILE_END_LSN, end_lsn);
 
 	dest_offset = nth_file * group->file_size + LOG_FILE_ARCH_COMPLETED;
@@ -531,20 +534,19 @@ log_io_complete_archive(void)
 
 /********************************************************************//**
 Starts an archiving operation.
-@return	TRUE if succeed, FALSE if an archiving operation was already running */
+@return	true if succeed, false if an archiving operation was already running */
 
-ibool
+bool
 log_archive_do(
 /*===========*/
-	ibool	sync,	/*!< in: TRUE if synchronous operation is desired */
+	bool	sync,	/*!< in: true if synchronous operation is desired */
 	ulint*	n_bytes)/*!< out: archive log buffer size, 0 if nothing to
 			archive */
 {
-	ibool   calc_new_limit;
+	bool	calc_new_limit	= true;
 	lsn_t	start_lsn;
 	lsn_t	limit_lsn	= LSN_MAX;
 
-	calc_new_limit = TRUE;
 loop:
 	log_mutex_enter();
 
@@ -555,7 +557,7 @@ loop:
 
 		*n_bytes = 0;
 
-		return(TRUE);
+		return(true);
 	case LOG_ARCH_STOPPED:
 	case LOG_ARCH_STOPPING2:
 		log_mutex_exit();
@@ -591,7 +593,7 @@ loop:
 
 		log_write_up_to(limit_lsn, true);
 
-		calc_new_limit = FALSE;
+		calc_new_limit = false;
 
 		goto loop;
 	}
@@ -608,7 +610,7 @@ loop:
 
 		*n_bytes = log_sys->archive_buf_size;
 
-		return(FALSE);
+		return(false);
 	}
 
 	rw_lock_x_lock_gen(&(log_sys->archive_lock), LOG_ARCHIVE);
@@ -636,7 +638,7 @@ loop:
 
 	*n_bytes = log_sys->archive_buf_size;
 
-	return(TRUE);
+	return(true);
 }
 
 /****************************************************************//**
@@ -676,7 +678,7 @@ log_archive_all(void)
 
 		log_mutex_exit();
 
-		log_archive_do(TRUE, &archived_bytes);
+		log_archive_do(true, &archived_bytes);
 
 		if (archived_bytes == 0)
 			return;
@@ -736,7 +738,7 @@ ulint
 log_archive_stop(void)
 /*==================*/
 {
-	ibool	success;
+	bool	success;
 
 	log_mutex_enter();
 
@@ -770,17 +772,17 @@ log_archive_stop(void)
 	/* Close all archived log files, incrementing the file count by 2,
 	if appropriate */
 
-	log_archive_close_groups(TRUE);
+	log_archive_close_groups(true);
 
 	log_mutex_exit();
 
 	/* Make a checkpoint, so that if recovery is needed, the file numbers
 	of new archived log files will start from the right value */
 
-	success = FALSE;
+	success = false;
 
 	while (!success) {
-		success = log_checkpoint(TRUE, TRUE);
+		success = log_checkpoint(true, true);
 	}
 
 	log_mutex_enter();
@@ -862,7 +864,7 @@ log_archive_margin(void)
 {
 	log_t*	log		= log_sys;
 	ulint	age;
-	ibool	sync;
+	bool	sync;
 	ulint	dummy;
 loop:
 	log_mutex_enter();
@@ -879,13 +881,13 @@ loop:
 
 		/* An archiving is urgent: we have to do synchronous i/o */
 
-		sync = TRUE;
+		sync = true;
 
 	} else if (age > log->max_archived_lsn_age_async) {
 
 		/* An archiving is not urgent: we do asynchronous i/o */
 
-		sync = FALSE;
+		sync = false;
 	} else {
 		/* No archiving required yet */
 
@@ -898,7 +900,7 @@ loop:
 
 	log_archive_do(sync, &dummy);
 
-	if (sync == TRUE) {
+	if (sync) {
 		/* Check again that enough was written to the archive */
 
 		goto loop;

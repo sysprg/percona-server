@@ -169,7 +169,7 @@ buf_read_page_low(
 
 			mutex_enter(&(recv_sys->mutex));
 
-			if (recv_sys->apply_log_recs == FALSE) {
+			if (!recv_sys->apply_log_recs) {
 				mutex_exit(&(recv_sys->mutex));
 				goto not_to_recover;
 			}
@@ -263,7 +263,7 @@ not_to_recover:
 		}
 
 		SRV_CORRUPT_TABLE_CHECK(*err == DB_SUCCESS,
-					bpage->is_corrupt = TRUE;);
+					bpage->is_corrupt = true;);
 
 	}
 
@@ -923,7 +923,7 @@ buf_read_recv_pages(
 
 			mutex_enter(&(recv_sys->mutex));
 
-			if (recv_sys->apply_log_recs == FALSE) {
+			if (!recv_sys->apply_log_recs) {
 				mutex_exit(&(recv_sys->mutex));
 				goto not_to_recover;
 			}

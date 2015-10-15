@@ -1237,7 +1237,7 @@ buf_chunk_init(
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
 	buf_chunk_t*	chunk,		/*!< out: chunk of buffers */
 	ulint		mem_size,	/*!< in: requested size in bytes */
-	ibool		populate)	/*!< in: virtual page preallocation */
+	bool		populate)	/*!< in: virtual page preallocation */
 {
 	buf_block_t*	block;
 	byte*		frame;
@@ -1465,7 +1465,7 @@ buf_pool_init_instance(
 /*===================*/
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
 	ulint		buf_pool_size,	/*!< in: size in bytes */
-	ibool		populate,	/*!< in: virtual page preallocation */
+	bool		populate,	/*!< in: virtual page preallocation */
 	ulint		instance_no)	/*!< in: id of the instance */
 {
 	ulint		i;
@@ -1686,7 +1686,7 @@ dberr_t
 buf_pool_init(
 /*==========*/
 	ulint	total_size,	/*!< in: size of the total pool in bytes */
-	ibool	populate,	/*!< in: virtual page preallocation */
+	bool	populate,	/*!< in: virtual page preallocation */
 	ulint	n_instances)	/*!< in: number of instances */
 {
 	ulint		i;
@@ -2573,7 +2573,8 @@ withdraw_retry:
 				ulong	unit = srv_buf_pool_chunk_unit;
 
 				if (!buf_chunk_init(buf_pool, chunk, unit,
-						    srv_buf_pool_populate)) {
+						    static_cast<bool>(
+							srv_buf_pool_populate))) {
 
 					ib::error() << "buffer pool " << i
 						<< " : failed to allocate"
@@ -4852,7 +4853,7 @@ buf_page_init_low(
 	bpage->newest_modification = 0;
 	bpage->oldest_modification = 0;
 	HASH_INVALIDATE(bpage, hash);
-	bpage->is_corrupt = FALSE;
+	bpage->is_corrupt = false;
 #if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
 	bpage->file_page_was_freed = FALSE;
 #endif /* UNIV_DEBUG_FILE_ACCESSES || UNIV_DEBUG */
@@ -5601,11 +5602,13 @@ corrupt:
 
 				trx = innobase_get_trx();
 				if (trx && trx->dict_operation_lock_mode == RW_X_LATCH) {
-					dict_table_set_corrupt_by_space(bpage->id.space(), FALSE);
+					dict_table_set_corrupt_by_space(bpage->id.space(),
+									false);
 				} else {
-					dict_table_set_corrupt_by_space(bpage->id.space(), TRUE);
+					dict_table_set_corrupt_by_space(bpage->id.space(),
+									true);
 				}
-				bpage->is_corrupt = TRUE;
+				bpage->is_corrupt = true;
 			} else
 			if (srv_force_recovery < SRV_FORCE_IGNORE_CORRUPT) {
 				/* If page space id is larger than TRX_SYS_SPACE

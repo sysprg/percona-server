@@ -8605,7 +8605,7 @@ limit_lsn_range_from_condition(
 		Item		*right;
 		Item_field	*item_field;
 		ib_uint64_t	tmp_result;
-		ibool		is_end_lsn;
+		bool		is_end_lsn;
 
 		/* a <= b equals to b >= a that's why we just exchange "left"
 		and "right" in the case of ">" or ">=" function.  We don't

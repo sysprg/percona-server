@@ -346,7 +346,7 @@ dberr_t
 buf_pool_init(
 /*=========*/
 	ulint	size,		/*!< in: Size of the total pool in bytes */
-	ibool	populate,	/*!< in: Force virtual page preallocation */
+	bool	populate,	/*!< in: Force virtual page preallocation */
 	ulint	n_instances);	/*!< in: Number of instances */
 /********************************************************************//**
 Frees the buffer pool at shutdown.  This must not be invoked before
@@ -1716,7 +1716,7 @@ public:
 					0 if the block was never accessed
 					in the buffer pool. Protected by
 					block mutex */
-	ibool		is_corrupt;
+	bool		is_corrupt;
 # if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
 	ibool		file_page_was_freed;
 					/*!< this is set to TRUE when

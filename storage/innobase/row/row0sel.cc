@@ -4585,7 +4585,7 @@ release_search_latch:
 			mtr_start(&mtr);
 
 			rw_lock_s_unlock(btr_search_get_latch(index));
-			trx->has_search_latch = FALSE;
+			trx->has_search_latch = false;
 		}
 	}
 
@@ -4882,7 +4882,7 @@ rec_loop:
 wrong_offs:
 		if (srv_pass_corrupt_table && index->table->space != 0 &&
 		    index->table->space < SRV_LOG_SPACE_FIRST_ID) {
-			index->table->is_corrupt = TRUE;
+			index->table->is_corrupt = true;
 			fil_space_set_corrupt(index->table->space);
 		}
 

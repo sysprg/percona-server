@@ -1175,23 +1175,24 @@ innobase_fts_store_docid(
 /*************************************************************//**
 Removes old archived transaction log files.
 @return	true on error */
-static bool innobase_purge_archive_logs(
+static
+bool innobase_purge_archive_logs(
 	handlerton *hton,		/*!< in: InnoDB handlerton */
 	time_t before_date,		/*!< in: all files modified
 					before timestamp should be removed */
 	const char* to_filename)	/*!< in: this and earler files
 					should be removed */
 {
-	ulint err= DB_ERROR;
+	ulint err = DB_ERROR;
 	if (before_date > 0) {
-		err= purge_archived_logs(before_date, 0);
+		err = purge_archived_logs(before_date, 0);
 	} else if (to_filename) {
 		if (is_prefix(to_filename, IB_ARCHIVED_LOGS_PREFIX)) {
 			unsigned long long log_file_lsn = strtoll(to_filename
 					+ IB_ARCHIVED_LOGS_PREFIX_LEN,
 					NULL, 10);
 			if (log_file_lsn > 0 && log_file_lsn < ULLONG_MAX) {
-				err= purge_archived_logs(0, log_file_lsn);
+				err = purge_archived_logs(0, log_file_lsn);
 			}
 		}
 	}
@@ -2370,11 +2371,8 @@ innobase_trx_init(
 	trx->check_unique_secondary = !thd_test_options(
 		thd, OPTION_RELAXED_UNIQUE_CHECKS);
 
-	if (thd_log_slow_verbosity(thd) & (1ULL << SLOG_V_INNODB)) {
-		trx->take_stats = TRUE;
-	} else {
-		trx->take_stats = FALSE;
-	}
+	trx->take_stats = thd_log_slow_verbosity(thd)
+		& (1ULL << SLOG_V_INNODB);
 
 	DBUG_VOID_RETURN;
 }
@@ -2449,10 +2447,10 @@ innobase_get_trx()
 	}
 }
 
-ibool
+bool
 innobase_get_slow_log()
 {
-	return((ibool) thd_opt_slow_log());
+	return(static_cast<bool>(thd_opt_slow_log()));
 }
 
 /*********************************************************************//**
@@ -3544,7 +3542,7 @@ innobase_change_buffering_inited_ok:
 
 	srv_log_file_size = (ib_uint64_t) innobase_log_file_size;
 
-	srv_log_archive_on = (ulint) innobase_log_archive;
+	srv_log_archive_on = static_cast<bool>(innobase_log_archive);
 
 	/* Check that the value of system variable innodb_page_size was
 	set correctly.  Its value was put into srv_page_size. If valid,
@@ -15025,11 +15023,11 @@ innodb_log_archive_update(
 
 	if (in_val) {
 		/* turn archiving on */
-		srv_log_archive_on = innobase_log_archive = 1;
+		srv_log_archive_on = innobase_log_archive = true;
 		log_archive_archivelog();
 	} else {
 		/* turn archivng off */
-		srv_log_archive_on = innobase_log_archive = 0;
+		srv_log_archive_on = innobase_log_archive = false;
 		log_archive_noarchivelog();
 	}
 }
@@ -16675,7 +16673,7 @@ innobase_fts_retrieve_ranking(
 
 /***********************************************************************
 functions for kill session of idle transaction */
-ibool
+bool
 innobase_thd_is_idle(
 /*=================*/
 	const void*	thd)	/*!< in: thread handle (THD*) */

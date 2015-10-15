@@ -1382,7 +1382,7 @@ Check if the block is modified and ready for flushing. If the the block
 is ready to flush then flush the page and try o flush its neighbors. The caller
 must hold the buffer pool list mutex corresponding to the type of flush.
 
-@return	TRUE if the list mutex was released during this function.  This does
+@return	true if the list mutex was released during this function.  This does
 not guarantee that some pages were written as well.
 Number of pages written are incremented to the count. */
 static

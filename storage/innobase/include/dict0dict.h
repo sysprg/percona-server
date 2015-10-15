@@ -1943,7 +1943,7 @@ void
 dict_table_set_corrupt_by_space(
 /*============================*/
 	ulint	space_id,
-	ibool	need_mutex);
+	bool	need_mutex);
 
 #ifndef UNIV_NONINL
 #include "dict0dict.ic"

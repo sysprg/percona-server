@@ -269,9 +269,9 @@ log_online_calc_checksum(
 /****************************************************************//**
 Read one bitmap data page and check it for corruption.
 
-@return TRUE if page read OK, FALSE if I/O error */
+@return true if page read OK, false if I/O error */
 static
-ibool
+bool
 log_online_read_bitmap_page(
 /*========================*/
 	log_online_bitmap_file_t	*bitmap_file,	/*!<in/out: bitmap
@@ -280,12 +280,12 @@ log_online_read_bitmap_page(
 						       Must be at least
 						       MODIFIED_PAGE_BLOCK_SIZE
 						       bytes long */
-	ibool				*checksum_ok)	/*!<out: TRUE if page
+	bool				*checksum_ok)	/*!<out: true if page
 							checksum OK */
 {
 	ulint	checksum;
 	ulint	actual_checksum;
-	ibool	success;
+	bool	success;
 
 	ut_a(bitmap_file->size >= MODIFIED_PAGE_BLOCK_SIZE);
 	ut_a(bitmap_file->offset
@@ -298,11 +298,11 @@ log_online_read_bitmap_page(
 	if (UNIV_UNLIKELY(!success)) {
 
 		/* The following call prints an error message */
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_WARN,
 			"Failed reading changed page bitmap file \'%s\'",
 			bitmap_file->name);
-		return FALSE;
+		return false;
 	}
 
 	bitmap_file->offset += MODIFIED_PAGE_BLOCK_SIZE;
@@ -312,7 +312,7 @@ log_online_read_bitmap_page(
 	actual_checksum = log_online_calc_checksum(page);
 	*checksum_ok = (checksum == actual_checksum);
 
-	return TRUE;
+	return true;
 }
 
 /****************************************************************//**
@@ -335,8 +335,8 @@ log_online_read_last_tracked_lsn(void)
 /*==================================*/
 {
 	byte		page[MODIFIED_PAGE_BLOCK_SIZE];
-	ibool		is_last_page	= FALSE;
-	ibool		checksum_ok	= FALSE;
+	bool		is_last_page	= false;
+	bool		checksum_ok	= false;
 	lsn_t		result;
 	os_offset_t	read_offset	= log_bmp_sys->out.offset;
 
@@ -347,7 +347,7 @@ log_online_read_last_tracked_lsn(void)
 
 		if (!log_online_read_bitmap_page(&log_bmp_sys->out, page,
 						 &checksum_ok)) {
-			checksum_ok = FALSE;
+			checksum_ok = false;
 			result = 0;
 			break;
 		}
@@ -409,10 +409,10 @@ Check if missing, if any, LSN interval can be read and tracked using the
 current LSN value, the LSN value where the tracking stopped, and the log group
 capacity.
 
-@return TRUE if the missing interval can be tracked or if there's no missing
+@return true if the missing interval can be tracked or if there's no missing
 data.  */
 static
-ibool
+bool
 log_online_can_track_missing(
 /*=========================*/
 	lsn_t	last_tracked_lsn,	/*!<in: last tracked LSN */
@@ -423,12 +423,11 @@ log_online_can_track_missing(
 	last_tracked_lsn = ut_max(last_tracked_lsn, MIN_TRACKED_LSN);
 
 	if (last_tracked_lsn > tracking_start_lsn) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
+		ib_logf(IB_LOG_LEVEL_FATAL,
 			"Last tracked LSN " LSN_PF " is ahead of tracking "
 			"start LSN " LSN_PF ".  This can be caused by "
 			"mismatched bitmap files.",
 			last_tracked_lsn, tracking_start_lsn);
-		exit(1);
 	}
 
 	return (last_tracked_lsn == tracking_start_lsn)
@@ -509,7 +508,7 @@ log_online_make_bitmap_name(
 Check if an old file that has the name of a new bitmap file we are about to
 create should be overwritten.  */
 static
-ibool
+bool
 log_online_should_overwrite(
 /*========================*/
 	const char	*path)	/*!< in: path to file */
@@ -526,9 +525,9 @@ log_online_should_overwrite(
 /*********************************************************************//**
 Create a new empty bitmap output file.
 
-@return TRUE if operation succeeded, FALSE if I/O error */
+@return true if operation succeeded, false if I/O error */
 static
-ibool
+bool
 log_online_start_bitmap_file(void)
 /*==============================*/
 {
@@ -537,9 +536,9 @@ log_online_start_bitmap_file(void)
 	/* Check for an old file that should be deleted first */
 	if (log_online_should_overwrite(log_bmp_sys->out.name)) {
 
-		success = static_cast<ibool>(
-			os_file_delete_if_exists(innodb_bmp_file_key,
-						 log_bmp_sys->out.name, NULL));
+		success = os_file_delete_if_exists(innodb_bmp_file_key,
+						   log_bmp_sys->out.name,
+						   NULL);
 	}
 
 	if (UNIV_LIKELY(success)) {
@@ -555,22 +554,22 @@ log_online_start_bitmap_file(void)
 	if (UNIV_UNLIKELY(!success)) {
 
 		/* The following call prints an error message */
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_ERROR,
 			"Cannot create \'%s\'", log_bmp_sys->out.name);
-		return FALSE;
+		return false;
 	}
 
 	log_bmp_sys->out.offset = 0;
-	return TRUE;
+	return true;
 }
 
 /*********************************************************************//**
 Close the current bitmap output file and create the next one.
 
-@return TRUE if operation succeeded, FALSE if I/O error */
+@return true if operation succeeded, false if I/O error */
 static
-ibool
+bool
 log_online_rotate_bitmap_file(
 /*===========================*/
 	lsn_t	next_file_start_lsn)	/*!<in: the start LSN name
@@ -590,9 +589,9 @@ Check the name of a given file if it's a changed page bitmap file and
 return file sequence and start LSN name components if it is.  If is not,
 the values of output parameters are undefined.
 
-@return TRUE if a given file is a changed page bitmap file.  */
+@return true if a given file is a changed page bitmap file.  */
 static
-ibool
+bool
 log_online_is_bitmap_file(
 /*======================*/
 	const os_file_stat_t*	file_info,		/*!<in: file to
@@ -664,7 +663,7 @@ log_online_read_init(void)
 	log_bmp_sys->out.name[0] = '\0';
 	log_bmp_sys->out_seq_num = 0;
 
-	bitmap_dir = os_file_opendir(log_bmp_sys->bmp_file_home, TRUE);
+	bitmap_dir = os_file_opendir(log_bmp_sys->bmp_file_home, true);
 	ut_a(bitmap_dir);
 	while (!os_file_readdir_next_file(log_bmp_sys->bmp_file_home,
 					  bitmap_dir, &bitmap_dir_file_info)) {
@@ -691,7 +690,7 @@ log_online_read_init(void)
 	}
 
 	if (os_file_closedir(bitmap_dir)) {
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_ERROR, "Cannot close \'%s\'",
 			log_bmp_sys->bmp_file_home);
 		exit(1);
@@ -813,7 +812,7 @@ log_online_read_shutdown(void)
 /*********************************************************************//**
 For the given minilog record type determine if the record has (space; page)
 associated with it.
-@return TRUE if the record has (space; page) in it */
+@return true if the record has (space; page) in it */
 static
 bool
 log_online_rec_has_page(
@@ -828,7 +827,7 @@ log_online_rec_has_page(
 /*********************************************************************//**
 Check if a page field for a given log record type actually contains a page
 id. It does not for file operations and MLOG_LSN.
-@return TRUE if page field contains actual page id, FALSE otherwise */
+@return true if page field contains actual page id, false otherwise */
 static
 bool
 log_online_rec_page_means_page(
@@ -906,14 +905,14 @@ log_online_parse_redo_log(void)
 
 /*********************************************************************//**
 Check the log block checksum.
-@return TRUE if the log block checksum is OK, FALSE otherwise.  */
+@return true if the log block checksum is OK, false otherwise.  */
 static
-ibool
+bool
 log_online_is_valid_log_seg(
 /*========================*/
 	const byte* log_block)	/*!< in: read log data */
 {
-	ibool checksum_is_ok
+	bool checksum_is_ok
 		= log_block_checksum_is_ok_or_old_format(log_block);
 
 	if (!checksum_is_ok) {
@@ -1097,19 +1096,19 @@ log_online_follow_log_group(
 Write, flush one bitmap block to disk and advance the output position if
 successful.
 
-@return TRUE if page written OK, FALSE if I/O error */
+@return true if page written OK, false if I/O error */
 static
-ibool
+bool
 log_online_write_bitmap_page(
 /*=========================*/
 	const byte *block)	/*!< in: block to write */
 {
-	ibool	success;
+	bool	success;
 
 	ut_ad(mutex_own(&log_bmp_sys->mutex));
 
 	/* Simulate a write error */
-	DBUG_EXECUTE_IF("bitmap_page_write_error", return FALSE;);
+	DBUG_EXECUTE_IF("bitmap_page_write_error", return false;);
 
 	success = os_file_write(log_bmp_sys->out.name, log_bmp_sys->out.file,
 				block, log_bmp_sys->out.offset,
@@ -1117,20 +1116,20 @@ log_online_write_bitmap_page(
 	if (UNIV_UNLIKELY(!success)) {
 
 		/* The following call prints an error message */
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_ERROR, "Failed writing changed page "
 			"bitmap file \'%s\'", log_bmp_sys->out.name);
-		return FALSE;
+		return false;
 	}
 
 	success = os_file_flush(log_bmp_sys->out.file);
 	if (UNIV_UNLIKELY(!success)) {
 
 		/* The following call prints an error message */
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_ERROR, "Failed flushing changed page "
 			"bitmap file \'%s\'",	log_bmp_sys->out.name);
-		return FALSE;
+		return false;
 	}
 
 #ifdef UNIV_LINUX
@@ -1139,28 +1138,28 @@ log_online_write_bitmap_page(
 #endif
 
 	log_bmp_sys->out.offset += MODIFIED_PAGE_BLOCK_SIZE;
-	return TRUE;
+	return true;
 }
 
 /*********************************************************************//**
 Append the current changed page bitmap to the bitmap file.  Clears the
 bitmap tree and recycles its nodes to the free list.
 
-@return TRUE if bitmap written OK, FALSE if I/O error*/
+@return true if bitmap written OK, false if I/O error*/
 static
-ibool
+bool
 log_online_write_bitmap(void)
 /*=========================*/
 {
 	ib_rbt_node_t		*bmp_tree_node;
 	const ib_rbt_node_t	*last_bmp_tree_node;
-	ibool			success = TRUE;
+	bool			success = true;
 
 	ut_ad(mutex_own(&log_bmp_sys->mutex));
 
 	if (log_bmp_sys->out.offset >= srv_max_bitmap_file_size) {
 		if (!log_online_rotate_bitmap_file(log_bmp_sys->start_lsn)) {
-			return FALSE;
+			return false;
 		}
 	}
 
@@ -1210,21 +1209,21 @@ log_online_write_bitmap(void)
 Read and parse the redo log up to last checkpoint LSN to build the changed
 page bitmap which is then written to disk.
 
-@return TRUE if log tracking succeeded, FALSE if bitmap write I/O error */
+@return true if log tracking succeeded, false if bitmap write I/O error */
 
-ibool
+bool
 log_online_follow_redo_log(void)
 /*============================*/
 {
 	lsn_t		contiguous_start_lsn;
 	log_group_t*	group;
-	ibool		result;
+	bool		result;
 
 	mutex_enter(&log_bmp_sys->mutex);
 
 	if (!srv_track_changed_pages) {
 		mutex_exit(&log_bmp_sys->mutex);
-		return FALSE;
+		return false;
 	}
 
 	ut_ad(!srv_read_only_mode);
@@ -1236,7 +1235,7 @@ log_online_follow_redo_log(void)
 
 	if (log_bmp_sys->end_lsn == log_bmp_sys->start_lsn) {
 		mutex_exit(&log_bmp_sys->mutex);
-		return TRUE;
+		return true;
 	}
 
 	group = UT_LIST_GET_FIRST(log_sys->log_groups);
@@ -1285,14 +1284,14 @@ specified LSN interval.  This range, if non-empty, will start with a file that
 has the greatest LSN equal to or less than the start LSN and will include all
 the files up to the one with the greatest LSN less than the end LSN.  Caller
 must free bitmap_files->files when done if bitmap_files set to non-NULL and
-this function returned TRUE.  Field bitmap_files->count might be set to a
+this function returned true.  Field bitmap_files->count might be set to a
 larger value than the actual count of the files, and space for the unused array
 slots will be allocated but cleared to zeroes.
 
-@return TRUE if succeeded
+@return true if succeeded
 */
 static
-ibool
+bool
 log_online_setup_bitmap_file_range(
 /*===============================*/
 	log_online_bitmap_file_range_t	*bitmap_files,	/*!<in/out: bitmap file
@@ -1313,13 +1312,13 @@ log_online_setup_bitmap_file_range(
 
 	/* 1st pass: size the info array */
 
-	bitmap_dir = os_file_opendir(srv_data_home, FALSE);
+	bitmap_dir = os_file_opendir(srv_data_home, false);
 	if (UNIV_UNLIKELY(!bitmap_dir)) {
 
 		ib_logf(IB_LOG_LEVEL_ERROR,
 			"Failed to open bitmap directory \'%s\'",
 			srv_data_home);
-		return FALSE;
+		return false;
 	}
 
 	while (!os_file_readdir_next_file(srv_data_home, bitmap_dir,
@@ -1366,16 +1365,16 @@ log_online_setup_bitmap_file_range(
 
 	if (UNIV_UNLIKELY(os_file_closedir(bitmap_dir))) {
 
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_ERROR, "Cannot close \'%s\'",
 			srv_data_home);
-		return FALSE;
+		return false;
 	}
 
 	if (first_file_seq_num == ULONG_MAX && last_file_seq_num == 0) {
 
 		bitmap_files->count = 0;
-		return TRUE;
+		return true;
 	}
 
 	bitmap_files->count = last_file_seq_num - first_file_seq_num + 1;
@@ -1384,13 +1383,13 @@ log_online_setup_bitmap_file_range(
 
 	/* 2nd pass: get the file names in the file_seq_num order */
 
-	bitmap_dir = os_file_opendir(srv_data_home, FALSE);
+	bitmap_dir = os_file_opendir(srv_data_home, false);
 	if (UNIV_UNLIKELY(!bitmap_dir)) {
 
 		ib_logf(IB_LOG_LEVEL_ERROR,
 			"Failed to open bitmap directory \'%s\'",
 			srv_data_home);
-		return FALSE;
+		return false;
 	}
 
 	bitmap_files->files
@@ -1418,7 +1417,7 @@ log_online_setup_bitmap_file_range(
 		if (UNIV_UNLIKELY(array_pos >= bitmap_files->count)) {
 
 			log_online_diagnose_inconsistent_dir(bitmap_files);
-			return FALSE;
+			return false;
 		}
 
 
@@ -1436,18 +1435,18 @@ log_online_setup_bitmap_file_range(
 
 	if (UNIV_UNLIKELY(os_file_closedir(bitmap_dir))) {
 
-		os_file_get_last_error(TRUE);
+		os_file_get_last_error(true);
 		ib_logf(IB_LOG_LEVEL_ERROR, "Cannot close \'%s\'",
 			srv_data_home);
 		free(bitmap_files->files);
-		return FALSE;
+		return false;
 	}
 
 	if (!bitmap_files->files[0].seq_num
 	    || bitmap_files->files[0].seq_num != first_file_seq_num) {
 
 		log_online_diagnose_inconsistent_dir(bitmap_files);
-		return FALSE;
+		return false;
 	}
 
 	{
@@ -1463,20 +1462,20 @@ log_online_setup_bitmap_file_range(
 
 				log_online_diagnose_inconsistent_dir(
 								bitmap_files);
-				return FALSE;
+				return false;
 			}
 		}
 	}
 
-	return TRUE;
+	return true;
 }
 
 /****************************************************************//**
 Open a bitmap file for reading.
 
-@return TRUE if opened successfully */
+@return true if opened successfully */
 static
-ibool
+bool
 log_online_open_bitmap_file_read_only(
 /*==================================*/
 	const char*			name,		/*!<in: bitmap file
@@ -1505,7 +1504,7 @@ log_online_open_bitmap_file_read_only(
 		ib_logf(IB_LOG_LEVEL_WARN,
 			"Error opening the changed page bitmap \'%s\'",
 			bitmap_file->name);
-		return FALSE;
+		return false;
 	}
 
 	bitmap_file->size = os_file_get_size(bitmap_file->file);
@@ -1516,7 +1515,7 @@ log_online_open_bitmap_file_read_only(
 	posix_fadvise(bitmap_file->file, 0, 0, POSIX_FADV_NOREUSE);
 #endif
 
-	return TRUE;
+	return true;
 }
 
 /****************************************************************//**
@@ -1526,13 +1525,13 @@ the end of bitmap file:
 2) Error if we cannot read any more full pages but the last read page
 did not have the last-in-run flag set.
 
-@return FALSE for the error */
+@return false for the error */
 static
-ibool
+bool
 log_online_diagnose_bitmap_eof(
 /*===========================*/
 	const log_online_bitmap_file_t*	bitmap_file,	/*!< in: bitmap file */
-	ibool				last_page_in_run)/*!< in: "last page in
+	bool				last_page_in_run)/*!< in: "last page in
 							run" flag value in the
 							last read page */
 {
@@ -1562,10 +1561,10 @@ log_online_diagnose_bitmap_eof(
 				"Changed page bitmap file \'%s\' does not "
 				"contain a complete run at the end.",
 				bitmap_file->name);
-			return FALSE;
+			return false;
 		}
 	}
-	return TRUE;
+	return true;
 }
 
 /*********************************************************************//**
@@ -1579,9 +1578,9 @@ last blocks will not be returned.  Also note that there might be returned
 records with LSN < min_lsn, as min_lsn is used to select the correct starting
 file but not block.
 
-@return TRUE if the iterator is initialized OK, FALSE otherwise. */
+@return true if the iterator is initialized OK, false otherwise. */
 
-ibool
+bool
 log_online_bitmap_iterator_init(
 /*============================*/
 	log_bitmap_iterator_t	*i,	/*!<in/out:  iterator */
@@ -1597,15 +1596,15 @@ log_online_bitmap_iterator_init(
 		i->in_files.files = NULL;
 		i->in.file = os_file_invalid;
 		i->page = NULL;
-		i->failed = FALSE;
-		return TRUE;
+		i->failed = false;
+		return true;
 	}
 
 	if (!log_online_setup_bitmap_file_range(&i->in_files, min_lsn,
 		max_lsn)) {
 
-		i->failed = TRUE;
-		return FALSE;
+		i->failed = true;
+		return false;
 	}
 
 	i->in_i = 0;
@@ -1615,8 +1614,8 @@ log_online_bitmap_iterator_init(
 		/* Empty range */
 		i->in.file = os_file_invalid;
 		i->page = NULL;
-		i->failed = FALSE;
-		return TRUE;
+		i->failed = false;
+		return true;
 	}
 
 	/* Open the 1st bitmap file */
@@ -1626,8 +1625,8 @@ log_online_bitmap_iterator_init(
 
 		i->in_i = i->in_files.count;
 		free(i->in_files.files);
-		i->failed = TRUE;
-		return FALSE;
+		i->failed = true;
+		return false;
 	}
 
 	i->page = static_cast<byte *>
@@ -1636,11 +1635,11 @@ log_online_bitmap_iterator_init(
 	i->start_lsn = i->end_lsn = 0;
 	i->space_id = 0;
 	i->first_page_id = 0;
-	i->last_page_in_run = TRUE;
-	i->changed = FALSE;
-	i->failed = FALSE;
+	i->last_page_in_run = true;
+	i->changed = false;
+	i->failed = false;
 
-	return TRUE;
+	return true;
 }
 
 /*********************************************************************//**
@@ -1666,28 +1665,28 @@ log_online_bitmap_iterator_release(
 
 		ut_free(i->page);
 	}
-	i->failed = TRUE;
+	i->failed = true;
 }
 
 /*********************************************************************//**
 Iterates through bits of saved bitmap blocks.
 Sequentially reads blocks from bitmap file(s) and interates through
 their bits. Ignores blocks with wrong checksum.
-@return TRUE if iteration is successful, FALSE if all bits are iterated. */
+@return true if iteration is successful, false if all bits are iterated. */
 
-ibool
+bool
 log_online_bitmap_iterator_next(
 /*============================*/
 	log_bitmap_iterator_t *i) /*!<in/out: iterator */
 {
-	ibool	checksum_ok = FALSE;
-	ibool	success;
+	bool	checksum_ok = false;
+	bool	success;
 
 	ut_a(i);
 
 	if (UNIV_UNLIKELY(i->in_files.count == 0)) {
 
-		return FALSE;
+		return false;
 	}
 
 	if (UNIV_LIKELY(i->bit_offset < MODIFIED_PAGE_BLOCK_BITMAP_LEN))
@@ -1696,7 +1695,7 @@ log_online_bitmap_iterator_next(
 		i->changed =
 			IS_BIT_SET(i->page + MODIFIED_PAGE_BLOCK_BITMAP,
 				   i->bit_offset);
-		return TRUE;
+		return true;
 	}
 
 	while (!checksum_ok)
@@ -1711,30 +1710,30 @@ log_online_bitmap_iterator_next(
 			i->in.file = os_file_invalid;
 			if (UNIV_UNLIKELY(!success)) {
 
-				os_file_get_last_error(TRUE);
-				i->failed = TRUE;
-				return FALSE;
+				os_file_get_last_error(true);
+				i->failed = true;
+				return false;
 			}
 
 			success = log_online_diagnose_bitmap_eof(
 					&i->in, i->last_page_in_run);
 			if (UNIV_UNLIKELY(!success)) {
 
-				i->failed = TRUE;
-				return FALSE;
+				i->failed = true;
+				return false;
 
 			}
 
 			if (i->in_i == i->in_files.count) {
 
-				return FALSE;
+				return false;
 			}
 
 			if (UNIV_UNLIKELY(i->in_files.files[i->in_i].seq_num
 					  == 0)) {
 
-				i->failed = TRUE;
-				return FALSE;
+				i->failed = true;
+				return false;
 			}
 
 			success = log_online_open_bitmap_file_read_only(
@@ -1742,8 +1741,8 @@ log_online_bitmap_iterator_next(
 					&i->in);
 			if (UNIV_UNLIKELY(!success)) {
 
-				i->failed = TRUE;
-				return FALSE;
+				i->failed = true;
+				return false;
 			}
 		}
 
@@ -1751,12 +1750,12 @@ log_online_bitmap_iterator_next(
 						      &checksum_ok);
 		if (UNIV_UNLIKELY(!success)) {
 
-			os_file_get_last_error(TRUE);
+			os_file_get_last_error(true);
 			ib_logf(IB_LOG_LEVEL_WARN,
 				"Failed reading changed page bitmap file "
 				"\'%s\'", i->in_files.files[i->in_i].name);
-			i->failed = TRUE;
-			return FALSE;
+			i->failed = true;
+			return false;
 		}
 	}
 
@@ -1771,7 +1770,7 @@ log_online_bitmap_iterator_next(
 	i->changed = IS_BIT_SET(i->page + MODIFIED_PAGE_BLOCK_BITMAP,
 				i->bit_offset);
 
-	return TRUE;
+	return true;
 }
 
 /************************************************************//**
@@ -1779,16 +1778,16 @@ Delete all the bitmap files for data less than the specified LSN.
 If called with lsn == 0 (i.e. set by RESET request) or LSN_MAX,
 restart the bitmap file sequence, otherwise continue it.
 
-@return FALSE to indicate success, TRUE for failure. */
+@return false to indicate success, true for failure. */
 
-ibool
+bool
 log_online_purge_changed_page_bitmaps(
 /*==================================*/
 	lsn_t	lsn)	/*!< in: LSN to purge files up to */
 {
 	log_online_bitmap_file_range_t	bitmap_files;
 	size_t				i;
-	ibool				result = FALSE;
+	bool				result = false;
 
 	if (lsn == 0) {
 		lsn = LSN_MAX;
@@ -1804,7 +1803,7 @@ log_online_purge_changed_page_bitmaps(
 		if (srv_track_changed_pages) {
 			mutex_exit(&log_bmp_sys->mutex);
 		}
-		return TRUE;
+		return true;
 	}
 
 	if (srv_track_changed_pages && lsn > log_bmp_sys->end_lsn) {
@@ -1835,8 +1834,8 @@ log_online_purge_changed_page_bitmaps(
 					      bitmap_files.files[i].name,
 					      NULL)) {
 
-			os_file_get_last_error(TRUE);
-			result = TRUE;
+			os_file_get_last_error(true);
+			result = true;
 			break;
 		}
 	}

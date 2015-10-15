@@ -71,13 +71,10 @@ Created 10/8/1995 Heikki Tuuri
 #include "ut0mem.h"
 
 /* prototypes of new functions added to ha_innodb.cc for kill_idle_transaction */
-ibool		innobase_thd_is_idle(const void* thd);
+bool		innobase_thd_is_idle(const void* thd);
 ib_uint64_t	innobase_thd_get_start_time(const void* thd);
 void		innobase_thd_kill(ulong thd_id);
 ulong		innobase_thd_get_thread_id(const void* thd);
-
-/* prototypes for new functions added to ha_innodb.cc */
-ibool	innobase_get_slow_log();
 
 /* The following is the maximum allowed duration of a lock wait. */
 ulint	srv_fatal_semaphore_wait_threshold = 600;
@@ -283,9 +280,7 @@ in the buffer cache and accessed sequentially for InnoDB to trigger a
 readahead request. */
 ulong	srv_read_ahead_threshold	= 56;
 
-ibool	srv_log_archive_on	= FALSE;
-ibool	srv_archive_recovery	= 0;
-lsn_t	srv_archive_recovery_limit_lsn;
+bool	srv_log_archive_on	= false;
 
 /** Maximum on-disk size of change buffer in terms of percentage
 of the buffer pool. */
@@ -2159,7 +2154,7 @@ purge_archived_logs(
 	ulint		dirnamelen;
 
 	if (srv_arch_dir) {
-		dir = os_file_opendir(srv_arch_dir, FALSE);
+		dir = os_file_opendir(srv_arch_dir, false);
 		if (!dir) {
 			ib_logf(IB_LOG_LEVEL_WARN,
 				"opening archived log directory %s failed. "

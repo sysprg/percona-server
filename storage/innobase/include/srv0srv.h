@@ -183,7 +183,7 @@ extern ib_mutex_t	page_zip_stat_per_index_mutex;
 extern ib_mutex_t	srv_monitor_file_mutex;
 
 /* prototypes for new functions added to ha_innodb.cc */
-ibool	innobase_get_slow_log();
+bool	innobase_get_slow_log();
 
 /* Temporary file for innodb monitor output */
 extern FILE*	srv_monitor_file;
@@ -375,9 +375,7 @@ to treat NULL value when collecting statistics. It is not defined
 as enum type because the configure option takes unsigned integer type. */
 extern ulong	srv_innodb_stats_method;
 
-extern ibool	srv_log_archive_on;
-extern ibool	srv_archive_recovery;
-extern lsn_t	srv_archive_recovery_limit_lsn;
+extern bool	srv_log_archive_on;
 
 extern char*	srv_file_flush_method_str;
 
@@ -427,7 +425,7 @@ extern ulong	srv_replication_delay;
 
 extern ulint	srv_pass_corrupt_table;
 
-/* Helper macro to support srv_pass_corrupt_table checks. If 'cond' is FALSE,
+/* Helper macro to support srv_pass_corrupt_table checks. If 'cond' is false,
 execute 'code' if srv_pass_corrupt_table is non-zero, or trigger a fatal error
 otherwise. The break statement in 'code' will obviously not work as
 expected. */

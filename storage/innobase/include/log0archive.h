@@ -69,12 +69,12 @@ log_archive_margin(void);
 
 /********************************************************************//**
 Starts an archiving operation.
-@return	TRUE if succeed, FALSE if an archiving operation was already running */
+@return	true if succeed, false if an archiving operation was already running */
 
-ibool
+bool
 log_archive_do(
 /*===========*/
-	ibool	sync,	/*!< in: TRUE if synchronous operation is desired */
+	bool	sync,	/*!< in: true if synchronous operation is desired */
 	ulint*	n_bytes);/*!< out: archive log buffer size, 0 if nothing to
 			 archive */
 

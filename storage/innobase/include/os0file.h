@@ -942,9 +942,9 @@ os_file_truncate(
 
 /***********************************************************************//**
 Truncates a file at the specified position.
-@return TRUE if success */
+@return true if success */
 
-ibool
+bool
 os_file_set_eof_at(
 	os_file_t	file,	/*!< in: handle to a file */
 	ib_uint64_t	new_len);/*!< in: new file length */

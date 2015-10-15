@@ -1751,7 +1751,8 @@ innobase_start_or_create_for_mysql(void)
 		size, unit, srv_buf_pool_instances,
 		chunk_size, chunk_unit);
 
-	err = buf_pool_init(srv_buf_pool_size, (ibool) srv_buf_pool_populate,
+	err = buf_pool_init(srv_buf_pool_size,
+			    static_cast<bool>(srv_buf_pool_populate),
 			    srv_buf_pool_instances);
 
 	if (err != DB_SUCCESS) {

@@ -1391,7 +1391,7 @@ struct dict_table_t {
 	ib_uint64_t				sess_trx_id;
 	/*----------------------*/
 
-	ibool		is_corrupt;
+	bool		is_corrupt;
 #endif /* !UNIV_HOTBACKUP */
 
 #ifdef UNIV_DEBUG

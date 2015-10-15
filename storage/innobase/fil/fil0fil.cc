@@ -1229,7 +1229,7 @@ fil_space_truncate_start(
 /****************************************************************//**
 Check is there node in file space with given name. */
 
-ibool
+bool
 fil_space_contains_node(
 /*====================*/
     ulint	id,		/*!< in: space id */
@@ -1249,13 +1249,13 @@ fil_space_contains_node(
 
 	if (ut_strcmp(node->name, node_name) == 0) {
 	    mutex_exit(&fil_system->mutex);
-	    return(TRUE);
+	    return(true);
 	}
 
     }
 
     mutex_exit(&fil_system->mutex);
-    return(FALSE);
+    return(false);
 }
 
 /** Frees a space object from the tablespace memory cache.
@@ -6618,27 +6618,6 @@ test_make_filepath()
 /*************************************************************************
 functions to access is_corrupt flag of fil_space_t*/
 
-ibool
-fil_space_is_corrupt(
-/*=================*/
-	ulint	space_id)
-{
-	fil_space_t*	space;
-	ibool		ret = FALSE;
-
-	mutex_enter(&fil_system->mutex);
-
-	space = fil_space_get_by_id(space_id);
-
-	if (UNIV_UNLIKELY(space && space->is_corrupt)) {
-		ret = TRUE;
-	}
-
-	mutex_exit(&fil_system->mutex);
-
-	return(ret);
-}
-
 void
 fil_space_set_corrupt(
 /*==================*/
@@ -6651,7 +6630,7 @@ fil_space_set_corrupt(
 	space = fil_space_get_by_id(space_id);
 
 	if (space) {
-		space->is_corrupt = TRUE;
+		space->is_corrupt = true;
 	}
 
 	mutex_exit(&fil_system->mutex);

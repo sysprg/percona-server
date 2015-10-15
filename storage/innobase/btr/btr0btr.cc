@@ -5078,7 +5078,7 @@ btr_validate_index(
 	SRV_CORRUPT_TABLE_CHECK(root,
 	{
 		mtr_commit(&mtr);
-		return(FALSE);
+		return(false);
 	});
 
 	ulint	n = btr_page_get_level(root, &mtr);

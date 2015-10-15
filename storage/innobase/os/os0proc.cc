@@ -82,8 +82,8 @@ os_proc_get_number(void)
 
 /****************************************************************//**
 Retrieve and compare operating system release.
-@return	TRUE if the OS release is equal to, or later than release. */
-
+@return	true if the OS release is equal to, or later than release. */
+static
 bool
 os_compare_release(
 /*===============*/
