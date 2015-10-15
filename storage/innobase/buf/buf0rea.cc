@@ -955,7 +955,7 @@ buf_read_recv_pages(
 
 			mutex_exit(&(recv_sys->mutex));
 
-			fprintf(stderr, " (cannot find space: %lu)", space);
+			ib::info() << " (cannot find space: " << space << ")";
 		}
 not_to_recover:
 

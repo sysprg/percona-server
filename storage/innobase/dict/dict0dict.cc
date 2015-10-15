@@ -5853,9 +5853,8 @@ dict_table_set_corrupt_by_space(
 		mutex_exit(&(dict_sys->mutex));
 
 	if (!found) {
-		fprintf(stderr, "InnoDB: space to be marked as "
-			"crashed was not found for id " ULINTPF ".\n",
-			space_id);
+		ib::warn() << "Space to be marked as crashed was not found "
+			"for id " << space_id << ".";
 	}
 }
 #endif /* !UNIV_HOTBACKUP */

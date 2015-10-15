@@ -205,9 +205,9 @@ skip:
 	populate = populate && !os_compare_release("2.6.23");
 
 	if (populate) {
-		fprintf(stderr, "InnoDB: Warning: mmap(MAP_POPULATE) "
-			"is not supported for private mappings. "
-			"Forcing preallocation by faulting in pages.\n");
+		ib::warn() << "mmap(MAP_POPULATE) is not supported for "
+			"private mappings. Forcing preallocation by faulting "
+			"in pages.";
 	}
 #endif
 

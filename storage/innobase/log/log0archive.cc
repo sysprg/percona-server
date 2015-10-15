@@ -306,15 +306,12 @@ loop:
 		}
 
 		if (!ret) {
-			fprintf(stderr,
-				"InnoDB: Cannot create or open"
-				" archive log file %s.\n"
-				"InnoDB: Cannot continue operation.\n"
-				"InnoDB: Check that the log archive"
-				" directory exists,\n"
-				"InnoDB: you have access rights to it, and\n"
-				"InnoDB: there is space available.\n", name);
-			exit(1);
+			ib::fatal() << "Cannot create or open"
+				" archive log file " << name
+				    << ". Cannot continue operation. Check "
+				"that the log archive directory exists, you "
+				"have access rights to it, and there is space "
+				"available.";
 		}
 
 		DBUG_PRINT("ib_log", ("Created archive file %s", name));

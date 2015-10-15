@@ -2978,10 +2978,10 @@ static my_bool has_primary_key(const char *table_name)
   if (mysql_query(mysql, query_buff) || !(res= mysql_store_result(mysql)) ||
       !(row= mysql_fetch_row(res)))
   {
-    fprintf(stderr, "Warning: Couldn't determine if table %s has a "
+    fprintf(stderr, "%s: Warning: Couldn't determine if table %s has a "
             "primary key (%s). "
             "--innodb-optimize-keys may work inefficiently.\n",
-            table_name, mysql_error(mysql));
+            my_progname, table_name, mysql_error(mysql));
     goto cleanup;
   }
 

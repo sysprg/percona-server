@@ -100,10 +100,8 @@ _increment_page_get_statistics(buf_block_t* block, trx_t* trx)
 	block_hash = ut_hash_ulint(block->page.id.fold(), DPAH_SIZE << 3);
 	block_hash_byte = block_hash >> 3;
 	block_hash_offset = (byte) block_hash & 0x07;
-	if (block_hash_byte >= DPAH_SIZE)
-		fprintf(stderr, "!!! block_hash_byte = %lu  block_hash_offset = %d !!!\n", block_hash_byte, block_hash_offset);
-	if (block_hash_offset > 7)
-		fprintf(stderr, "!!! block_hash_byte = %lu  block_hash_offset = %d !!!\n", block_hash_byte, block_hash_offset);
+	ut_ad(block_hash_byte < DPAH_SIZE);
+	ut_ad(block_hash_offset <= 7);
 	if ((trx->distinct_page_access_hash[block_hash_byte] & ((byte) 0x01 << block_hash_offset)) == 0)
 		trx->distinct_page_access++;
 	trx->distinct_page_access_hash[block_hash_byte] |= (byte) 0x01 << block_hash_offset;
@@ -5597,9 +5595,8 @@ corrupt:
 			    && bpage->id.space() < SRV_LOG_SPACE_FIRST_ID) {
 				trx_t*	trx;
 
-				fprintf(stderr,
-					"InnoDB: space %u will be treated as corrupt.\n",
-					bpage->id.space());
+				ib::warn() << "Space " << bpage->id.space()
+					   << " will be treated as corrupt.",
 				fil_space_set_corrupt(bpage->id.space());
 
 				trx = innobase_get_trx();

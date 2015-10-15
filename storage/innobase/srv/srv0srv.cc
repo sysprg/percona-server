@@ -2095,8 +2095,8 @@ DECLARE_THREAD(srv_redo_log_follow_thread)(
 	ut_ad(!srv_read_only_mode);
 
 #ifdef UNIV_DEBUG_THREAD_CREATION
-	fprintf(stderr, "Redo log follower thread starts, id %lu\n",
-		os_thread_pf(os_thread_get_curr_id()));
+	ib::info() << "Redo log follower thread starts, id "
+		   << os_thread_pf(os_thread_get_curr_id());
 #endif
 
 #ifdef UNIV_PFS_THREAD
