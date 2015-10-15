@@ -15023,11 +15023,13 @@ innodb_log_archive_update(
 
 	if (in_val) {
 		/* turn archiving on */
-		srv_log_archive_on = innobase_log_archive = true;
+		srv_log_archive_on = true;
+		innobase_log_archive = true;
 		log_archive_archivelog();
 	} else {
 		/* turn archivng off */
-		srv_log_archive_on = innobase_log_archive = false;
+		srv_log_archive_on = false;
+		innobase_log_archive = false;
 		log_archive_noarchivelog();
 	}
 }
