@@ -94,7 +94,8 @@ _increment_page_get_statistics(buf_block_t* block, trx_t* trx)
 
 	if (!trx->distinct_page_access_hash) {
 		trx->distinct_page_access_hash
-			= static_cast<byte *>(ut_zalloc_nokey(DPAH_SIZE));
+			= static_cast<byte *>(ut_zalloc(DPAH_SIZE,
+				mem_key_trx_distinct_page_access_hash));
 	}
 
 	block_hash = ut_hash_ulint(block->page.id.fold(), DPAH_SIZE << 3);

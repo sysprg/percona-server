@@ -862,8 +862,9 @@ log_init(void)
 		       SYNC_NO_ORDER_CHECK);
 
 	log_sys->archive_buf_ptr = static_cast<byte*>(
-		ut_zalloc_nokey(LOG_ARCHIVE_BUF_SIZE
-				+ OS_FILE_LOG_BLOCK_SIZE));
+		ut_zalloc(LOG_ARCHIVE_BUF_SIZE
+			  + OS_FILE_LOG_BLOCK_SIZE,
+			  mem_key_log_sys_archive_buf));
 
 	log_sys->archive_buf = static_cast<byte*>(
 		ut_align(log_sys->archive_buf_ptr, OS_FILE_LOG_BLOCK_SIZE));
@@ -926,10 +927,12 @@ log_group_init(
 		ut_zalloc_nokey(sizeof(byte**) * n_files));
 
 	group->archive_file_header_bufs_ptr = static_cast<byte**>(
-		ut_zalloc_nokey(sizeof(byte*) * n_files));
+		ut_zalloc(sizeof(byte*) * n_files,
+			  mem_key_log_sys_group_archive_file_header_bufs_ptr));
 
 	group->archive_file_header_bufs = static_cast<byte**>(
-		ut_zalloc_nokey(sizeof(byte*) * n_files));
+		ut_zalloc(sizeof(byte*) * n_files,
+			  mem_key_log_sys_group_archive_file_header_bufs));
 
 	for (i = 0; i < n_files; i++) {
 		group->file_header_bufs_ptr[i] = static_cast<byte*>(
@@ -941,8 +944,9 @@ log_group_init(
 				 OS_FILE_LOG_BLOCK_SIZE));
 
 		group->archive_file_header_bufs_ptr[i] = static_cast<byte*>(
-			ut_zalloc_nokey(LOG_FILE_HDR_SIZE
-					+ OS_FILE_LOG_BLOCK_SIZE));
+			ut_zalloc(LOG_FILE_HDR_SIZE
+				  + OS_FILE_LOG_BLOCK_SIZE,
+			mem_key_log_sys_group_archive_file_header_buf_ptr));
 
 		group->archive_file_header_bufs[i] = static_cast<byte*>(
 			ut_align(group->archive_file_header_bufs_ptr[i],

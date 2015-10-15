@@ -634,9 +634,10 @@ log_online_read_init(void)
 	compile_time_assert(MODIFIED_PAGE_BLOCK_BITMAP_LEN % 8 == 0);
 
 	log_bmp_sys = static_cast<log_bitmap_struct *>
-		(ut_malloc_nokey(sizeof(*log_bmp_sys)));
+		(ut_malloc(sizeof(*log_bmp_sys), mem_key_log_online_sys));
 	log_bmp_sys->read_buf_ptr = static_cast<byte *>
-		(ut_malloc_nokey(FOLLOW_SCAN_SIZE + OS_FILE_LOG_BLOCK_SIZE));
+		(ut_malloc(FOLLOW_SCAN_SIZE + OS_FILE_LOG_BLOCK_SIZE,
+			   mem_key_log_online_read_buf));
 	log_bmp_sys->read_buf = static_cast<byte *>
 		(ut_align(log_bmp_sys->read_buf_ptr, OS_FILE_LOG_BLOCK_SIZE));
 
@@ -1394,8 +1395,9 @@ log_online_setup_bitmap_file_range(
 
 	bitmap_files->files
 		= static_cast<log_online_bitmap_file_range_struct::files_t *>
-		(ut_zalloc_nokey(bitmap_files->count
-				 * sizeof(bitmap_files->files[0])));
+		(ut_zalloc(bitmap_files->count
+			   * sizeof(bitmap_files->files[0]),
+			   mem_key_log_online_iterator_files));
 
 	while (!os_file_readdir_next_file(srv_data_home, bitmap_dir,
 					  &bitmap_dir_file_info)) {
@@ -1624,13 +1626,14 @@ log_online_bitmap_iterator_init(
 				&i->in))) {
 
 		i->in_i = i->in_files.count;
-		free(i->in_files.files);
+		ut_free(i->in_files.files);
 		i->failed = true;
 		return false;
 	}
 
 	i->page = static_cast<byte *>
-		(ut_malloc_nokey(MODIFIED_PAGE_BLOCK_SIZE));
+		(ut_malloc(MODIFIED_PAGE_BLOCK_SIZE,
+			   mem_key_log_online_iterator_page));
 	i->bit_offset = MODIFIED_PAGE_BLOCK_BITMAP_LEN;
 	i->start_lsn = i->end_lsn = 0;
 	i->space_id = 0;

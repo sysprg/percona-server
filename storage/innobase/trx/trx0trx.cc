@@ -504,7 +504,8 @@ trx_allocate_for_mysql(void)
 
 	if (UNIV_UNLIKELY(trx->take_stats)) {
 		trx->distinct_page_access_hash
-			= static_cast<byte *>(ut_zalloc_nokey(DPAH_SIZE));
+			= static_cast<byte *>(ut_zalloc(DPAH_SIZE,
+				mem_key_trx_distinct_page_access_hash));
 	}
 
 	return(trx);
