@@ -1229,7 +1229,6 @@ THD::THD(bool enable_plugins)
   event_scheduler.data= 0;
   event_scheduler.m_psi= 0;
   skip_wait_timeout= false;
-  extra_port= 0;
   main_security_ctx.init();
   security_ctx= &main_security_ctx;
   no_errors= 0;

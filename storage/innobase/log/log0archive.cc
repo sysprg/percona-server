@@ -391,8 +391,8 @@ loop:
 }
 
 /*****************************************************//**
-						       (Writes to the archive of each log group.) Currently, only the first
-						       group is archived. */
+(Writes to the archive of each log group.) Currently, only the first
+group is archived. */
 static
 void
 log_archive_groups(void)
