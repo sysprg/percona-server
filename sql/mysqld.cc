@@ -359,8 +359,7 @@ my_bool use_temp_pool, relay_log_purge;
 my_bool relay_log_recovery;
 my_bool opt_sync_frm, opt_allow_suspicious_udfs;
 my_bool opt_secure_auth= 0;
-char* opt_secure_file_priv= NULL;
-bool opt_secure_file_priv_noarg= false;
+char* opt_secure_file_priv;
 my_bool opt_log_slow_admin_statements= 0;
 my_bool opt_log_slow_slave_statements= 0;
 my_bool opt_log_slow_sp_statements= 0;
@@ -7244,16 +7243,6 @@ pfs_error:
                       "The former options like '--innodb=0/1/OFF/ON' or "
                       "'--skip-innodb' are ignored.");
     break;
-  case OPT_SECURE_FILE_PRIV:
-    if (argument == NULL)
-    {
-      opt_secure_file_priv_noarg= true;
-      opt_secure_file_priv= const_cast<char*>("ON");
-    }
-    else
-    {
-      opt_secure_file_priv_noarg= false;
-    }
   }
   return 0;
 }
@@ -7645,14 +7634,6 @@ bool is_secure_file_path(char *path)
 {
   char buff1[FN_REFLEN], buff2[FN_REFLEN];
   size_t opt_secure_file_priv_len;
-
-  /*
-    --secure-file-priv without argument means
-    disable SELECT INTO OUTFILE/LOAD DATA INFILE
-  */
-  if (opt_secure_file_priv_noarg)
-    return FALSE;
-
   /*
     All paths are secure if opt_secure_file_path is 0
   */
@@ -7756,7 +7737,7 @@ static int fix_paths(void)
     Convert the secure-file-priv option to system format, allowing
     a quick strcmp to check if read or write is in an allowed dir
    */
-  if (opt_secure_file_priv && !opt_secure_file_priv_noarg)
+  if (opt_secure_file_priv)
   {
     if (*opt_secure_file_priv == 0)
       opt_secure_file_priv= NULL;

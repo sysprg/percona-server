@@ -945,10 +945,9 @@ The following options may be given as the first argument:
  --secure-auth       Disallow authentication for accounts that have old
  (pre-4.1) passwords. Deprecated. Always TRUE.
  (Defaults to on; use --skip-secure-auth to disable.)
- --secure-file-priv[=name] 
+ --secure-file-priv=name 
  Limit LOAD DATA, SELECT ... OUTFILE, and LOAD_FILE() to
- files within specified directory. If no argument is
- specified disable loading files.
+ files within specified directory
  --server-id=#       Uniquely identifies the server instance in the community
  of replication partners
  --server-id-bits=#  Set number of significant bits in server-id
