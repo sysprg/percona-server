@@ -16425,46 +16425,7 @@ innodb_enable_monitor_at_startup(
 	}
 }
 
-#ifdef UNIV_LINUX
-
-/****************************************************************//**
-Update the innodb_sched_priority_cleaner variable and set the thread
-priorities accordingly.  */
-static
-void
-innodb_sched_priority_cleaner_update(
-/*=================================*/
-	THD*				thd,	/*!< in: thread handle */
-	struct st_mysql_sys_var*	var,	/*!< in: pointer to
-						system variable */
-	void*				var_ptr,/*!< out: where the
-						formal string goes */
-	const void*			save)	/*!< in: immediate result
-						from check function */
-{
-	ulint	priority = *static_cast<const ulint *>(save);
-	ulint	actual_priority;
-
-	/* Set the priority for the page cleaner thread */
-	if (srv_read_only_mode) {
-
-		return;
-	}
-
-	ut_ad(buf_page_cleaner_is_active);
-	actual_priority = os_thread_set_priority(srv_cleaner_tid, priority);
-	if (UNIV_UNLIKELY(actual_priority != priority)) {
-
-		push_warning_printf(thd, Sql_condition::SL_WARNING,
-				    ER_WRONG_ARGUMENTS,
-				    "Failed to set the page cleaner thread "
-				    "priority to %lu,  "
-				    "the current priority is %lu", priority,
-				    actual_priority);
-	}
-}
-
-#if defined(UNIV_DEBUG) || (UNIV_PERF_DEBUG)
+#if defined(UNIV_LINUX) && (defined(UNIV_DEBUG) || (UNIV_PERF_DEBUG))
 
 /****************************************************************//**
 Update the innodb_sched_priority_purge variable and set the thread
@@ -16585,9 +16546,7 @@ innodb_sched_priority_master_update(
 	}
 }
 
-#endif /* defined(UNIV_DEBUG) || (UNIV_PERF_DEBUG) */
-
-#endif /* UNIV_LINUX */
+#endif /* defined(UNIV_LINUX) && (defined(UNIV_DEBUG) || (UNIV_PERF_DEBUG)) */
 
 /****************************************************************//**
 Callback function for accessing the InnoDB variables from MySQL:
@@ -17569,15 +17528,6 @@ static MYSQL_SYSVAR_ENUM(foreground_preflush, srv_foreground_preflush,
   NULL, NULL, SRV_FOREGROUND_PREFLUSH_EXP_BACKOFF,
   &innodb_foreground_preflush_typelib);
 
-#ifdef UNIV_LINUX
-
-static MYSQL_SYSVAR_ULONG(sched_priority_cleaner, srv_sched_priority_cleaner,
-  PLUGIN_VAR_RQCMDARG,
-  "Nice value for the cleaner and LRU manager thread scheduling",
-  NULL, innodb_sched_priority_cleaner_update, 19, 0, 39, 0);
-
-#endif /* UNIV_LINUX */
-
 #if defined UNIV_DEBUG || defined UNIV_PERF_DEBUG
 static MYSQL_SYSVAR_ULONG(page_hash_locks, srv_n_page_hash_locks,
   PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
@@ -18349,9 +18299,6 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(buf_flush_list_now),
   MYSQL_SYSVAR(track_redo_log_now),
 #endif /* UNIV_DEBUG */
-#ifdef UNIV_LINUX
-  MYSQL_SYSVAR(sched_priority_cleaner),
-#endif
 #if defined UNIV_DEBUG || defined UNIV_PERF_DEBUG
   MYSQL_SYSVAR(page_hash_locks),
   MYSQL_SYSVAR(doublewrite_batch_size),

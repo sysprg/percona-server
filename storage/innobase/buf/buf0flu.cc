@@ -2762,10 +2762,6 @@ DECLARE_THREAD(buf_flush_page_cleaner_coordinator)(
 	pfs_register_thread(page_cleaner_thread_key);
 #endif /* UNIV_PFS_THREAD */
 
-	srv_cleaner_tid = os_thread_get_tid();
-
-	os_thread_set_priority(srv_cleaner_tid, srv_sched_priority_cleaner);
-
 #ifdef UNIV_DEBUG_THREAD_CREATION
 	ib::info() << "page_cleaner thread running, id "
 		<< os_thread_pf(os_thread_get_curr_id());

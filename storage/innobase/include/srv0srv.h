@@ -490,9 +490,6 @@ i/o handler thread */
 extern const char* srv_io_thread_op_info[];
 extern const char* srv_io_thread_function[];
 
-/* The tid of the cleaner thread */
-extern os_tid_t	srv_cleaner_tid;
-
 /* The tids of the purge threads */
 extern os_tid_t srv_purge_tids[];
 
@@ -501,9 +498,6 @@ extern os_tid_t	srv_io_tids[];
 
 /* The tid of the master thread */
 extern os_tid_t	srv_master_tid;
-
-/* The relative scheduling priority of the cleaner and LRU manager threads */
-extern ulint	srv_sched_priority_cleaner;
 
 /* The relative scheduling priority of the purge threads */
 extern ulint	srv_sched_priority_purge;

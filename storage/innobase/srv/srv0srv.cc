@@ -327,9 +327,6 @@ ulong	srv_adaptive_flushing_lwm	= 10;
 /* Number of iterations over which adaptive flushing is averaged. */
 ulong	srv_flushing_avg_loops		= 30;
 
-/* The tid of the cleaner thread */
-os_tid_t	srv_cleaner_tid;
-
 /* The tids of the purge threads */
 os_tid_t	srv_purge_tids[SRV_MAX_N_PURGE_THREADS];
 
@@ -338,9 +335,6 @@ os_tid_t	srv_io_tids[SRV_MAX_N_IO_THREADS];
 
 /* The tid of the master thread */
 os_tid_t	srv_master_tid;
-
-/* The relative scheduling priority of the cleaner thread */
-ulint	srv_sched_priority_cleaner	= 19;
 
 /* The relative scheduling priority of the purge threads */
 ulint	srv_sched_priority_purge	= 19;
