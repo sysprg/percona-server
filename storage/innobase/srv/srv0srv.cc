@@ -419,8 +419,6 @@ ulong	srv_doublewrite_batch_size	= 120;
 
 ulong	srv_replication_delay		= 0;
 
-ulong	srv_log_checksum_algorithm	= SRV_CHECKSUM_ALGORITHM_INNODB;
-
 ulint	srv_pass_corrupt_table = 0; /* 0:disable 1:enable */
 
 /*-------------------------------------------*/
