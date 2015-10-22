@@ -250,9 +250,6 @@ const ulong	srv_buf_pool_instances_default = 0;
 /** Number of locks to protect buf_pool->page_hash */
 ulong	srv_n_page_hash_locks = 16;
 
-/* force virtual page preallocation (prefault) */
-my_bool	srv_buf_pool_populate	= FALSE;
-
 /** Scan depth for LRU flush batch i.e.: number of blocks scanned*/
 ulong	srv_LRU_scan_depth	= 1024;
 /** Whether or not to flush neighbors of a block */

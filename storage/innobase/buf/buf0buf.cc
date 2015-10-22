@@ -1400,8 +1400,7 @@ buf_chunk_init(
 /*===========*/
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
 	buf_chunk_t*	chunk,		/*!< out: chunk of buffers */
-	ulint		mem_size,	/*!< in: requested size in bytes */
-	bool		populate)	/*!< in: virtual page preallocation */
+	ulint		mem_size)	/*!< in: requested size in bytes */
 {
 	buf_block_t*	block;
 	byte*		frame;
@@ -1419,8 +1418,7 @@ buf_chunk_init(
 	DBUG_EXECUTE_IF("ib_buf_chunk_init_fails", return(NULL););
 
 	chunk->mem = buf_pool->allocator.allocate_large(mem_size,
-							&chunk->mem_pfx,
-							populate);
+							&chunk->mem_pfx);
 
 	if (UNIV_UNLIKELY(chunk->mem == NULL)) {
 
@@ -1627,7 +1625,6 @@ buf_pool_init_instance(
 /*===================*/
 	buf_pool_t*	buf_pool,	/*!< in: buffer pool instance */
 	ulint		buf_pool_size,	/*!< in: size in bytes */
-	bool		populate,	/*!< in: virtual page preallocation */
 	ulint		instance_no)	/*!< in: id of the instance */
 {
 	ulint		i;
@@ -1679,8 +1676,7 @@ buf_pool_init_instance(
 		chunk = buf_pool->chunks;
 
 		do {
-			if (!buf_chunk_init(buf_pool, chunk, chunk_size,
-					    populate)) {
+			if (!buf_chunk_init(buf_pool, chunk, chunk_size)) {
 				while (--chunk >= buf_pool->chunks) {
 					buf_block_t*	block = chunk->blocks;
 
@@ -1848,7 +1844,6 @@ dberr_t
 buf_pool_init(
 /*==========*/
 	ulint	total_size,	/*!< in: size of the total pool in bytes */
-	bool	populate,	/*!< in: virtual page preallocation */
 	ulint	n_instances)	/*!< in: number of instances */
 {
 	ulint		i;
@@ -1876,7 +1871,7 @@ buf_pool_init(
 	for (i = 0; i < n_instances; i++) {
 		buf_pool_t*	ptr	= &buf_pool_ptr[i];
 
-		if (buf_pool_init_instance(ptr, size, populate, i) != DB_SUCCESS) {
+		if (buf_pool_init_instance(ptr, size, i) != DB_SUCCESS) {
 
 			/* Free all the instances created so far. */
 			buf_pool_free(i);
@@ -2739,9 +2734,7 @@ withdraw_retry:
 			while (chunk < echunk) {
 				ulong	unit = srv_buf_pool_chunk_unit;
 
-				if (!buf_chunk_init(buf_pool, chunk, unit,
-						    static_cast<bool>(
-							srv_buf_pool_populate))) {
+				if (!buf_chunk_init(buf_pool, chunk, unit)) {
 
 					ib::error() << "buffer pool " << i
 						<< " : failed to allocate"

@@ -333,9 +333,6 @@ extern ulong	srv_buf_pool_dump_pct;
 extern ulint    srv_show_locks_held;
 extern ulint    srv_show_verbose_locks;
 
-/** Virtual page preallocation */
-extern my_bool	srv_buf_pool_populate;
-
 extern ulint	srv_lock_table_size;
 
 extern ulint	srv_foreground_preflush;/*!< Query thread preflush algorithm */

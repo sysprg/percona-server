@@ -58,8 +58,7 @@ os_proc_get_number(void);
 @return allocated memory */
 void*
 os_mem_alloc_large(
-	ulint*	n,
-	bool	populate);
+	ulint*	n);
 
 /** Frees large pages memory.
 @param[in]	ptr	pointer returned by os_mem_alloc_large()
