@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2007, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2007, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -50,7 +50,6 @@ Created July 17, 2007 Vasil Dimov
 #include "row0row.h"
 #include "srv0srv.h"
 #include "sync0rw.h"
-#include "sync0mutex.h"
 #include "sync0sync.h"
 #include "trx0i_s.h"
 #include "trx0sys.h"
@@ -148,7 +147,7 @@ struct i_s_table_cache_t {
 
 /** This structure describes the intermediate buffer */
 struct trx_i_s_cache_t {
-	rw_lock_t	rw_lock;	/*!< read-write lock protecting
+	rw_lock_t*	rw_lock;	/*!< read-write lock protecting
 					the rest of this structure */
 	uintmax_t	last_read;	/*!< last time the cache was read;
 					measured in microseconds since
@@ -788,7 +787,7 @@ fill_locks_row(
 	row->lock_type = lock_get_type_str(lock);
 
 	row->lock_table = ha_storage_put_str_memlim(
-		cache->storage, lock_get_table_name(lock),
+		cache->storage, lock_get_table_name(lock).m_name,
 		MAX_ALLOWED_FOR_STORAGE(cache));
 
 	/* memory could not be allocated */
@@ -1222,9 +1221,7 @@ can_cache_be_updated(
 	So it is not possible for last_read to be updated while we are
 	reading it. */
 
-#ifdef UNIV_SYNC_DEBUG
-	ut_a(rw_lock_own(&cache->rw_lock, RW_LOCK_X));
-#endif
+	ut_ad(rw_lock_own(cache->rw_lock, RW_LOCK_X));
 
 	now = ut_time_us(NULL);
 	if (now - cache->last_read > CACHE_MIN_IDLE_TIME_US) {
@@ -1353,7 +1350,6 @@ fetch_data_into_cache(
 Update the transactions cache if it has not been read for some time.
 Called from handler/i_s.cc.
 @return 0 - fetched, 1 - not */
-
 int
 trx_i_s_possibly_fetch_data_into_cache(
 /*===================================*/
@@ -1383,7 +1379,6 @@ trx_i_s_possibly_fetch_data_into_cache(
 Returns TRUE if the data in the cache is truncated due to the memory
 limit posed by TRX_I_S_MEM_LIMIT.
 @return TRUE if truncated */
-
 ibool
 trx_i_s_cache_is_truncated(
 /*=======================*/
@@ -1394,7 +1389,6 @@ trx_i_s_cache_is_truncated(
 
 /*******************************************************************//**
 Initialize INFORMATION SCHEMA trx related cache. */
-
 void
 trx_i_s_cache_init(
 /*===============*/
@@ -1410,12 +1404,15 @@ trx_i_s_cache_init(
 	release trx_i_s_cache_t::last_read_mutex
 	release trx_i_s_cache_t::rw_lock */
 
-	rw_lock_create(trx_i_s_cache_lock_key, &cache->rw_lock,
+	cache->rw_lock = static_cast<rw_lock_t*>(
+		ut_malloc_nokey(sizeof(*cache->rw_lock)));
+
+	rw_lock_create(trx_i_s_cache_lock_key, cache->rw_lock,
 		       SYNC_TRX_I_S_RWLOCK);
 
 	cache->last_read = 0;
 
-	mutex_create("cache_last_read", &cache->last_read_mutex);
+	mutex_create(LATCH_ID_CACHE_LAST_READ, &cache->last_read_mutex);
 
 	table_cache_init(&cache->innodb_trx, sizeof(i_s_trx_row_t));
 	table_cache_init(&cache->innodb_locks, sizeof(i_s_locks_row_t));
@@ -1434,13 +1431,15 @@ trx_i_s_cache_init(
 
 /*******************************************************************//**
 Free the INFORMATION SCHEMA trx related cache. */
-
 void
 trx_i_s_cache_free(
 /*===============*/
 	trx_i_s_cache_t*	cache)	/*!< in, own: cache to free */
 {
-	rw_lock_free(&cache->rw_lock);
+	rw_lock_free(cache->rw_lock);
+	ut_free(cache->rw_lock);
+	cache->rw_lock = NULL;
+
 	mutex_free(&cache->last_read_mutex);
 
 	hash_table_free(cache->locks_hash);
@@ -1448,23 +1447,20 @@ trx_i_s_cache_free(
 	table_cache_free(&cache->innodb_trx);
 	table_cache_free(&cache->innodb_locks);
 	table_cache_free(&cache->innodb_lock_waits);
-	memset(cache, 0, sizeof *cache);
 }
 
 /*******************************************************************//**
 Issue a shared/read lock on the tables cache. */
-
 void
 trx_i_s_cache_start_read(
 /*=====================*/
 	trx_i_s_cache_t*	cache)	/*!< in: cache */
 {
-	rw_lock_s_lock(&cache->rw_lock);
+	rw_lock_s_lock(cache->rw_lock);
 }
 
 /*******************************************************************//**
 Release a shared/read lock on the tables cache. */
-
 void
 trx_i_s_cache_end_read(
 /*===================*/
@@ -1472,9 +1468,7 @@ trx_i_s_cache_end_read(
 {
 	uintmax_t	now;
 
-#ifdef UNIV_SYNC_DEBUG
-	ut_a(rw_lock_own(&cache->rw_lock, RW_LOCK_S));
-#endif
+	ut_ad(rw_lock_own(cache->rw_lock, RW_LOCK_S));
 
 	/* update cache last read time */
 	now = ut_time_us(NULL);
@@ -1482,33 +1476,29 @@ trx_i_s_cache_end_read(
 	cache->last_read = now;
 	mutex_exit(&cache->last_read_mutex);
 
-	rw_lock_s_unlock(&cache->rw_lock);
+	rw_lock_s_unlock(cache->rw_lock);
 }
 
 /*******************************************************************//**
 Issue an exclusive/write lock on the tables cache. */
-
 void
 trx_i_s_cache_start_write(
 /*======================*/
 	trx_i_s_cache_t*	cache)	/*!< in: cache */
 {
-	rw_lock_x_lock(&cache->rw_lock);
+	rw_lock_x_lock(cache->rw_lock);
 }
 
 /*******************************************************************//**
 Release an exclusive/write lock on the tables cache. */
-
 void
 trx_i_s_cache_end_write(
 /*====================*/
 	trx_i_s_cache_t*	cache)	/*!< in: cache */
 {
-#ifdef UNIV_SYNC_DEBUG
-	ut_a(rw_lock_own(&cache->rw_lock, RW_LOCK_X));
-#endif
+	ut_ad(rw_lock_own(cache->rw_lock, RW_LOCK_X));
 
-	rw_lock_x_unlock(&cache->rw_lock);
+	rw_lock_x_unlock(cache->rw_lock);
 }
 
 /*******************************************************************//**
@@ -1523,10 +1513,8 @@ cache_select_table(
 {
 	i_s_table_cache_t*	table_cache;
 
-#ifdef UNIV_SYNC_DEBUG
-	ut_a(rw_lock_own(&cache->rw_lock, RW_LOCK_S)
-	     || rw_lock_own(&cache->rw_lock, RW_LOCK_X));
-#endif
+	ut_ad(rw_lock_own(cache->rw_lock, RW_LOCK_S)
+	      || rw_lock_own(cache->rw_lock, RW_LOCK_X));
 
 	switch (table) {
 	case I_S_INNODB_TRX:
@@ -1549,7 +1537,6 @@ cache_select_table(
 Retrieves the number of used rows in the cache for a given
 INFORMATION SCHEMA table.
 @return number of rows */
-
 ulint
 trx_i_s_cache_get_rows_used(
 /*========================*/
@@ -1567,7 +1554,6 @@ trx_i_s_cache_get_rows_used(
 Retrieves the nth row (zero-based) in the cache for a given
 INFORMATION SCHEMA table.
 @return row */
-
 void*
 trx_i_s_cache_get_nth_row(
 /*======================*/
@@ -1608,7 +1594,6 @@ second argument. This function aborts if there is not enough space in
 lock_id. Be sure to provide at least TRX_I_S_LOCK_ID_MAX_LEN + 1 if you
 want to be 100% sure that it will not abort.
 @return resulting lock id */
-
 char*
 trx_i_s_create_lock_id(
 /*===================*/

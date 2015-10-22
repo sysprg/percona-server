@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2005, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,10 +13,8 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#define MYSQL_LEX 1
-#include "my_global.h"                          /* NO_EMBEDDED_ACCESS_CHECKS */
-#include "sql_priv.h"
-#include "unireg.h"
+#include "event_data_objects.h"
+
 #include "sql_parse.h"                          // parse_sql
 #include "strfunc.h"                           // find_string_in_array
 #include "sql_db.h"                        // get_default_db_collation
@@ -27,10 +25,11 @@
 #include "auth_common.h"                   // EVENT_ACL, SUPER_ACL
 #include "sp.h"         // load_charset, load_collation
 #include "events.h"
-#include "event_data_objects.h"
 #include "event_db_repository.h"
+#include "event_parse_data.h"
 #include "sp_head.h"
 #include "sql_show.h"                // append_definer, append_identifier
+#include "log.h"
 
 #include "mysql/psi/mysql_sp.h"
 
@@ -122,8 +121,8 @@ Event_creation_ctx::load_from_db(THD *thd,
   {
     sql_print_warning("Event '%s'.'%s': invalid value "
                       "in column mysql.event.character_set_client.",
-                      (const char *) db_name,
-                      (const char *) event_name);
+                      db_name,
+                      event_name);
 
     invalid_creation_ctx= TRUE;
   }
@@ -135,8 +134,8 @@ Event_creation_ctx::load_from_db(THD *thd,
   {
     sql_print_warning("Event '%s'.'%s': invalid value "
                       "in column mysql.event.collation_connection.",
-                      (const char *) db_name,
-                      (const char *) event_name);
+                      db_name,
+                      event_name);
 
     invalid_creation_ctx= TRUE;
   }
@@ -148,8 +147,8 @@ Event_creation_ctx::load_from_db(THD *thd,
   {
     sql_print_warning("Event '%s'.'%s': invalid value "
                       "in column mysql.event.db_collation.",
-                      (const char *) db_name,
-                      (const char *) event_name);
+                      db_name,
+                      event_name);
 
     invalid_creation_ctx= TRUE;
   }
@@ -198,6 +197,11 @@ Event_queue_element_for_exec::init(LEX_STRING db, LEX_STRING n)
   return FALSE;
 }
 
+void Event_queue_element_for_exec::claim_memory_ownership()
+{
+  my_claim(dbname.str);
+  my_claim(name.str);
+}
 
 /*
   Destructor
@@ -669,7 +673,7 @@ Event_timed::load_from_row(THD *thd, TABLE *table)
 static
 my_time_t
 add_interval(MYSQL_TIME *ltime, const Time_zone *time_zone,
-             interval_type scale, INTERVAL interval)
+             interval_type scale, Interval interval)
 {
   if (date_add_interval(ltime, scale, interval))
     return 0;
@@ -770,7 +774,7 @@ bool get_next_time(const Time_zone *time_zone, my_time_t *next,
     time_zone->gmt_sec_to_TIME(&local_now, time_now);
   }
 
-  INTERVAL interval;
+  Interval interval;
   memset(&interval, 0, sizeof(interval));
   my_time_t next_time= 0;
 
@@ -1502,15 +1506,16 @@ end:
         Temporarily reset it to read-write.
       */
 
-      saved_master_access= thd->security_ctx->master_access;
-      thd->security_ctx->master_access |= SUPER_ACL;
+      saved_master_access= thd->security_context()->master_access();
+      thd->security_context()->set_master_access(saved_master_access |
+                                                 SUPER_ACL);
       bool save_tx_read_only= thd->tx_read_only;
       thd->tx_read_only= false;
 
       ret= Events::drop_event(thd, dbname, name, FALSE);
 
       thd->tx_read_only= save_tx_read_only;
-      thd->security_ctx->master_access= saved_master_access;
+      thd->security_context()->set_master_access(saved_master_access);
     }
   }
 #ifndef NO_EMBEDDED_ACCESS_CHECKS

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2009, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -51,6 +51,7 @@ Created 12/9/1995 Heikki Tuuri
 #include "srv0start.h"
 #include "trx0sys.h"
 #include "trx0trx.h"
+#include "trx0roll.h"
 #include "srv0mon.h"
 #include "sync0sync.h"
 
@@ -83,10 +84,17 @@ reduce the size of the log.
 /* Global log system variable */
 log_t*	log_sys	= NULL;
 
+/** Pointer to the log checksum calculation function */
+log_checksum_func_t log_checksum_algorithm_ptr =
+	log_block_calc_checksum_innodb;
+
 /* These control how often we print warnings if the last checkpoint is too
 old */
-ibool	log_has_printed_chkp_warning = FALSE;
+bool	log_has_printed_chkp_warning = false;
 time_t	log_last_warning_time;
+
+bool	log_has_printed_chkp_margine_warning = false;
+time_t	log_last_margine_warning_time;
 
 /* A margin for free space in the log buffer before a log entry is catenated */
 #define LOG_BUF_WRITE_MARGIN	(4 * OS_FILE_LOG_BLOCK_SIZE)
@@ -178,7 +186,6 @@ log_check_tracking_margin(
 
 /** Extends the log buffer.
 @param[in]	len	requested minimum size in bytes */
-
 void
 log_buffer_extend(
 	ulint	len)
@@ -210,11 +217,9 @@ log_buffer_extend(
 				DBUG_SUICIDE(););
 
 		/* log_buffer is too small. try to extend instead of crash. */
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"The transaction log size is too large"
-			" for innodb_log_buffer_size (%lu >= %lu / 2)."
-			" Trying to extend it.",
-			len, LOG_BUFFER_SIZE);
+		ib::warn() << "The transaction log size is too large"
+			" for innodb_log_buffer_size (" << len << " >= "
+			<< LOG_BUFFER_SIZE << " / 2). Trying to extend it.";
 	}
 
 	log_sys->is_extending = true;
@@ -262,15 +267,71 @@ log_buffer_extend(
 
 	log_mutex_exit();
 
-	ib_logf(IB_LOG_LEVEL_INFO,
-		"innodb_log_buffer_size was extended to %lu.",
-		LOG_BUFFER_SIZE);
+	ib::info() << "innodb_log_buffer_size was extended to "
+		<< LOG_BUFFER_SIZE << ".";
+}
+
+/** Check margin not to overwrite transaction log from the last checkpoint.
+If would estimate the log write to exceed the log_group_capacity,
+waits for the checkpoint is done enough.
+@param[in]	len	length of the data to be written */
+
+void
+log_margin_checkpoint_age(
+	ulint	len)
+{
+	ulint	margin = len * 2;
+
+	ut_ad(log_mutex_own());
+
+	if (margin > log_sys->log_group_capacity) {
+		/* return with warning output to avoid deadlock */
+		if (!log_has_printed_chkp_margine_warning
+		    || difftime(time(NULL),
+				log_last_margine_warning_time) > 15) {
+			log_has_printed_chkp_margine_warning = true;
+			log_last_margine_warning_time = time(NULL);
+
+			ib::error() << "The transaction log files are too"
+				" small for the single transaction log (size="
+				<< len << "). So, the last checkpoint age"
+				" might exceed the log group capacity "
+				<< log_sys->log_group_capacity << ".";
+		}
+
+		return;
+	}
+
+	while (log_sys->lsn - log_sys->last_checkpoint_lsn + margin
+	       > log_sys->log_group_capacity) {
+		/* The log write of 'len' might overwrite the transaction log
+		after the last checkpoint. Makes checkpoint. */
+
+		bool	flushed_enough = false;
+
+		if (log_sys->lsn - log_buf_pool_get_oldest_modification()
+		    + margin
+		    <= log_sys->log_group_capacity) {
+			flushed_enough = true;
+		}
+
+		log_sys->check_flush_or_checkpoint = true;
+		log_mutex_exit();
+
+		if (!flushed_enough) {
+			os_thread_sleep(100000);
+		}
+		log_checkpoint(true, false);
+
+		log_mutex_enter();
+	}
+
+	return;
 }
 
 /** Open the log for log_write_low. The log must be closed with log_close.
 @param[in]	len	length of the data to be written
 @return start lsn of the log record */
-
 lsn_t
 log_reserve_and_open(
 	ulint	len)
@@ -365,7 +426,6 @@ loop:
 /************************************************************//**
 Writes to the log the string given. It is assumed that the caller holds the
 log mutex. */
-
 void
 log_write_low(
 /*==========*/
@@ -437,7 +497,6 @@ part_loop:
 /************************************************************//**
 Closes the log.
 @return lsn */
-
 lsn_t
 log_close(void)
 /*===========*/
@@ -498,14 +557,13 @@ log_close(void)
 		if (!log_has_printed_chkp_warning
 		    || difftime(time(NULL), log_last_warning_time) > 15) {
 
-			log_has_printed_chkp_warning = TRUE;
+			log_has_printed_chkp_warning = true;
 			log_last_warning_time = time(NULL);
 
-			ib_logf(IB_LOG_LEVEL_ERROR,
-				"The age of the last checkpoint is"
-				" " LSN_PF ", which exceeds the log group"
-				" capacity " LSN_PF ".", checkpoint_age,
-				log->log_group_capacity);
+			ib::error() << "The age of the last checkpoint is "
+				<< checkpoint_age << ", which exceeds the log"
+				" group capacity " << log->log_group_capacity
+				<< ".";
 		}
 	}
 
@@ -531,7 +589,6 @@ function_exit:
 Calculates the data capacity of a log group, when the log file headers are not
 included.
 @return capacity in bytes */
-
 lsn_t
 log_group_get_capacity(
 /*===================*/
@@ -627,7 +684,6 @@ log_group_calc_lsn_offset(
 /*******************************************************************//**
 Calculates where in log files we find a specified lsn.
 @return log file number */
-
 ulint
 log_calc_where_lsn_is(
 /*==================*/
@@ -669,7 +725,6 @@ log_calc_where_lsn_is(
 Sets the field values in group to correspond to a given lsn. For this function
 to work, the values must already be correctly initialized to correspond to
 some lsn, for instance, a checkpoint lsn. */
-
 void
 log_group_set_fields(
 /*=================*/
@@ -772,16 +827,15 @@ failure:
 	log_mutex_exit();
 
 	if (!success) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Cannot continue operation. ib_logfiles are too"
-			" small for innodb_thread_concurrency %lu. The"
-			" combined size of ib_logfiles should be bigger than"
+		ib::error() << "Cannot continue operation. ib_logfiles are too"
+			" small for innodb_thread_concurrency "
+			<< srv_thread_concurrency << ". The combined size of"
+			" ib_logfiles should be bigger than"
 			" 200 kB * innodb_thread_concurrency. To get mysqld"
 			" to start up, set innodb_thread_concurrency in"
 			" my.cnf to a lower value, for example, to 8. After"
 			" an ERROR-FREE shutdown of mysqld you can adjust"
-			" the size of ib_logfiles. %s",
-			(ulong) srv_thread_concurrency, INNODB_PARAMETERS_MSG);
+			" the size of ib_logfiles. " << INNODB_PARAMETERS_MSG;
 	}
 
 	return(success);
@@ -789,16 +843,15 @@ failure:
 
 /******************************************************//**
 Initializes the log. */
-
 void
 log_init(void)
 /*==========*/
 {
 	log_sys = static_cast<log_t*>(ut_zalloc_nokey(sizeof(log_t)));
 
-	mutex_create("log_sys", &log_sys->mutex);
+	mutex_create(LATCH_ID_LOG_SYS, &log_sys->mutex);
 
-	mutex_create("log_flush_order", &log_sys->log_flush_order_mutex);
+	mutex_create(LATCH_ID_LOG_FLUSH_ORDER, &log_sys->log_flush_order_mutex);
 
 	/* Start the lsn from one log block from zero: this way every
 	log record has a start lsn != zero, a fact which we will use */
@@ -1001,7 +1054,6 @@ log_sys_write_completion(void)
 
 /******************************************************//**
 Completes an i/o to a log file. */
-
 void
 log_io_complete(
 /*============*/
@@ -1091,7 +1143,7 @@ log_group_file_header_flush(
 	const ulint	page_no
 		= (ulint) (dest_offset / univ_page_size.physical());
 
-	fil_io(OS_FILE_WRITE | OS_FILE_LOG, true,
+	fil_io(IORequestLogWrite, true,
 	       page_id_t(group->space_id, page_no),
 	       univ_page_size,
 	       (ulint) (dest_offset % univ_page_size.physical()),
@@ -1214,7 +1266,7 @@ loop:
 	const ulint	page_no
 		= (ulint) (next_offset / univ_page_size.physical());
 
-	fil_io(OS_FILE_WRITE | OS_FILE_LOG, true,
+	fil_io(IORequestLogWrite, true,
 	       page_id_t(group->space_id, page_no),
 	       univ_page_size,
 	       (ulint) (next_offset % UNIV_PAGE_SIZE), write_len, buf,
@@ -1236,6 +1288,30 @@ loop:
 	}
 }
 
+/** Flush the log has been written to the log file. */
+static
+void
+log_write_flush_to_disk_low()
+{
+	ut_a(log_sys->n_pending_flushes == 1); /* No other threads here */
+
+#ifndef _WIN32
+	bool	do_flush = srv_unix_file_flush_method != SRV_UNIX_O_DSYNC;
+#else
+	bool	do_flush = true;
+#endif
+	if (do_flush) {
+		log_group_t*	group = UT_LIST_GET_FIRST(log_sys->log_groups);
+		fil_flush(group->space_id);
+		log_sys->flushed_to_disk_lsn = log_sys->current_flush_lsn;
+	}
+
+	log_sys->n_pending_flushes--;
+	MONITOR_DEC(MONITOR_PENDING_LOG_FLUSH);
+
+	os_event_set(log_sys->flush_event);
+}
+
 /** Ensure that the log has been written to the log file up to a given
 log entry (such as that of a transaction commit). Start a new write, or
 wait and check if an already running write is covering the request.
@@ -1243,7 +1319,6 @@ wait and check if an already running write is covering the request.
 included in the redo log file write
 @param[in]	flush_to_disk	whether the written log should also
 be flushed to the file system */
-
 void
 log_write_up_to(
 	lsn_t	lsn,
@@ -1346,6 +1421,13 @@ loop:
 		log_sys->current_flush_lsn = log_sys->lsn;
 		MONITOR_INC(MONITOR_PENDING_LOG_FLUSH);
 		os_event_reset(log_sys->flush_event);
+
+		if (log_sys->buf_free == log_sys->buf_next_to_write) {
+			/* Nothing to write, flush only */
+			log_mutex_exit();
+			log_write_flush_to_disk_low();
+			return;
+		}
 	}
 
 	group = UT_LIST_GET_FIRST(log_sys->log_groups);
@@ -1423,47 +1505,20 @@ loop:
 
 	log_mutex_exit();
 
-	if (!flush_to_disk) {
-		/* Only write requested. */
-		return;
+	if (flush_to_disk) {
+		log_write_flush_to_disk_low();
 	}
-
-	ut_a(log_sys->n_pending_flushes == 1); /* No other threads here */
-
-#ifndef _WIN32
-	bool	do_flush = srv_unix_file_flush_method != SRV_UNIX_O_DSYNC;
-#else
-	bool	do_flush = true;
-#endif
-	if (do_flush) {
-		group = UT_LIST_GET_FIRST(log_sys->log_groups);
-		fil_flush(group->space_id);
-		log_sys->flushed_to_disk_lsn = log_sys->current_flush_lsn;
-	}
-
-	log_sys->n_pending_flushes--;
-	MONITOR_DEC(MONITOR_PENDING_LOG_FLUSH);
-
-	os_event_set(log_sys->flush_event);
 }
 
-/****************************************************************//**
-Does a syncronous flush of the log buffer to disk. */
-
+/** write to the log file up to the last log entry.
+@param[in]	sync	whether we want the written log
+also to be flushed to disk. */
 void
-log_buffer_flush_to_disk(void)
-/*==========================*/
+log_buffer_flush_to_disk(
+	bool sync)
 {
-	lsn_t	lsn;
-
 	ut_ad(!srv_read_only_mode);
-	log_mutex_enter();
-
-	lsn = log_sys->lsn;
-
-	log_mutex_exit();
-
-	log_write_up_to(lsn, true);
+	log_write_up_to(log_get_lsn(), sync);
 }
 
 /****************************************************************//**
@@ -1471,7 +1526,6 @@ This functions writes the log buffer to the log file and if 'flush'
 is set it forces a flush of the log file as well. This is meant to be
 called from background master thread only as it does not wait for
 the write (+ possible flush) to finish. */
-
 void
 log_buffer_sync_in_background(
 /*==========================*/
@@ -1522,21 +1576,20 @@ log_flush_margin(void)
 	}
 }
 
-/****************************************************************//**
-Advances the smallest lsn for which there are unflushed dirty blocks in the
-buffer pool. NOTE: this function may only be called if the calling thread owns
-no synchronization objects!
+/** Advances the smallest lsn for which there are unflushed dirty blocks in the
+buffer pool.
+NOTE: this function may only be called if the calling thread owns no
+synchronization objects!
+@param[in]	new_oldest	try to advance oldest_modified_lsn at least to
+this lsn
 @return false if there was a flush batch of the same type running,
 which means that we could not start this flush batch */
 static
 bool
 log_preflush_pool_modified_pages(
-/*=============================*/
-	lsn_t	new_oldest)	/*!< in: try to advance oldest_modified_lsn
-				at least to this lsn */
+	lsn_t			new_oldest)
 {
-	lsn_t	current_oldest;
-	ulint	i;
+	bool	success;
 
 	if (recv_recovery_on) {
 		/* If the recovery is running, we must first apply all
@@ -1551,14 +1604,13 @@ log_preflush_pool_modified_pages(
 		recv_apply_hashed_log_recs(TRUE);
 	}
 
-	if (!buf_page_cleaner_is_active
-	    || (srv_foreground_preflush
-		== SRV_FOREGROUND_PREFLUSH_SYNC_PREFLUSH)
-	    || (new_oldest == LSN_MAX)) {
+	if (new_oldest == LSN_MAX
+	    || !buf_page_cleaner_is_active
+	    || srv_is_being_started) {
 
-		ulint n_pages;
+		ulint	n_pages;
 
-		bool success = buf_flush_lists(ULINT_MAX, new_oldest, &n_pages);
+		success = buf_flush_lists(ULINT_MAX, new_oldest, &n_pages);
 
 		buf_flush_wait_batch_end(NULL, BUF_FLUSH_LIST);
 
@@ -1571,31 +1623,21 @@ log_preflush_pool_modified_pages(
 			MONITOR_FLUSH_SYNC_COUNT,
 			MONITOR_FLUSH_SYNC_PAGES,
 			n_pages);
+	} else {
+		/* better to wait for flushed by page cleaner */
 
-		return(success);
-	}
-
-	ut_ad(srv_foreground_preflush == SRV_FOREGROUND_PREFLUSH_EXP_BACKOFF);
-
-	current_oldest = buf_pool_get_oldest_modification();
-	i = 0;
-
-	while (current_oldest < new_oldest && current_oldest) {
-
-		while (!buf_flush_flush_list_in_progress()) {
-
-			/* If a flush list flush by the cleaner thread is not
-			running, backoff until one is started.  */
-			os_thread_sleep(ut_rnd_interval(0, 1 << i));
-			i++;
-			i %= 16;
+		if (srv_flush_sync) {
+			/* wake page cleaner for IO burst */
+			// TODO laurynas: backoff?
+			buf_flush_request_force(new_oldest);
 		}
-		buf_flush_wait_batch_end(NULL, BUF_FLUSH_LIST);
 
-		current_oldest = buf_pool_get_oldest_modification();
+		buf_flush_wait_flushed(new_oldest);
+
+		success = true;
 	}
 
-	return(current_oldest >= new_oldest || !current_oldest);
+	return(success);
 }
 
 /******************************************************//**
@@ -1668,7 +1710,6 @@ log_checkpoint_set_nth_group_info(
 
 /*******************************************************************//**
 Gets info from a checkpoint about a log group. */
-
 void
 log_checkpoint_get_nth_group_info(
 /*==============================*/
@@ -1762,14 +1803,17 @@ log_group_checkpoint(
 				   LOG_CHECKPOINT);
 	}
 
+	/* Note: We alternate the physical place of the checkpoint info.
+	See the (next_checkpoint_no & 1) below. */
+
 	/* We send as the last parameter the group machine address
 	added with 1, as we want to distinguish between a normal log
 	file write and a checkpoint field write */
 
-	fil_io(OS_FILE_WRITE | OS_FILE_LOG, false,
+	fil_io(IORequestLogWrite, false,
 	       page_id_t(group->space_id, 0),
 	       univ_page_size,
-	       log_sys->next_checkpoint_no & 1
+	       (log_sys->next_checkpoint_no & 1)
 	       ? LOG_CHECKPOINT_2 : LOG_CHECKPOINT_1,
 	       OS_FILE_LOG_BLOCK_SIZE,
 	       buf, (byte*) group + 1);
@@ -1782,7 +1826,6 @@ log_group_checkpoint(
 /******************************************************//**
 Writes info to a buffer of a log group when log files are created in
 backup restoration. */
-
 void
 log_reset_first_header_and_checkpoint(
 /*==================================*/
@@ -1836,7 +1879,6 @@ log_reset_first_header_and_checkpoint(
 #ifndef UNIV_HOTBACKUP
 /******************************************************//**
 Reads a checkpoint info from a log group header to log_sys->checkpoint_buf. */
-
 void
 log_group_read_checkpoint_info(
 /*===========================*/
@@ -1849,7 +1891,7 @@ log_group_read_checkpoint_info(
 
 	MONITOR_INC(MONITOR_LOG_IO);
 
-	fil_io(OS_FILE_READ | OS_FILE_LOG, true,
+	fil_io(IORequestLogRead, true,
 	       page_id_t(group->space_id, field / univ_page_size.physical()),
 	       univ_page_size, field % univ_page_size.physical(),
 	       OS_FILE_LOG_BLOCK_SIZE, log_sys->checkpoint_buf, NULL);
@@ -1857,7 +1899,6 @@ log_group_read_checkpoint_info(
 
 /** Write checkpoint info to the log header and invoke log_mutex_exit().
 @param[in]	sync	whether to wait for the write to complete */
-
 void
 log_write_checkpoint_info(
 	bool	sync)
@@ -1889,7 +1930,6 @@ log_write_checkpoint_info(
 /** Set extra data to be written to the redo log during checkpoint.
 @param[in]	buf	data to be appended on checkpoint, or NULL
 @return pointer to previous data to be appended on checkpoint */
-
 mtr_buf_t*
 log_append_on_checkpoint(
 	mtr_buf_t*	buf)
@@ -1909,7 +1949,6 @@ log files. Use log_make_checkpoint_at() to flush also the pool.
 @param[in]	write_always	force a write even if no log
 has been generated since the latest checkpoint
 @return true if success, false if a checkpoint write was already running */
-
 bool
 log_checkpoint(
 	bool	sync,
@@ -2020,11 +2059,10 @@ log_checkpoint(
 for the latest LSN
 @param[in]	write_always	force a write even if no log
 has been generated since the latest checkpoint */
-
 void
 log_make_checkpoint_at(
-	lsn_t	lsn,
-	bool	write_always)
+	lsn_t			lsn,
+	bool			write_always)
 {
 	/* Preflush pages synchronously */
 
@@ -2071,7 +2109,7 @@ loop:
 	if (age > log->max_modified_age_sync) {
 
 		/* A flush is urgent: we have to do a synchronous preflush */
-		advance = 2 * (age - log->max_modified_age_sync);
+		advance = age - log->max_modified_age_sync;
 	}
 
 	checkpoint_age = log->lsn - log->last_checkpoint_lsn;
@@ -2125,9 +2163,8 @@ loop:
 }
 
 /******************************************************//**
-Reads a specified log segment to a buffer.  Optionally releases the log mutex
-before the I/O.  */
-
+Reads a specified log segment to a buffer. Optionally releases the log mutex
+before the I/O.*/
 void
 log_group_read_log_seg(
 /*===================*/
@@ -2179,7 +2216,7 @@ loop:
 	const ulint	page_no
 		= (ulint) (source_offset / univ_page_size.physical());
 
-	fil_io(OS_FILE_READ | OS_FILE_LOG, sync,
+	fil_io(IORequestLogRead, sync,
 	       page_id_t(group->space_id, page_no),
 	       univ_page_size,
 	       (ulint) (source_offset % univ_page_size.physical()),
@@ -2202,7 +2239,6 @@ Checks that there is enough free space in the log to start a new query step.
 Flushes the log buffer or makes a new checkpoint if necessary. NOTE: this
 function may only be called if the calling thread owns no synchronization
 objects! */
-
 void
 log_check_margins(void)
 {
@@ -2231,7 +2267,6 @@ Makes a checkpoint at the latest lsn and writes it to first page of each
 data file in the database, so that we know that the file spaces contain
 all modifications up to that lsn. This can only be called at database
 shutdown. This function also writes all log in log files to the log archive. */
-
 void
 logs_empty_and_mark_files_at_shutdown(void)
 /*=======================================*/
@@ -2244,7 +2279,13 @@ logs_empty_and_mark_files_at_shutdown(void)
 	enum srv_thread_type	active_thd;
 	const char*		thread_name;
 
-	ib_logf(IB_LOG_LEVEL_INFO, "Starting shutdown...");
+	ib::info() << "Starting shutdown...";
+
+	while (srv_fast_shutdown == 0 && trx_rollback_or_clean_is_active) {
+		/* we should wait until rollback after recovery end
+		for slow shutdown */
+		os_thread_sleep(100000);
+	}
 
 	/* Wait until the master thread and all other operations are idle: our
 	algorithm only works if the server is idle at shutdown */
@@ -2266,8 +2307,8 @@ loop:
 		threads check will be done later. */
 
 		if (srv_print_verbose_log && count > 600) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Waiting for %s to exit", thread_name);
+			ib::info() << "Waiting for " << thread_name
+				<< " to exit";
 			count = 0;
 		}
 
@@ -2284,9 +2325,8 @@ loop:
 	if (total_trx > 0) {
 
 		if (srv_print_verbose_log && count > 600) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Waiting for %lu active transactions to finish",
-				(ulong) total_trx);
+			ib::info() << "Waiting for " << total_trx << " active"
+				<< " transactions to finish";
 
 			count = 0;
 		}
@@ -2330,9 +2370,9 @@ loop:
 				break;
 			}
 
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Waiting for %s to be suspended",
-				thread_type);
+			ib::info() << "Waiting for " << thread_type
+				<< " to be suspended";
+
 			count = 0;
 		}
 
@@ -2348,9 +2388,8 @@ loop:
 		++count;
 		os_thread_sleep(100000);
 		if (srv_print_verbose_log && count > 600) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Waiting for page_cleaner to"
-				" finish flushing of buffer pool");
+			ib::info() << "Waiting for page_cleaner to"
+				" finish flushing of buffer pool";
 			count = 0;
 		}
 	}
@@ -2362,10 +2401,8 @@ loop:
 
 	if (n_write != 0 || n_flush != 0) {
 		if (srv_print_verbose_log && count > 600) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Pending checkpoint_writes: " ULINTPF "."
-				" Pending log flush writes: " ULINTPF,
-				n_write, n_flush);
+			ib::info() << "Pending checkpoint_writes: " << n_write
+				<< ". Pending log flush writes: " << n_flush;
 			count = 0;
 		}
 		goto loop;
@@ -2375,9 +2412,8 @@ loop:
 
 	if (pending_io) {
 		if (srv_print_verbose_log && count > 600) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Waiting for %lu buffer page I/Os to complete",
-				(ulong) pending_io);
+			ib::info() << "Waiting for " << pending_io << " buffer"
+				" page I/Os to complete";
 			count = 0;
 		}
 
@@ -2388,11 +2424,10 @@ loop:
 
 	if (srv_fast_shutdown == 2) {
 		if (!srv_read_only_mode) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"MySQL has requested a very fast shutdown"
-				" without flushing the InnoDB buffer pool to"
-				" data files. At the next mysqld startup"
-				" InnoDB will do a crash recovery!");
+			ib::info() << "MySQL has requested a very fast"
+				" shutdown without flushing the InnoDB buffer"
+				" pool to data files. At the next mysqld"
+				" startup InnoDB will do a crash recovery!";
 
 			/* In this fastest shutdown we do not flush the
 			buffer pool:
@@ -2410,9 +2445,9 @@ loop:
 			thread_name = srv_any_background_threads_are_active();
 
 			if (thread_name != NULL) {
-				ib_logf(IB_LOG_LEVEL_WARN,
-					"Background thread %s woke up"
-					" during shutdown", thread_name);
+				ib::warn() << "Background thread "
+					<< thread_name << " woke up during"
+					" shutdown";
 				goto loop;
 			}
 		}
@@ -2444,12 +2479,20 @@ loop:
 	tracked_lsn = log_get_tracked_lsn();
 
 	lsn = log_sys->lsn;
-	const bool	is_last	= (lsn == log_sys->last_checkpoint_lsn)
+
+	const bool	is_last
+		= ((srv_force_recovery == SRV_FORCE_NO_LOG_REDO
+		    && lsn == log_sys->last_checkpoint_lsn
+		    + LOG_BLOCK_HDR_SIZE)
+		   || lsn == log_sys->last_checkpoint_lsn)
 		&& (!srv_track_changed_pages
 		    || tracked_lsn == log_sys->last_checkpoint_lsn)
 		&& (!srv_log_archive_on
 		    || lsn == log_sys->archived_lsn + LOG_BLOCK_HDR_SIZE);
+
 	ut_ad(lsn >= log_sys->last_checkpoint_lsn);
+	ut_ad(srv_force_recovery != SRV_FORCE_NO_LOG_REDO
+	      || lsn == log_sys->last_checkpoint_lsn + LOG_BLOCK_HDR_SIZE);
 
 	log_mutex_exit();
 
@@ -2464,9 +2507,8 @@ loop:
 	/* Check that the background threads stay suspended */
 	thread_name = srv_any_background_threads_are_active();
 	if (thread_name != NULL) {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Background thread %s woke up during shutdown",
-			thread_name);
+		ib::warn() << "Background thread " << thread_name << " woke up"
+			" during shutdown";
 
 		goto loop;
 	}
@@ -2484,8 +2526,8 @@ loop:
 	if (!buf_all_freed()) {
 
 		if (srv_print_verbose_log && count > 600) {
-			ib_logf(IB_LOG_LEVEL_INFO,
-				"Waiting for dirty buffer pages to be flushed");
+			ib::info() << "Waiting for dirty buffer pages to be"
+				" flushed";
 			count = 0;
 		}
 
@@ -2510,10 +2552,9 @@ loop:
 	ut_a(lsn == log_sys->lsn);
 
 	if (lsn < srv_start_lsn) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Log sequence number at shutdown " LSN_PF
-			" is lower than at startup " LSN_PF "!",
-			lsn, srv_start_lsn);
+		ib::error() << "Log sequence number at shutdown " << lsn
+			<< " is lower than at startup " << srv_start_lsn
+			<< "!";
 	}
 
 	srv_shutdown_lsn = lsn;
@@ -2537,7 +2578,6 @@ loop:
 /******************************************************//**
 Peeks the current lsn.
 @return TRUE if success, FALSE if could not get the log system mutex */
-
 ibool
 log_peek_lsn(
 /*=========*/
@@ -2556,7 +2596,6 @@ log_peek_lsn(
 
 /******************************************************//**
 Prints info of the log. */
-
 void
 log_print(
 /*======*/
@@ -2627,7 +2666,6 @@ log_print(
 
 /**********************************************************************//**
 Refreshes the statistics used to print per-second averages. */
-
 void
 log_refresh_stats(void)
 /*===================*/
@@ -2661,7 +2699,6 @@ log_group_close(
 
 /********************************************************//**
 Closes all log groups. */
-
 void
 log_group_close_all(void)
 /*=====================*/
@@ -2683,7 +2720,6 @@ log_group_close_all(void)
 
 /********************************************************//**
 Shutdown the log system but do not release all the memory. */
-
 void
 log_shutdown(void)
 /*==============*/
@@ -2715,7 +2751,6 @@ log_shutdown(void)
 
 /********************************************************//**
 Free the log system data structures. */
-
 void
 log_mem_free(void)
 /*==============*/

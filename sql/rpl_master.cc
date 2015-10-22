@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,18 +15,23 @@
 
 
 #ifdef HAVE_REPLICATION
-#include "sql_priv.h"
-#include "unireg.h"
-#include "sql_parse.h"                          // check_access
-#include "auth_common.h"                        // SUPER_ACL
-#include "log_event.h"
-#include "rpl_filter.h"
-#include <my_dir.h>
-#include "rpl_handler.h"
 #include "rpl_master.h"
-#include "debug_sync.h"
-#include "rpl_binlog_sender.h"
+
+#include "hash.h"                               // HASH
+#include "m_string.h"                           // strmake
+#include "auth_common.h"                        // check_global_access
+#include "binlog.h"                             // mysql_bin_log
+#include "debug_sync.h"                         // DEBUG_SYNC
+#include "log.h"                                // sql_print_information
 #include "mysqld_thd_manager.h"                 // Global_THD_manager
+#include "rpl_binlog_sender.h"                  // Binlog_sender
+#include "rpl_filter.h"                         // binlog_filter
+#include "rpl_handler.h"                        // RUN_HOOK
+#include "sql_class.h"                          // THD
+
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
+
 
 int max_binlog_dump_events = 0; // unlimited
 my_bool opt_sporadic_binlog_dump_fail = 0;
@@ -94,7 +99,8 @@ void init_slave_list()
 
   my_hash_init(&slave_list, system_charset_info, SLAVE_LIST_CHUNK, 0, 0,
                (my_hash_get_key) slave_list_key,
-               (my_hash_free_key) slave_info_free, 0);
+               (my_hash_free_key) slave_info_free, 0,
+               key_memory_SLAVE_INFO);
   mysql_mutex_init(key_LOCK_slave_list, &LOCK_slave_list, MY_MUTEX_INIT_FAST);
 }
 
@@ -204,7 +210,7 @@ void unregister_slave(THD* thd, bool only_mine, bool need_lock_slave_list)
 bool show_slave_hosts(THD* thd)
 {
   List<Item> field_list;
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
   DBUG_ENTER("show_slave_hosts");
 
   field_list.push_back(new Item_return_int("Server_id", 10,
@@ -220,8 +226,8 @@ bool show_slave_hosts(THD* thd)
 					   MYSQL_TYPE_LONG));
   field_list.push_back(new Item_empty_string("Slave_UUID", UUID_LENGTH));
 
-  if (protocol->send_result_set_metadata(&field_list,
-                            Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+  if (thd->send_result_metadata(&field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
     DBUG_RETURN(TRUE);
 
   mysql_mutex_lock(&LOCK_slave_list);
@@ -229,7 +235,7 @@ bool show_slave_hosts(THD* thd)
   for (uint i = 0; i < slave_list.records; ++i)
   {
     SLAVE_INFO* si = (SLAVE_INFO*) my_hash_element(&slave_list, i);
-    protocol->prepare_for_resend();
+    protocol->start_row();
     protocol->store((uint32) si->server_id);
     protocol->store(si->host, &my_charset_bin);
     if (opt_show_slave_auth_info)
@@ -244,7 +250,7 @@ bool show_slave_hosts(THD* thd)
     String slave_uuid;
     if (get_slave_uuid(si->thd, &slave_uuid))
       protocol->store(slave_uuid.c_ptr_safe(), &my_charset_bin);
-    if (protocol->write())
+    if (protocol->end_row())
     {
       mysql_mutex_unlock(&LOCK_slave_list);
       DBUG_RETURN(TRUE);
@@ -333,7 +339,7 @@ bool com_binlog_dump(THD *thd, char *packet, size_t packet_length)
 
   query_logger.general_log_print(thd, thd->get_command(), "Log: '%s'  Pos: %ld",
                                  packet + 10, (long) pos);
-  mysql_binlog_send(thd, thd->strdup(packet + 10), (my_off_t) pos, NULL, flags);
+  mysql_binlog_send(thd, thd->mem_strdup(packet + 10), (my_off_t) pos, NULL, flags);
 
   unregister_slave(thd, true, true/*need_lock_slave_list=true*/);
   /*  fake COM_QUIT -- if we get here, the thread needs to terminate */
@@ -380,7 +386,7 @@ bool com_binlog_dump_gtid(THD *thd, char *packet, size_t packet_length)
   if (slave_gtid_executed.add_gtid_encoding(packet_position, data_size) !=
       RETURN_STATUS_OK)
     DBUG_RETURN(true);
-  gtid_string= slave_gtid_executed.to_string();
+  slave_gtid_executed.to_string(&gtid_string);
   DBUG_PRINT("info", ("Slave %d requested to read %s at position %llu gtid set "
                       "'%s'.", thd->server_id, name, pos, gtid_string));
 
@@ -510,6 +516,7 @@ void kill_zombie_dump_threads(String *slave_uuid)
                             "UUID <%s>, found a zombie dump thread with "
                             "the same UUID. Master is killing the zombie dump "
                             "thread.", slave_uuid->c_ptr());
+    tmp->duplicate_slave_uuid= true;
     tmp->awake(THD::KILL_QUERY);
     mysql_mutex_unlock(&tmp->LOCK_thd_data);
   }
@@ -522,23 +529,42 @@ void kill_zombie_dump_threads(String *slave_uuid)
   @param thd Pointer to THD object of the client thread executing the
   statement.
 
-  @retval 0 success
-  @retval 1 error
+  @retval false success
+  @retval true error
 */
-int reset_master(THD* thd)
+bool reset_master(THD* thd)
 {
-  if (!mysql_bin_log.is_open())
+  bool ret= false;
+  if (mysql_bin_log.is_open())
   {
-    my_message(ER_FLUSH_MASTER_BINLOG_CLOSED,
-               ER(ER_FLUSH_MASTER_BINLOG_CLOSED), MYF(ME_BELL+ME_WAITTANG));
-    return 1;
+    /*
+      mysql_bin_log.reset_logs will delete the binary logs *and* clear
+      gtid_state.  It is important to do both these operations from
+      within reset_logs, since the operations can then use the same
+      lock.  I.e., if we would remove the call to gtid_state->clear
+      from reset_logs and call gtid_state->clear explicitly from this
+      function instead, it would be possible for a concurrent thread
+      to commit between the point where the binary log was removed and
+      the point where the gtid_executed table is cleared. This would
+      lead to an inconsistent state.
+    */
+    ret= mysql_bin_log.reset_logs(thd);
+  }
+  else
+  {
+    global_sid_lock->wrlock();
+    ret= (gtid_state->clear(thd) != 0);
+    global_sid_lock->unlock();
   }
 
-  if (mysql_bin_log.reset_logs(thd))
-    return 1;
-  (void) RUN_HOOK(binlog_transmit, after_reset_master, (thd, 0 /* flags */));
-  return 0;
-}
+  /*
+    Only run after_reset_master hook, when all reset operations preceding this
+    have succeeded.
+  */
+  if (!ret)
+    (void) RUN_HOOK(binlog_transmit, after_reset_master, (thd, 0 /* flags */));
+  return ret;
+ }
 
 
 /**
@@ -547,12 +573,12 @@ int reset_master(THD* thd)
   @param thd Pointer to THD object for the client thread executing the
   statement.
 
-  @retval FALSE success
-  @retval TRUE failure
+  @retval false success
+  @retval true failure
 */
 bool show_master_status(THD* thd)
 {
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
   char* gtid_set_buffer= NULL;
   int gtid_set_size= 0;
   List<Item> field_list;
@@ -578,13 +604,13 @@ bool show_master_status(THD* thd)
   field_list.push_back(new Item_empty_string("Executed_Gtid_Set",
                                              gtid_set_size));
 
-  if (protocol->send_result_set_metadata(&field_list,
-                            Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+  if (thd->send_result_metadata(&field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
   {
     my_free(gtid_set_buffer);
     DBUG_RETURN(true);
   }
-  protocol->prepare_for_resend();
+  protocol->start_row();
 
   if (mysql_bin_log.is_open())
   {
@@ -593,10 +619,10 @@ bool show_master_status(THD* thd)
     size_t dir_len = dirname_length(li.log_file_name);
     protocol->store(li.log_file_name + dir_len, &my_charset_bin);
     protocol->store((ulonglong) li.pos);
-    protocol->store(binlog_filter->get_do_db());
-    protocol->store(binlog_filter->get_ignore_db());
+    store(protocol, binlog_filter->get_do_db());
+    store(protocol, binlog_filter->get_ignore_db());
     protocol->store(gtid_set_buffer, &my_charset_bin);
-    if (protocol->write())
+    if (protocol->end_row())
     {
       my_free(gtid_set_buffer);
       DBUG_RETURN(true);
@@ -626,7 +652,7 @@ bool show_binlogs(THD* thd)
   List<Item> field_list;
   size_t length;
   size_t cur_dir_len;
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
   DBUG_ENTER("show_binlogs");
 
   if (!mysql_bin_log.is_open())
@@ -638,8 +664,8 @@ bool show_binlogs(THD* thd)
   field_list.push_back(new Item_empty_string("Log_name", 255));
   field_list.push_back(new Item_return_int("File_size", 20,
                                            MYSQL_TYPE_LONGLONG));
-  if (protocol->send_result_set_metadata(&field_list,
-                            Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+    if (thd->send_result_metadata(&field_list, Protocol::SEND_NUM_ROWS |
+                                    Protocol::SEND_EOF))
     DBUG_RETURN(TRUE);
   
   mysql_mutex_lock(mysql_bin_log.get_log_lock());
@@ -661,7 +687,7 @@ bool show_binlogs(THD* thd)
     ulonglong file_length= 0;                   // Length if open fails
     fname[--length] = '\0';                     // remove the newline
 
-    protocol->prepare_for_resend();
+    protocol->start_row();
     dir_len= dirname_length(fname);
     length-= dir_len;
     protocol->store(fname + dir_len, length, &my_charset_bin);
@@ -680,7 +706,7 @@ bool show_binlogs(THD* thd)
       }
     }
     protocol->store(file_length);
-    if (protocol->write())
+    if (protocol->end_row())
     {
       DBUG_PRINT("info", ("stopping dump thread because protocol->write failed at line %d", __LINE__));
       goto err;

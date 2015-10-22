@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -95,7 +95,7 @@ void myisamchk_init(MI_CHECK *param)
   param->tmpfile_createflag=O_RDWR | O_TRUNC | O_EXCL;
   param->myf_rw=MYF(MY_NABP | MY_WME | MY_WAIT_IF_FULL);
   param->start_check_pos=0;
-  param->max_record_length= LONGLONG_MAX;
+  param->max_record_length= LLONG_MAX;
   param->key_cache_block_size= KEY_CACHE_BLOCK_SIZE;
   param->stats_method= MI_STATS_METHOD_NULLS_NOT_EQUAL;
   param->need_print_msg_lock= 0;
@@ -872,10 +872,8 @@ static int chk_index(MI_CHECK *param, MI_INFO *info, MI_KEYDEF *keyinfo,
                 llstr(page,llbuff), used_length, (keypos - buff));
     goto err;
   }
-  my_afree((uchar*) temp_buff);
   DBUG_RETURN(0);
  err:
-  my_afree((uchar*) temp_buff);
   DBUG_RETURN(1);
 } /* chk_index */
 
@@ -1537,7 +1535,7 @@ int mi_repair(MI_CHECK *param, MI_INFO *info,
 
   if (!param->using_global_keycache)
     (void) init_key_cache(dflt_key_cache, param->key_cache_block_size,
-                        param->use_buffers, 0, 0);
+                          (size_t)param->use_buffers, 0, 0);
 
   if (init_io_cache(&param->read_cache,info->dfile,
 		    (uint) param->read_buffer_length,
@@ -2109,10 +2107,8 @@ static int sort_one_index(MI_CHECK *param, MI_INFO *info, MI_KEYDEF *keyinfo,
     mi_check_print_error(param,"Can't write indexblock, error: %d",my_errno);
     goto err;
   }
-  my_afree((uchar*) buff);
   DBUG_RETURN(0);
 err:
-  my_afree((uchar*) buff);
   DBUG_RETURN(1);
 } /* sort_one_index */
 
@@ -2637,7 +2633,7 @@ int mi_repair_parallel(MI_CHECK *param, MI_INFO *info,
   IO_CACHE_SHARE io_share;
   SORT_INFO sort_info;
   ulonglong key_map= 0;
-  pthread_attr_t thr_attr;
+  my_thread_attr_t thr_attr;
   ulong max_pack_reclength;
   int error;
   DBUG_ENTER("mi_repair_parallel");
@@ -2906,8 +2902,10 @@ int mi_repair_parallel(MI_CHECK *param, MI_INFO *info,
   else
     io_share.total_threads= 0; /* share not used */
 
-  (void) pthread_attr_init(&thr_attr);
+  (void) my_thread_attr_init(&thr_attr);
+#ifndef _WIN32
   (void) pthread_attr_setdetachstate(&thr_attr,PTHREAD_CREATE_DETACHED);
+#endif
 
   for (i=0 ; i < sort_info.total_keys ; i++)
   {
@@ -2942,7 +2940,7 @@ int mi_repair_parallel(MI_CHECK *param, MI_INFO *info,
     else
       sort_info.threads_running++;
   }
-  (void) pthread_attr_destroy(&thr_attr);
+  (void) my_thread_attr_destroy(&thr_attr);
 
   /* waiting for all threads to finish */
   while (sort_info.threads_running)
@@ -4220,22 +4218,16 @@ int recreate_table(MI_CHECK *param, MI_INFO **org_info, char *filename)
   if (!(keysegs=(HA_KEYSEG*) my_alloca(sizeof(HA_KEYSEG)*
 				       (key_parts+share.base.keys))))
   {
-    my_afree((uchar*) keyinfo);
     DBUG_RETURN(1);
   }
   if (!(recdef=(MI_COLUMNDEF*)
 	my_alloca(sizeof(MI_COLUMNDEF)*(share.base.fields+1))))
   {
-    my_afree((uchar*) keyinfo);
-    my_afree((uchar*) keysegs);
     DBUG_RETURN(1);
   }
   if (!(uniquedef=(MI_UNIQUEDEF*)
 	my_alloca(sizeof(MI_UNIQUEDEF)*(share.state.header.uniques+1))))
   {
-    my_afree((uchar*) recdef);
-    my_afree((uchar*) keyinfo);
-    my_afree((uchar*) keysegs);
     DBUG_RETURN(1);
   }
 
@@ -4353,10 +4345,6 @@ int recreate_table(MI_CHECK *param, MI_INFO **org_info, char *filename)
     goto end;
   error=0;
 end:
-  my_afree((uchar*) uniquedef);
-  my_afree((uchar*) keyinfo);
-  my_afree((uchar*) recdef);
-  my_afree((uchar*) keysegs);
   DBUG_RETURN(error);
 }
 

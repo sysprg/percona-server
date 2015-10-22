@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -499,9 +499,9 @@ buf_page_set_io_fix(
 	buf_page_t*	bpage,	/*!< in/out: control block */
 	enum buf_io_fix	io_fix)	/*!< in: io_fix state */
 {
+#ifdef UNIV_DEBUG
 	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
 
-#ifdef UNIV_SYNC_DEBUG
 	if (io_fix == BUF_IO_NONE
 	    && buf_page_get_state(bpage) != BUF_BLOCK_ZIP_PAGE) {
 
@@ -568,7 +568,7 @@ buf_page_set_sticky(
 #ifdef UNIV_DEBUG
 	buf_pool_t*	buf_pool = buf_pool_from_bpage(bpage);
 	ut_ad(mutex_own(&buf_pool->LRU_list_mutex));
-#endif
+#endif /* UNIV_DEBUG */
 	ut_ad(mutex_own(buf_page_get_mutex(bpage)));
 	ut_ad(buf_page_get_io_fix(bpage) == BUF_IO_NONE);
 	ut_ad(bpage->in_LRU_list);
@@ -623,7 +623,7 @@ buf_page_is_old(
 	for now since all the callers hold it.  */
 	ut_ad(mutex_own(buf_page_get_mutex(bpage))
 	      || mutex_own(&buf_pool->LRU_list_mutex));
-#endif
+#endif /* UNIV_DEBUG */
 	ut_ad(buf_page_in_file(bpage));
 
 	return(bpage->old);
@@ -829,10 +829,9 @@ buf_block_get_lock_hash_val(
 {
 	ut_ad(block);
 	ut_ad(buf_page_in_file(&block->page));
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(rw_lock_own(&(((buf_block_t*) block)->lock), RW_LOCK_X)
 	      || rw_lock_own(&(((buf_block_t*) block)->lock), RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
+
 	return(block->lock_hash_val);
 }
 
@@ -934,7 +933,7 @@ buf_block_modify_clock_inc(
 /*=======================*/
 	buf_block_t*	block)	/*!< in: block */
 {
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	buf_pool_t*	buf_pool = buf_pool_from_bpage((buf_page_t*) block);
 
 	/* No latch is acquired if block belongs to intrinsic table. */
@@ -944,7 +943,7 @@ buf_block_modify_clock_inc(
 		      || rw_lock_own_flagged(&block->lock,
 					     RW_LOCK_FLAG_X | RW_LOCK_FLAG_SX));
 	}
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	block->modify_clock++;
 }
@@ -959,14 +958,14 @@ buf_block_get_modify_clock(
 /*=======================*/
 	buf_block_t*	block)	/*!< in: block */
 {
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	/* No latch is acquired if block belongs to intrinsic table. */
 	if (!fsp_is_system_temporary(block->page.id.space())) {
 		ut_ad(rw_lock_own(&(block->lock), RW_LOCK_S)
 		      || rw_lock_own(&(block->lock), RW_LOCK_X)
 		      || rw_lock_own(&(block->lock), RW_LOCK_SX));
 	}
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	return(block->modify_clock);
 }
@@ -999,13 +998,13 @@ UNIV_INLINE
 void
 buf_block_buf_fix_inc_func(
 /*=======================*/
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	const char*	file,	/*!< in: file name */
 	ulint		line,	/*!< in: line */
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 	buf_block_t*	block)	/*!< in/out: block to bufferfix */
 {
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	/* No debug latch is acquired if block belongs to system temporary.
 	Debug latch is not of much help if access to block is single
 	threaded. */
@@ -1014,7 +1013,7 @@ buf_block_buf_fix_inc_func(
 		ret = rw_lock_s_lock_nowait(&block->debug_latch, file, line);
 		ut_a(ret);
 	}
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	buf_block_fix(block);
 }
@@ -1054,14 +1053,14 @@ buf_block_buf_fix_dec(
 {
 	buf_block_unfix(block);
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	/* No debug latch is acquired if block belongs to system temporary.
 	Debug latch is not of much help if access to block is single
 	threaded. */
 	if (!fsp_is_system_temporary(block->page.id.space())) {
 		rw_lock_s_unlock(&block->debug_latch);
 	}
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 }
 
 /** Returns the buffer pool instance given a page id.
@@ -1109,13 +1108,13 @@ buf_page_hash_get_low(
 {
 	buf_page_t*	bpage;
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	rw_lock_t*	hash_lock;
 
 	hash_lock = hash_get_lock(buf_pool->page_hash, page_id.fold());
 	ut_ad(rw_lock_own(hash_lock, RW_LOCK_X)
 	      || rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	/* Look for the page in the hash table */
 
@@ -1147,14 +1146,17 @@ found, NULL otherwise. If NULL is passed then the hash_lock is released by
 this function.
 @param[in]	lock_mode	RW_LOCK_X or RW_LOCK_S. Ignored if
 lock == NULL
-@return pointer to the bpage or NULL; if NULL, lock is also NULL. */
+@param[in]	watch		if true, return watch sentinel also.
+@return pointer to the bpage or NULL; if NULL, lock is also NULL or
+a watch sentinel. */
 UNIV_INLINE
 buf_page_t*
 buf_page_hash_get_locked(
 	buf_pool_t*		buf_pool,
 	const page_id_t&	page_id,
 	rw_lock_t**		lock,
-	ulint			lock_mode)
+	ulint			lock_mode,
+	bool			watch)
 {
 	buf_page_t*	bpage = NULL;
 	rw_lock_t*	hash_lock;
@@ -1169,10 +1171,8 @@ buf_page_hash_get_locked(
 
 	hash_lock = hash_get_lock(buf_pool->page_hash, page_id.fold());
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_X)
 	      && !rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
 
 	if (mode == RW_LOCK_S) {
 		rw_lock_s_lock(hash_lock);
@@ -1188,7 +1188,9 @@ buf_page_hash_get_locked(
 	bpage = buf_page_hash_get_low(buf_pool, page_id);
 
 	if (!bpage || buf_pool_watch_is_sentinel(buf_pool, bpage)) {
-		bpage = NULL;
+		if (!watch) {
+			bpage = NULL;
+		}
 		goto unlock_and_exit;
 	}
 
@@ -1242,11 +1244,11 @@ buf_block_hash_get_locked(
 							 lock_mode);
 	buf_block_t*	block = buf_page_get_block(bpage);
 
-	if (block) {
+	if (block != NULL) {
+
 		ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
-#ifdef UNIV_SYNC_DEBUG
 		ut_ad(!lock || rw_lock_own(*lock, lock_mode));
-#endif /* UNIV_SYNC_DEBUG */
+
 		return(block);
 	} else if (bpage) {
 		/* It is not a block. Just a bpage */
@@ -1296,7 +1298,7 @@ buf_page_release_zip(
 
 	switch (buf_page_get_state(bpage)) {
 	case BUF_BLOCK_FILE_PAGE:
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	{
 		/* No debug latch is acquired if block belongs to system
 		temporary. Debug latch is not of much help if access to block
@@ -1307,7 +1309,7 @@ buf_page_release_zip(
 		}
 	}
 		/* Fall through */
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	case BUF_BLOCK_ZIP_PAGE:
 	case BUF_BLOCK_ZIP_DIRTY:
@@ -1335,14 +1337,14 @@ buf_page_release_latch(
 	ulint		rw_latch)	/*!< in: RW_S_LATCH, RW_X_LATCH,
 					RW_NO_LATCH */
 {
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	/* No debug latch is acquired if block belongs to system
 	temporary. Debug latch is not of much help if access to block
 	is single threaded. */
 	if (!fsp_is_system_temporary(block->page.id.space())) {
 		rw_lock_s_unlock(&block->debug_latch);
 	}
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	if (rw_latch == RW_S_LATCH) {
 		rw_lock_s_unlock(&block->lock);
@@ -1353,7 +1355,7 @@ buf_page_release_latch(
 	}
 }
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 /*********************************************************************//**
 Adds latch level info for the rw-lock protecting the buffer frame. This
 should be called in the debug version after a successful latching of a
@@ -1369,7 +1371,7 @@ buf_block_dbg_add_level(
 	sync_check_lock(&block->lock, level);
 }
 
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 /*********************************************************************//**
 Get the nth chunk's buffer block in the specified buffer pool.
 @return the nth chunk's buffer block. */

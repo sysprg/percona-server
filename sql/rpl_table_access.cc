@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -15,8 +15,15 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
    02110-1301 USA */
 
-#include "log.h"
 #include "rpl_table_access.h"
+
+#include "handler.h"     // ha_rollback_trans
+#include "log.h"         // sql_print_warning
+#include "sql_base.h"    // close_thread_tables
+#include "sql_class.h"   // THD
+#include "sql_lex.h"     // Query_tables_list
+#include "table.h"       // TABLE_LIST
+
 
 bool System_table_access::open_table(THD* thd, const LEX_STRING dbstr,
                                      const LEX_STRING tbstr,
@@ -52,7 +59,7 @@ bool System_table_access::open_table(THD* thd, const LEX_STRING dbstr,
     close_thread_tables(thd);
     thd->restore_backup_open_tables_state(backup);
     thd->lex->restore_backup_query_tables_list(&query_tables_list_backup);
-    if (thd->is_operating_gtid_table)
+    if (thd->is_operating_gtid_table_implicitly)
       sql_print_warning("Gtid table is not ready to be used. Table '%s.%s' "
                         "cannot be opened.", dbstr.str, tbstr.str);
     else
@@ -138,7 +145,7 @@ THD *System_table_access::create_thd()
   thd= new THD;
   thd->thread_stack= (char*) &thd;
   thd->store_globals();
-  thd->security_ctx->skip_grants();
+  thd->security_context()->skip_grants();
 
   return(thd);
 }
@@ -149,7 +156,7 @@ void System_table_access::drop_thd(THD *thd)
   DBUG_ENTER("System_table_access::drop_thd");
 
   delete thd;
-  my_pthread_set_THR_THD(NULL);
+  my_thread_set_THR_THD(NULL);
 
   DBUG_VOID_RETURN;
 }

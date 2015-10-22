@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -40,7 +40,6 @@ Created 12/7/1995 Heikki Tuuri
 
 /********************************************************//**
 Catenates n bytes to the mtr log. */
-
 void
 mlog_catenate_string(
 /*=================*/
@@ -60,7 +59,6 @@ mlog_catenate_string(
 Writes the initial part of a log record consisting of one-byte item
 type and four-byte space and page numbers. Also pushes info
 to the mtr memo that a buffer page has been modified. */
-
 void
 mlog_write_initial_log_record(
 /*==========================*/
@@ -92,7 +90,6 @@ mlog_write_initial_log_record(
 /********************************************************//**
 Parses an initial log record written by mlog_write_initial_log_record.
 @return parsed record end, NULL if not a complete record */
-
 byte*
 mlog_parse_initial_log_record(
 /*==========================*/
@@ -129,7 +126,6 @@ mlog_parse_initial_log_record(
 /********************************************************//**
 Parses a log record written by mlog_write_ulint or mlog_write_ull.
 @return parsed record end, NULL if not a complete record or a corrupt record */
-
 byte*
 mlog_parse_nbytes(
 /*==============*/
@@ -238,7 +234,6 @@ mlog_parse_nbytes(
 /********************************************************//**
 Writes 1, 2 or 4 bytes to a file page. Writes the corresponding log
 record to the mini-transaction log if mtr is not NULL. */
-
 void
 mlog_write_ulint(
 /*=============*/
@@ -284,7 +279,6 @@ mlog_write_ulint(
 /********************************************************//**
 Writes 8 bytes to a file page. Writes the corresponding log
 record to the mini-transaction log, only if mtr is not NULL */
-
 void
 mlog_write_ull(
 /*===========*/
@@ -317,7 +311,6 @@ mlog_write_ull(
 /********************************************************//**
 Writes a string to a file page buffered in the buffer pool. Writes the
 corresponding log record to the mini-transaction log. */
-
 void
 mlog_write_string(
 /*==============*/
@@ -337,7 +330,6 @@ mlog_write_string(
 /********************************************************//**
 Logs a write of a string to a file page buffered in the buffer pool.
 Writes the corresponding log record to the mini-transaction log. */
-
 void
 mlog_log_string(
 /*============*/
@@ -375,7 +367,6 @@ mlog_log_string(
 /********************************************************//**
 Parses a log record written by mlog_write_string.
 @return parsed record end, NULL if not a complete record */
-
 byte*
 mlog_parse_string(
 /*==============*/
@@ -428,7 +419,6 @@ mlog_parse_string(
 Opens a buffer for mlog, writes the initial log record and,
 if needed, the field lengths of an index.
 @return buffer, NULL if log mode MTR_LOG_NONE */
-
 byte*
 mlog_open_and_write_index(
 /*======================*/
@@ -464,6 +454,13 @@ mlog_open_and_write_index(
 			alloc = mtr_buf_t::MAX_DATA_SIZE;
 		}
 
+		/* For spatial index, on non-leaf page, we just keep
+		2 fields, MBR and page no. */
+		if (dict_index_is_spatial(index)
+		    && !page_is_leaf(page_align(rec))) {
+			n = DICT_INDEX_SPATIAL_NODEPTR_SIZE;
+		}
+
 		log_start = log_ptr = mlog_open(mtr, alloc);
 
 		if (!log_ptr) {
@@ -478,8 +475,14 @@ mlog_open_and_write_index(
 		mach_write_to_2(log_ptr, n);
 		log_ptr += 2;
 
-		mach_write_to_2(
-			log_ptr, dict_index_get_n_unique_in_tree(index));
+		if (page_is_leaf(page_align(rec))) {
+			mach_write_to_2(
+				log_ptr, dict_index_get_n_unique_in_tree(index));
+		} else {
+			mach_write_to_2(
+				log_ptr,
+				dict_index_get_n_unique_in_tree_nonleaf(index));
+		}
 
 		log_ptr += 2;
 
@@ -536,7 +539,6 @@ mlog_open_and_write_index(
 /********************************************************//**
 Parses a log record written by mlog_open_and_write_index.
 @return parsed record end, NULL if not a complete record */
-
 byte*
 mlog_parse_index(
 /*=============*/
@@ -566,7 +568,7 @@ mlog_parse_index(
 	} else {
 		n = n_uniq = 1;
 	}
-	table = dict_mem_table_create("LOG_DUMMY", DICT_HDR_SPACE, n,
+	table = dict_mem_table_create("LOG_DUMMY", DICT_HDR_SPACE, n, 0,
 				      comp ? DICT_TF_COMPACT : 0, 0);
 	ind = dict_mem_index_create("LOG_DUMMY", "LOG_DUMMY",
 				    DICT_HDR_SPACE, 0, n);

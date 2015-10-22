@@ -304,7 +304,7 @@ static int xtradb_internal_hash_tables_fill_table(THD* thd, TABLE_LIST* tables, 
 
 	ut_ad(btr_search_sys->hash_tables);
 
-	for (ulint i = 0; i < btr_search_index_num; i++) {
+	for (ulint i = 0; i < btr_ahi_parts; i++) {
 		hash_table_t* ht = btr_search_sys->hash_tables[i];
 
 		ut_ad(ht);

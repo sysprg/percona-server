@@ -1,7 +1,7 @@
 #ifndef ITEM_STRFUNC_INCLUDED
 #define ITEM_STRFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,9 +18,8 @@
 
 
 /* This file defines all string functions */
-#include "crypt_genhash_impl.h"
-#include <rapidjson/writer.h>
-#include <rapidjson/stringbuffer.h>
+#include "crypt_genhash_impl.h"       // CRYPT_MAX_PASSWORD_SIZE
+#include "item_func.h"                // Item_func
 
 class MY_LOCALE;
 
@@ -169,89 +168,6 @@ public:
 };
 
 
-/**
-  This class handles the following function:
-
-    <string> = ST_ASGEOJSON(<geometry>[, <maxdecimaldigits>[, <options>]])
-
-  It converts a GEOMETRY into a valid GeoJSON string. If maxdecimaldigits is
-  specified, the coordinates written are rounded to the number of decimals
-  specified (e.g with decimaldigits = 3: 10.12399 => 10.124).
-
-  Options is a bitmask with the following flags:
-    0  No options (default values).
-    1  Add a bounding box to the output.
-    2  Add a short CRS URN to the output. The default format is a
-       short format ("EPSG:<srid>").
-    4  Add a long format CRS URN ("urn:ogc:def:crs:EPSG::<srid>"). This
-       implies 2. This means that, e.g., bitmask 5 and 7 mean the
-       same: add a bounding box and a long format CRS URN.
-*/
-class Item_func_as_geojson :public Item_str_ascii_func
-{
-private:
-  /// Maximum number of decimal digits in printed coordinates.
-  int m_max_decimal_digits;
-  /// If true, the output GeoJSON has a bounding box for each GEOMETRY.
-  bool m_add_bounding_box;
-  /**
-    If true, the output GeoJSON has a CRS object in the short
-    form (e.g "EPSG:4326").
-  */
-  bool m_add_short_crs_urn;
-  /**
-    If true, the output GeoJSON has a CRS object in the long
-    form (e.g "urn:ogc:def:crs:EPSG::4326").
-  */
-  bool m_add_long_crs_urn;
-  /// The SRID found in the input GEOMETRY.
-  uint32 m_geometry_srid;
-  /// Max width of long CRS URN supported + max width of SRID + '\0'.
-  static const int MAX_CRS_WIDTH= (22 + MAX_INT_WIDTH + 1);
-  /// Output buffer to be used by the rapidjson writer.
-  rapidjson::StringBuffer m_stringbuffer;
-public:
-  Item_func_as_geojson(const POS &pos, Item *geometry)
-    :Item_str_ascii_func(pos, geometry), m_add_bounding_box(false),
-    m_add_short_crs_urn(false), m_add_long_crs_urn(false)
-  {}
-  Item_func_as_geojson(const POS &pos, Item *geometry, Item *maxdecimaldigits)
-    :Item_str_ascii_func(pos, geometry, maxdecimaldigits),
-    m_add_bounding_box(false), m_add_short_crs_urn(false),
-    m_add_long_crs_urn(false)
-  {}
-  Item_func_as_geojson(const POS &pos, Item *geometry, Item *maxdecimaldigits,
-                       Item *options)
-    :Item_str_ascii_func(pos, geometry, maxdecimaldigits, options),
-    m_add_bounding_box(false), m_add_short_crs_urn(false),
-    m_add_long_crs_urn(false)
-  {}
-  bool fix_fields(THD *thd, Item **ref);
-  String *val_str_ascii(String *);
-  void fix_length_and_dec();
-  const char *func_name() const { return "st_asgeojson"; }
-  bool append_geometry(Geometry::wkb_parser *parser,
-                       rapidjson::Writer<rapidjson::StringBuffer> *writer,
-                       bool is_root_object, MBR *mbr);
-  const char *wkbtype_to_geojson_type(Geometry::wkbType type);
-  bool append_coordinates(Geometry::wkb_parser *parser,
-                          rapidjson::Writer<rapidjson::StringBuffer> *writer,
-                          MBR *mbr);
-  bool append_linestring(Geometry::wkb_parser *parser,
-                         rapidjson::Writer<rapidjson::StringBuffer> *writer,
-                         MBR *mbr);
-  bool append_polygon(Geometry::wkb_parser *parser,
-                      rapidjson::Writer<rapidjson::StringBuffer> *writer,
-                      MBR *mbr);
-  bool parse_options_argument();
-  bool parse_maxdecimaldigits_argument();
-  void append_bounding_box(MBR *mbr,
-                           rapidjson::Writer<rapidjson::StringBuffer> *writer);
-  void append_crs(rapidjson::Writer<rapidjson::StringBuffer> *writer);
-  bool check_argument_is_integer_type(Item *argument);
-};
-
-
 class Item_func_aes_encrypt :public Item_str_func
 {
   typedef Item_str_func super;
@@ -354,6 +270,8 @@ public:
 class Item_func_replace :public Item_str_func
 {
   String tmp_value,tmp_value2;
+  /// Holds result in case we need to allocate our own result buffer.
+  String tmp_value_res;
 public:
   Item_func_replace(const POS &pos, Item *org,Item *find,Item *replace)
     :Item_str_func(pos, org,find,replace)
@@ -367,6 +285,8 @@ public:
 class Item_func_insert :public Item_str_func
 {
   String tmp_value;
+  /// Holds result in case we need to allocate our own result buffer.
+  String tmp_value_res;
 public:
   Item_func_insert(const POS &pos,
                    Item *org, Item *start, Item *length, Item *new_str)
@@ -633,6 +553,8 @@ public:
   String *val_str(String *);
   void fix_length_and_dec() { maybe_null=1; max_length = 13; }
   const char *func_name() const { return "encrypt"; }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 #include "sql_crypt.h"
@@ -643,6 +565,8 @@ class Item_func_encode :public Item_str_func
 private:
   /** Whether the PRNG has already been seeded. */
   bool seeded;
+  /// Holds result in case we need to allocate our own result buffer.
+  String tmp_value_res;
 protected:
   SQL_CRYPT sql_crypt;
 public:
@@ -689,6 +613,8 @@ public:
     call
   */
   virtual const Name_string fully_qualified_func_name() const = 0;
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -852,6 +778,7 @@ public:
                   double target_value, char *char_value, int bit_number);
   bool fill_and_check_fields();
   bool check_valid_latlong_type(Item *ref);
+  static bool is_item_null(Item *item);
 };
 
 
@@ -1105,7 +1032,7 @@ public:
                      const CHARSET_INFO *cs_arg)
     :Item_str_func(pos, a), cast_length(length_arg), cast_cs(cs_arg) 
   {}
-  enum Functype functype() const { return CHAR_TYPECAST_FUNC; }
+  enum Functype functype() const { return TYPECAST_FUNC; }
   bool eq(const Item *item, bool binary_cmp) const;
   const char *func_name() const { return "cast_as_char"; }
   String *val_str(String *a);
@@ -1134,6 +1061,7 @@ public:
   }
   virtual void print(String *str, enum_query_type query_type);
   const char *func_name() const { return "cast_as_binary"; }
+  enum Functype functype() const { return TYPECAST_FUNC; }
 };
 
 
@@ -1154,6 +1082,8 @@ public:
     maybe_null=1;
     max_length=MAX_BLOB_WIDTH;
   }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -1204,7 +1134,8 @@ public:
   Item_func_conv_charset(Item *a, const CHARSET_INFO *cs,
                          bool cache_if_const) :Item_str_func(a)
   {
-    DBUG_ASSERT(args[0]->fixed);
+    DBUG_ASSERT(is_fixed_or_outer_ref(args[0]));
+
     conv_charset= cs;
     if (cache_if_const && args[0]->const_item())
     {
@@ -1315,6 +1246,7 @@ public:
   virtual bool itemize(Parse_context *pc, Item **res);
 
   const char *func_name() const { return "weight_string"; }
+  bool eq(const Item *item, bool binary_cmp) const;
   String *val_str(String *);
   void fix_length_and_dec();
 };
@@ -1384,6 +1316,8 @@ public:
   }
   const char *func_name() const{ return "uuid"; }
   String *val_str(String *);
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 class Item_func_gtid_subtract: public Item_str_ascii_func

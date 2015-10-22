@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,12 +19,13 @@
 
 #ifdef HAVE_REPLICATION
 
-#include "sql_string.h"
-#include "rpl_rli.h"
-#include <my_sys.h>
-#include <my_bitmap.h>
-#include "rpl_slave.h"
-#include "prealloced_array.h"
+#include "my_global.h"
+#include "my_bitmap.h"         // MY_BITMAP
+#include "prealloced_array.h"  // Prealloced_array
+#include "log_event.h"         // Format_description_log_event
+#include "rpl_mts_submode.h"   // enum_mts_parallel_type
+#include "rpl_rli.h"           // Relay_log_info
+#include "rpl_slave.h"         // MTS_WORKER_UNDEF
 
 #ifndef DBUG_OFF
 extern ulong w_rr;
@@ -68,7 +69,7 @@ typedef struct st_db_worker_hash_entry
 
 } db_worker_hash_entry;
 
-bool init_hash_workers(ulong slave_parallel_workers);
+bool init_hash_workers(Relay_log_info *rli);
 void destroy_hash_workers(Relay_log_info*);
 Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
                                db_worker_hash_entry **ptr_entry,
@@ -89,7 +90,7 @@ typedef struct st_slave_job_group
   */
   my_off_t group_master_log_pos;
 
-  /* 
+  /*
      When relay-log name changes  allocates and fill in a new name of relay-log,
      otherwise it fills in NULL.
      Coordinator keeps track of each Worker has been notified on the updating
@@ -98,7 +99,7 @@ typedef struct st_slave_job_group
      W checks the value at commit and memoriezes a not-NULL.
      Freeing unless NULL is left to Coordinator at CP.
   */
-  char     *group_relay_log_name; // The value is last seen relay-log 
+  char     *group_relay_log_name; // The value is last seen relay-log
   my_off_t group_relay_log_pos;  // filled by W
   ulong worker_id;
   Slave_worker *worker;
@@ -111,14 +112,18 @@ typedef struct st_slave_job_group
   char*    checkpoint_log_name;
   my_off_t checkpoint_relay_log_pos; // T-event lop_pos filled by W for CheckPoint
   char*    checkpoint_relay_log_name;
-  volatile uchar done;  // Flag raised by W,  read and reset by Coordinator
+  int32    done;  // Flag raised by W,  read and reset by Coordinator
   ulong    shifted;     // shift the last CP bitmap at receiving a new CP
   time_t   ts;          // Group's timestampt to update Seconds_behind_master
 #ifndef DBUG_OFF
   bool     notified;    // to debug group_master_log_name change notification
 #endif
+  /* Clock-based scheduler requirement: */
+  longlong last_committed; // commit parent timestamp
+  longlong sequence_number;   // transaction's logical timestamp
+
   /*
-    Coordinator fills the struct with defaults and options at starting of 
+    Coordinator fills the struct with defaults and options at starting of
     a group distribution.
   */
   void reset(my_off_t master_pos, ulonglong seqno)
@@ -138,6 +143,8 @@ typedef struct st_slave_job_group
 #ifndef DBUG_OFF
     notified= false;
 #endif
+    last_committed= SEQ_UNINIT;
+    sequence_number= SEQ_UNINIT;
   }
 } Slave_job_group;
 
@@ -209,13 +216,13 @@ public:
 
 /**
   Group Assigned Queue whose first element identifies first gap
-  in committed sequence. The head of the queue is therefore next to 
+  in committed sequence. The head of the queue is therefore next to
   the low-water-mark.
 */
 class Slave_committed_queue : public circular_buffer_queue<Slave_job_group>
 {
 public:
-  
+
   bool inited;
 
   /* master's Rot-ev exec */
@@ -225,7 +232,7 @@ public:
      The last checkpoint time Low-Water-Mark
   */
   Slave_job_group lwm;
-  
+
   /* last time processed indexes for each worker */
   Prealloced_array<ulonglong, 1> last_done;
 
@@ -247,10 +254,11 @@ public:
       (char *) my_malloc(key_memory_Slave_job_group_group_relay_log_name,
                          FN_REFLEN + 1, MYF(0));
     lwm.group_relay_log_name[0]= 0;
+    lwm.sequence_number= SEQ_UNINIT;
   }
 
   ~Slave_committed_queue ()
-  { 
+  {
     if (inited)
     {
       my_free(lwm.group_relay_log_name);
@@ -266,12 +274,13 @@ public:
   ulong move_queue_head(Slave_worker_array *ws);
   /* Method is for slave shutdown time cleanup */
   void free_dynamic_items();
-  /* 
+  /*
      returns a pointer to Slave_job_group struct instance as indexed by arg
-     in the circular buffer dyn-array 
+     in the circular buffer dyn-array
   */
   Slave_job_group* get_job_group(ulong ind)
   {
+    DBUG_ASSERT(ind < size);
     return &m_Q[ind];
   }
 
@@ -285,6 +294,7 @@ public:
       circular_buffer_queue<Slave_job_group>::en_queue(item);
   }
 
+  ulong find_lwm(Slave_job_group**, ulong);
 };
 
 
@@ -332,7 +342,7 @@ class Slave_jobs_queue : public circular_buffer_queue<Slave_job_item>
 {
 public:
   Slave_jobs_queue() : circular_buffer_queue<Slave_job_item>() {}
-  /* 
+  /*
      Coordinator marks with true, Worker signals back at queue back to
      available
   */
@@ -354,11 +364,17 @@ public:
                PSI_mutex_key *param_key_info_stop_cond,
                PSI_mutex_key *param_key_info_sleep_cond
 #endif
-               , uint param_id
+               , uint param_id, const char *param_channel
               );
 
   virtual ~Slave_worker();
 
+  /*
+    index value of some outstanding slots of info_slave_worker_fields
+  */
+  enum {
+    LINE_FOR_CHANNEL= 12
+  };
   Slave_jobs_queue jobs;   // assignment queue containing events to execute
   mysql_mutex_t jobs_lock; // mutex for the jobs queue
   mysql_cond_t  jobs_cond; // condition variable for the jobs queue
@@ -368,6 +384,9 @@ public:
   curr_group_exec_parts; // Current Group Executed Partitions
 
   bool curr_group_seen_begin; // is set to TRUE with explicit B-event
+#ifndef DBUG_OFF
+  bool curr_group_seen_sequence_number; // is set to TRUE about starts_group()
+#endif
   ulong id;                 // numberic identifier of the Worker
 
   /*
@@ -375,6 +394,7 @@ public:
   */
   // the index in GAQ of the last processed group by this Worker
   volatile ulong last_group_done_index;
+  ulonglong last_groups_assigned_index; // index of previous group assigned to worker
   ulong wq_empty_waits;  // how many times got idle
   ulong events_done;     // how many events (statements) processed
   ulong groups_done;     // how many groups (transactions) processed
@@ -421,8 +441,9 @@ public:
   {
     NOT_RUNNING= 0,
     RUNNING= 1,
-    ERROR_LEAVING,         // is set by Worker
-    KILLED                 // is set by Coordinator
+    ERROR_LEAVING= 2,         // is set by Worker
+    STOP= 3,                  // is set by Coordinator upon reciving STOP
+    STOP_ACCEPTED= 4          // is set by worker upon completing job when STOP SLAVE is issued
   };
 
   /*
@@ -441,11 +462,17 @@ public:
   */
   en_running_state volatile running_status;
   /*
+    exit_incremented indicates whether worker has contributed to max updated index.
+    By default it is set to false. When the worker contibutes for the first time this
+    variable is set to true.
+  */
+  bool exit_incremented;
+  /*
     The gtid (or anonymous) of the currently executing transaction, or
     of the last executing transaction if no transaction is currently
     executing.  This is used to fill the last_seen_transaction column
     of the table
-    performance_schema.replication_execute_status_by_worker.
+    performance_schema.replication_applier_status_by_worker.
   */
   Gtid_specification currently_executing_gtid;
 
@@ -521,6 +548,34 @@ public:
   bool retry_transaction(uint start_relay_number, my_off_t start_relay_pos,
                          uint end_relay_number, my_off_t end_relay_pos);
 
+  bool set_info_search_keys(Rpl_info_handler *to);
+
+
+  /**
+    Get coordinator's RLI. Especially used get the rli from
+    a slave thread, like this: thd->rli_slave->get_c_rli();
+    thd could be a SQL thread or a worker thread.
+  */
+   virtual Relay_log_info* get_c_rli()
+  {
+    return c_rli;
+  }
+
+  /**
+     return an extension "for channel channel_name"
+     for error messages per channel
+  */
+  const char* get_for_channel_str(bool upper_case= false) const;
+
+  longlong sequence_number()
+  {
+    Slave_job_group* ptr_g= c_rli->gaq->get_job_group(gaq_index);
+    return ptr_g->sequence_number;
+  }
+
+  bool found_order_commit_deadlock() { return m_order_commit_deadlock; }
+  void report_order_commit_deadlock() { m_order_commit_deadlock= true; }
+
 protected:
 
   virtual void do_report(loglevel level, int err_code,
@@ -532,21 +587,36 @@ private:
   void end_info();
   bool read_info(Rpl_info_handler *from);
   bool write_info(Rpl_info_handler *to);
+  bool m_order_commit_deadlock;
+
   Slave_worker& operator=(const Slave_worker& info);
   Slave_worker(const Slave_worker& info);
   bool worker_sleep(ulong seconds);
   bool read_and_apply_events(uint start_relay_number, my_off_t start_relay_pos,
                              uint end_relay_number, my_off_t end_relay_pos);
   void assign_partition_db(Log_event *ev);
+
+  void reset_order_commit_deadlock() { m_order_commit_deadlock= false; }
 };
+
+void * head_queue(Slave_jobs_queue *jobs, Slave_job_item *ret);
+bool handle_slave_worker_stop(Slave_worker *worker, Slave_job_item *job_item);
+bool set_max_updated_index_on_stop(Slave_worker *worker,
+                                   Slave_job_item *job_item);
 
 TABLE* mts_move_temp_table_to_entry(TABLE*, THD*, db_worker_hash_entry*);
 TABLE* mts_move_temp_tables_to_thd(THD*, TABLE*);
 // Auxiliary function
 TABLE* mts_move_temp_tables_to_thd(THD*, TABLE*, enum_mts_parallel_type);
 
-extern  mysql_mutex_t slave_worker_hash_lock;
-extern  mysql_cond_t slave_worker_hash_cond;
-extern HASH mapping_db_to_worker;
+bool append_item_to_jobs(slave_job_item *job_item,
+                         Slave_worker *w, Relay_log_info *rli);
+Slave_job_item* de_queue(Slave_jobs_queue *jobs, Slave_job_item *ret);
+
+inline Slave_worker* get_thd_worker(THD *thd)
+{
+  return static_cast<Slave_worker *>(thd->rli_slave);
+}
+
 #endif // HAVE_REPLICATION
 #endif

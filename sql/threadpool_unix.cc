@@ -15,9 +15,7 @@
 
 #include <my_global.h>
 #include <violite.h>
-#include <sql_priv.h>
 #include <sql_class.h>
-#include <my_pthread.h>
 #include <sql_connect.h>
 #include <mysqld.h>
 #include <debug_sync.h>
@@ -486,7 +484,7 @@ public:
 
   virtual void operator() (THD* thd)
   {
-    if (thd->net.reading_or_writing != 1)
+    if (thd_get_net_read_write(thd) != 1)
       return;
 
     connection_t *connection= (connection_t *)thd->event_scheduler.data;
@@ -526,7 +524,7 @@ static void timeout_check(pool_timer_t *timer)
   DBUG_ENTER("timeout_check");
 
   /* Reset next timeout check, it will be recalculated in the loop below */
-  my_atomic_fas64((volatile int64*)&timer->next_timeout_check, ULONGLONG_MAX);
+  my_atomic_fas64((volatile int64*)&timer->next_timeout_check, ULLONG_MAX);
 
   Thd_timeout_checker thd_timeout_checker(timer);
   Global_THD_manager::get_instance()
@@ -560,7 +558,7 @@ static void* timer_thread(void *param)
 
   my_thread_init();
   DBUG_ENTER("timer_thread");
-  timer->next_timeout_check= ULONGLONG_MAX;
+  timer->next_timeout_check= ULLONG_MAX;
   timer->current_microtime= my_microsecond_getsystime();
 
   for(;;)
@@ -676,7 +674,7 @@ void check_stall(thread_group_t *thread_group)
 
 static void start_timer(pool_timer_t* timer)
 {
-  pthread_t thread_id;
+  my_thread_handle thread_id;
   DBUG_ENTER("start_timer");
   mysql_mutex_init(key_timer_mutex,&timer->mutex, NULL);
   mysql_cond_init(key_timer_cond, &timer->cond);
@@ -870,7 +868,7 @@ static void add_thread_count(thread_group_t *thread_group, int32 count)
 
 static int create_worker(thread_group_t *thread_group)
 {
-  pthread_t thread_id;
+  my_thread_handle thread_id;
   bool max_threads_reached= false;
   int err;
   
@@ -1312,7 +1310,7 @@ connection_t *alloc_connection(THD *thd)
     connection->waiting= false;
     connection->logged_in= false;
     connection->bound_to_poll_descriptor= false;
-    connection->abs_wait_timeout= ULONGLONG_MAX;
+    connection->abs_wait_timeout= ULLONG_MAX;
     connection->tickets = 0;
   }
   DBUG_RETURN(connection);
@@ -1396,9 +1394,10 @@ void tp_post_kill_notification(THD *thd)
   DBUG_ENTER("tp_post_kill_notification");
   if (current_thd == thd || thd->system_thread)
     DBUG_VOID_RETURN;
-  
-  if (thd->net.vio)
-    vio_cancel(thd->net.vio, SHUT_RD);
+
+  Vio* vio= thd->get_protocol_classic()->get_vio();
+  if (vio)
+    vio_cancel(vio, SHUT_RD);
   DBUG_VOID_RETURN;
 }
 
@@ -1490,7 +1489,8 @@ static int change_group(connection_t *c,
  thread_group_t *new_group)
 { 
   int ret= 0;
-  int fd = mysql_socket_getfd(c->thd->net.vio->mysql_socket);
+  Vio* vio= c->thd->get_protocol_classic()->get_vio();
+  int fd = mysql_socket_getfd(vio->mysql_socket);
 
   DBUG_ASSERT(c->thread_group == old_group);
 
@@ -1517,8 +1517,9 @@ static int change_group(connection_t *c,
 
 
 static int start_io(connection_t *connection)
-{ 
-  int fd = mysql_socket_getfd(connection->thd->net.vio->mysql_socket);
+{
+  Vio* vio= connection->thd->get_protocol_classic()->get_vio();
+  int fd = mysql_socket_getfd(vio->mysql_socket);
 
   /*
     Usually, connection will stay in the same group for the entire

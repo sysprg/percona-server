@@ -1,4 +1,4 @@
-/* Copyright (c) 2007, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2007, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License
@@ -22,10 +22,11 @@
 */
 
 #include "plugin.h"
+#include "mysql/mysql_lex_string.h"
 
 #define MYSQL_AUDIT_CLASS_MASK_SIZE 1
 
-#define MYSQL_AUDIT_INTERFACE_VERSION 0x0301
+#define MYSQL_AUDIT_INTERFACE_VERSION 0x0302
 
 
 /*************************************************************************
@@ -99,6 +100,35 @@ struct mysql_event_connection
   unsigned int ip_length;
   const char *database;
   unsigned int database_length;
+  int connection_type;
+};
+
+#define MYSQL_AUDIT_PARSE_CLASS 2
+#define MYSQL_AUDIT_PARSE_CLASSMASK (1UL << MYSQL_AUDIT_PARSE_CLASS)
+#define MYSQL_AUDIT_PREPARSE 0
+#define MYSQL_AUDIT_POSTPARSE 1
+
+/// mysql_event_parse::flags Must be set by a plugin if the query is rewritten.
+#define FLAG_REWRITE_PLUGIN_QUERY_REWRITTEN 1
+/// mysql_event_parse::flags Is set by the server if the query is prepared statement.
+#define FLAG_REWRITE_PLUGIN_IS_PREPARED_STATEMENT 2
+
+
+/** Data for the MYSQL_AUDIT_[PRE|POST]_PARSE events */
+struct mysql_event_parse
+{
+  /** MYSQL_AUDIT_[PRE|POST]_PARSE event id */
+  unsigned int event_subclass;
+  /** one of FLAG_REWRITE_PLUGIN_* */
+  int *flags;
+  /** input: the original query text */
+  const char *query;
+  /** input: the original query length */
+  size_t query_length;
+  /** output: returns the null-terminated rewriten query allocated by my_malloc() */
+  char **rewritten_query;
+  /** output: if not null returns the rewriten query length */
+  size_t *rewritten_query_length;
 };
 
 

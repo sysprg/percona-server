@@ -5,21 +5,16 @@
 --source include/have_innodb.inc
 --source include/have_debug.inc
 
-# Valgrind would complain about memory leaks when we crash on purpose.
---source include/not_valgrind.inc
-# Embedded server does not support crashing
---source include/not_embedded.inc
-# Avoid CrashReporter popup on Mac
---source include/not_crashrep.inc
-
+--disable_query_log
 # suppress expected warnings
 call mtr.add_suppression("Unable to truncate FTS index for table");
 call mtr.add_suppression("Unable to assign a new identifier to table "
-			 "\".*\"\.\".*\" after truncating it");
+			 "`.*`\.`.*` after truncating it");
 call mtr.add_suppression("Flagged corruption of .* in table "
-			 "\".*\"\.\".*\" in TRUNCATE TABLE");
+			 "`.*`\.`.*` in TRUNCATE TABLE");
 call mtr.add_suppression("Parent table of FTS auxiliary table "
 			 ".*\/.* not found");
+--enable_query_log
 ################################################################################
 #
 # Will test following scenarios:
@@ -41,14 +36,13 @@ let $format = `select @@innodb_file_format`;
 eval set global innodb_file_per_table = on;
 let $WL6501_TMP_DIR = `select @@tmpdir`;
 let $WL6501_DATA_DIR = `select @@datadir`;
-let SEARCH_FILE = $MYSQLTEST_VARDIR/log/my_restart.err;
+set innodb_strict_mode=off;
 
 #-----------------------------------------------------------------------------
 #
 # 1. Error in assigning undo logs for truncate action.
 #
 --echo "1. Error in assigning undo logs for truncate action."
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings
@@ -76,7 +70,6 @@ drop table t;
 # 2. Error while preparing for truncate.
 #
 --echo "2. Error while preparing for truncate."
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings
@@ -104,7 +97,6 @@ drop table t;
 # 3. Error while dropping/creating indexes
 #
 --echo "3. Error while dropping/creating indexes"
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings
@@ -129,7 +121,6 @@ select * from t;
 drop table t;
 #
 #
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings
@@ -154,7 +145,6 @@ select * from t;
 drop table t;
 #
 #
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings
@@ -183,7 +173,6 @@ drop table t;
 # 4. Error while completing truncate of table involving FTS.
 #
 --echo "4. Error while completing truncate of table involving FTS."
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings
@@ -213,7 +202,6 @@ drop table t;
 # 5. Error while updating sys-tables.
 #
 --echo "5. Error while updating sys-tables."
-use test;
 eval set global innodb_file_per_table = $wl6501_file_per_table;
 eval set global innodb_file_format = $wl6501_file_format;
 --disable_warnings

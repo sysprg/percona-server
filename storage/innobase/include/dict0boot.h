@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2013, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -40,14 +40,12 @@ typedef	byte	dict_hdr_t;
 /**********************************************************************//**
 Gets a pointer to the dictionary header and x-latches its page.
 @return pointer to the dictionary header, page x-latched */
-
 dict_hdr_t*
 dict_hdr_get(
 /*=========*/
 	mtr_t*	mtr);	/*!< in: mtr */
 /**********************************************************************//**
 Returns a new table, index, or space id. */
-
 void
 dict_hdr_get_new_id(
 /*================*/
@@ -64,7 +62,6 @@ dict_hdr_get_new_id(
 /**********************************************************************//**
 Writes the current value of the row id counter to the dictionary header file
 page. */
-
 void
 dict_hdr_flush_row_id(void);
 /*=======================*/
@@ -95,7 +92,6 @@ dict_sys_write_row_id(
 Initializes the data dictionary memory structures when the database is
 started. This function is also called when the data dictionary is created.
 @return DB_SUCCESS or error code. */
-
 dberr_t
 dict_boot(void)
 /*===========*/
@@ -104,7 +100,6 @@ dict_boot(void)
 /*****************************************************************//**
 Creates and initializes the data dictionary at the server bootstrap.
 @return DB_SUCCESS or error code. */
-
 dberr_t
 dict_create(void)
 /*=============*/
@@ -225,7 +220,8 @@ enum dict_col_sys_indexes_enum {
 	DICT_COL__SYS_INDEXES__TYPE		= 4,
 	DICT_COL__SYS_INDEXES__SPACE		= 5,
 	DICT_COL__SYS_INDEXES__PAGE_NO		= 6,
-	DICT_NUM_COLS__SYS_INDEXES		= 7
+	DICT_COL__SYS_INDEXES__MERGE_THRESHOLD	= 7,
+	DICT_NUM_COLS__SYS_INDEXES		= 8
 };
 /* The field numbers in the SYS_INDEXES clustered index */
 enum dict_fld_sys_indexes_enum {
@@ -238,7 +234,8 @@ enum dict_fld_sys_indexes_enum {
 	DICT_FLD__SYS_INDEXES__TYPE		= 6,
 	DICT_FLD__SYS_INDEXES__SPACE		= 7,
 	DICT_FLD__SYS_INDEXES__PAGE_NO		= 8,
-	DICT_NUM_FIELDS__SYS_INDEXES		= 9
+	DICT_FLD__SYS_INDEXES__MERGE_THRESHOLD	= 9,
+	DICT_NUM_FIELDS__SYS_INDEXES		= 10
 };
 /* The columns in SYS_FIELDS */
 enum dict_col_sys_fields_enum {
@@ -327,6 +324,23 @@ enum dict_fld_sys_datafiles_enum {
 	DICT_FLD__SYS_DATAFILES__DB_ROLL_PTR		= 2,
 	DICT_FLD__SYS_DATAFILES__PATH			= 3,
 	DICT_NUM_FIELDS__SYS_DATAFILES			= 4
+};
+
+/* The columns in SYS_VIRTUAL */
+enum dict_col_sys_virtual_enum {
+	DICT_COL__SYS_VIRTUAL__TABLE_ID		= 0,
+	DICT_COL__SYS_VIRTUAL__POS		= 1,
+	DICT_COL__SYS_VIRTUAL__BASE_POS		= 2,
+	DICT_NUM_COLS__SYS_VIRTUAL		= 3
+};
+/* The field numbers in the SYS_VIRTUAL clustered index */
+enum dict_fld_sys_virtual_enum {
+	DICT_FLD__SYS_VIRTUAL__TABLE_ID		= 0,
+	DICT_FLD__SYS_VIRTUAL__POS		= 1,
+	DICT_FLD__SYS_VIRTUAL__BASE_POS		= 2,
+	DICT_FLD__SYS_VIRTUAL__DB_TRX_ID	= 3,
+	DICT_FLD__SYS_VIRTUAL__DB_ROLL_PTR	= 4,
+	DICT_NUM_FIELDS__SYS_VIRTUAL		= 5
 };
 
 /* A number of the columns above occur in multiple tables.  These are the

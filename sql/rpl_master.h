@@ -1,5 +1,5 @@
 #ifndef RPL_MASTER_H_INCLUDED
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,8 +17,16 @@
 
 #define RPL_MASTER_H_INCLUDED
 
-
 #ifdef HAVE_REPLICATION
+
+#include "my_global.h"
+#include "mysql_com.h"   // HOSTNAME_LENGTH
+#include "sql_const.h"   // MAX_PASSWORD_LENGTH
+
+class Gtid_set;
+class String;
+class THD;
+
 
 extern bool server_id_supplied;
 extern int max_binlog_dump_events;
@@ -98,7 +106,7 @@ bool com_binlog_dump(THD *thd, char *packet, size_t packet_length);
 void mysql_binlog_send(THD* thd, char* log_ident, my_off_t pos,
                        Gtid_set* gtid_set, uint32 flags);
 
-int reset_master(THD* thd);
+bool reset_master(THD* thd);
 
 #endif /* HAVE_REPLICATION */
 

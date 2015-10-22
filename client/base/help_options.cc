@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2014, 2015 Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -25,6 +25,7 @@
 
 using namespace Mysql::Tools::Base::Options;
 using Mysql::Tools::Base::Abstract_program;
+using std::string;
 
 extern const char *load_default_groups[];
 
@@ -74,6 +75,20 @@ void Mysql::Tools::Base::Options::Help_options::print_usage()
     MYSQL_SERVER_VERSION, SYSTEM_TYPE, MACHINE_TYPE,
     copyright.c_str(),
     this->m_program->get_description().c_str());
+  /*
+    Turn default for zombies off so that the help on how to 
+    turn them off text won't show up.
+    This is safe to do since it's followed by a call to exit().
+   */
+  for (struct my_option *optp= this->m_program->get_options_array();
+       optp->name; optp++)
+  {
+    if (!strcmp(optp->name, "secure-auth"))
+    {
+      optp->def_value= 0;
+      break;
+    }
+  }
   my_print_help(this->m_program->get_options_array());
   print_defaults("my", load_default_groups);
   my_print_variables(this->m_program->get_options_array());

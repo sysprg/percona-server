@@ -1,4 +1,4 @@
-/* Copyright (c) 2007, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2007, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,11 +16,15 @@
 #ifndef _SQL_PROFILE_H
 #define _SQL_PROFILE_H
 
+#include "my_global.h"
+#include "my_sys.h"     // IO_CACHE
+
 class Item;
 struct TABLE_LIST;
 class THD;
 typedef struct st_field_info ST_FIELD_INFO;
 typedef struct st_schema_table ST_SCHEMA_TABLE;
+typedef int64 query_id_t;
 
 extern ST_FIELD_INFO query_profile_statistics_info[];
 int fill_query_profile_statistics_info(THD *thd, TABLE_LIST *tables, Item *cond);
@@ -40,13 +44,15 @@ int make_profile_table_for_show(THD *thd, ST_SCHEMA_TABLE *schema_table);
 
 
 #if defined(ENABLED_PROFILING)
-#include "sql_priv.h"
-#include "unireg.h"
+#include "mysql/mysql_lex_string.h"         // LEX_STRING
+typedef struct st_mysql_lex_string LEX_STRING;
 
 #ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
 #endif
 
+#include "mysql/psi/psi_memory.h"
+#include "mysql/service_mysql_alloc.h"
 extern PSI_memory_key key_memory_queue_item;
 
 class PROF_MEASUREMENT;
@@ -210,7 +216,7 @@ private:
 
   PROFILING *profiling;
 
-  my_thread_id profiling_query_id;        /* Session-specific id. */
+  query_id_t profiling_query_id;        /* Session-specific id. */
   LEX_STRING m_query_source;
 
   double m_start_time_usecs;

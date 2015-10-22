@@ -1,5 +1,5 @@
 #ifndef BINLOG_H_INCLUDED
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,29 +16,64 @@
 
 #define BINLOG_H_INCLUDED
 
-#include "mysqld.h"                             /* opt_relay_logname */
-#include "log_event.h"
-#include "log.h"
-#include "my_atomic.h"
+#include "my_global.h"
+#include "m_string.h"                  // llstr
+#include "binlog_event.h"              // enum_binlog_checksum_alg
+#include "mysqld.h"                    // opt_relay_logname
+#include "tc_log.h"                    // TC_LOG
+#include "atomic_class.h"
 
 class Relay_log_info;
 class Master_info;
-
+class Slave_worker;
 class Format_description_log_event;
+class Transaction_boundary_parser;
+class Rows_log_event;
+class Rows_query_log_event;
+class Incident_log_event;
+class Log_event;
+class Gtid_set;
+struct Gtid;
+
+typedef int64 query_id_t;
 
 /**
-  Logical timestamp generator for binlog Prepare stage.
- */
+  Logical timestamp generator for logical timestamping binlog transactions.
+  A transaction is associated with two sequence numbers see
+  @c Transaction_ctx::last_committed and @c Transaction_ctx::sequence_number.
+  The class provides necessary interfaces including that of
+  generating a next consecutive value for the latter.
+*/
 class  Logical_clock
 {
 private:
   int64 state;
-protected:
-  void init(){ state= 0; }
+  /*
+    Offset is subtracted from the actual "absolute time" value at
+    logging a replication event. That is the event holds logical
+    timestamps in the "relative" format. They are meaningful only in
+    the context of the current binlog.
+    The member is updated (incremented) per binary log rotation.
+  */
+  int64 offset;
 public:
   Logical_clock();
   int64 step();
+  int64 set_if_greater(int64 new_val);
   int64 get_timestamp();
+  int64 get_offset() { return offset; }
+  /*
+    Updates the offset.
+    This operation is invoked when binlog rotates and at that time
+    there can't any concurrent step() callers so no need to guard
+    the assignement.
+  */
+  void update_offset(int64 new_offset)
+  {
+    DBUG_ASSERT(offset <= new_offset);
+
+    offset= new_offset;
+  }
   ~Logical_clock() { }
 };
 
@@ -239,13 +274,7 @@ public:
    */
   time_t wait_count_or_timeout(ulong count, time_t usec, StageID stage);
 
-  void signal_done(THD *queue) {
-    mysql_mutex_lock(&m_lock_done);
-    for (THD *thd= queue ; thd ; thd = thd->next_to_commit)
-      thd->get_transaction()->m_flags.pending= false;
-    mysql_mutex_unlock(&m_lock_done);
-    mysql_cond_broadcast(&m_cond_done);
-  }
+  void signal_done(THD *queue);
 
 private:
   /**
@@ -323,7 +352,6 @@ class MYSQL_BIN_LOG: public TC_LOG
   char db[NAME_LEN + 1];
   bool write_error, inited;
   IO_CACHE log_file;
-  volatile enum_log_state log_state;
   const enum cache_type io_cache_type;
 #ifdef HAVE_PSI_INTERFACE
   /** Instrumentation key to use for file io in @c log_file */
@@ -407,45 +435,22 @@ class MYSQL_BIN_LOG: public TC_LOG
   uint sync_counter;
 
   mysql_cond_t m_prep_xids_cond;
-  volatile int32 m_prep_xids;
+  Atomic_int32 m_prep_xids;
 
   /**
     Increment the prepared XID counter.
    */
-  void inc_prep_xids(THD *thd) {
-    DBUG_ENTER("MYSQL_BIN_LOG::inc_prep_xids");
-#ifndef DBUG_OFF
-    int result= my_atomic_add32(&m_prep_xids, 1);
-#else
-    (void) my_atomic_add32(&m_prep_xids, 1);
-#endif
-    DBUG_PRINT("debug", ("m_prep_xids: %d", result + 1));
-    thd->get_transaction()->m_flags.xid_written= true;
-    DBUG_VOID_RETURN;
-  }
+  void inc_prep_xids(THD *thd);
 
   /**
     Decrement the prepared XID counter.
 
     Signal m_prep_xids_cond if the counter reaches zero.
    */
-  void dec_prep_xids(THD *thd) {
-    DBUG_ENTER("MYSQL_BIN_LOG::dec_prep_xids");
-    int32 result= my_atomic_add32(&m_prep_xids, -1);
-    DBUG_PRINT("debug", ("m_prep_xids: %d", result - 1));
-    thd->get_transaction()->m_flags.xid_written= false;
-    /* If the old value was 1, it is zero now. */
-    if (result == 1)
-    {
-      mysql_mutex_lock(&LOCK_xids);
-      mysql_cond_signal(&m_prep_xids_cond);
-      mysql_mutex_unlock(&LOCK_xids);
-    }
-    DBUG_VOID_RETURN;
-  }
+  void dec_prep_xids(THD *thd);
 
   int32 get_prep_xids() {
-    int32 result= my_atomic_load32(&m_prep_xids);
+    int32 result= m_prep_xids.atomic_get();
     return result;
   }
 
@@ -478,7 +483,7 @@ class MYSQL_BIN_LOG: public TC_LOG
 public:
   const char *generate_name(const char *log_name, const char *suffix,
                             char *buff);
-  bool is_open() const { return log_state != LOG_CLOSED; }
+  bool is_open() { return log_state.atomic_get() != LOG_CLOSED; }
 
   /* This is relay log */
   bool is_relay_log;
@@ -517,7 +522,7 @@ public:
     (A)    - checksum algorithm descriptor value
     FD.(A) - the value of (A) in FD
   */
-  uint8 relay_log_checksum_alg;
+  binary_log::enum_binlog_checksum_alg relay_log_checksum_alg;
 
   MYSQL_BIN_LOG(uint *sync_period,
                 enum cache_type io_cache_type_arg);
@@ -565,8 +570,11 @@ public:
 #endif
 
 public:
-  /* Clock to timestamp the commits */
-   Logical_clock commit_clock;
+  /* Committed transactions timestamp */
+   Logical_clock max_committed_transaction;
+  /* "Prepared" transactions timestamp */
+   Logical_clock transaction_counter;
+  void update_max_committed(THD *thd);
 
   /**
     Find the oldest binary log that contains any GTID that
@@ -594,26 +602,71 @@ public:
     @param lost_groups Will be filled with all GTIDs in the
     Previous_gtids_log_event of the first binary log that has a
     Previous_gtids_log_event.
-    @param last_gtid Will be filled with the last availble GTID information
-    in the binary/relay log files.
     @param verify_checksum If true, checksums will be checked.
     @param need_lock If true, LOCK_log, LOCK_index, and
     global_sid_lock->wrlock are acquired; otherwise they are asserted
     to be taken already.
+    @param trx_parser [out] This will be used to return the actual
+    relaylog transaction parser state because of the possibility
+    of partial transactions.
+    @param [out] gtid_partial_trx If a transaction was left incomplete
+    on the relaylog, it's GTID should be returned to be used in the
+    case of the rest of the transaction be added to the relaylog.
     @param is_server_starting True if the server is starting.
     @return false on success, true on error.
   */
   bool init_gtid_sets(Gtid_set *gtid_set, Gtid_set *lost_groups,
-                      Gtid *last_gtid, bool verify_checksum,
-                      bool need_lock, bool is_server_starting= false);
+                      bool verify_checksum,
+                      bool need_lock,
+                      Transaction_boundary_parser *trx_parser,
+                      Gtid *gtid_partial_trx,
+                      bool is_server_starting= false);
 
   void set_previous_gtid_set_relaylog(Gtid_set *previous_gtid_set_param)
   {
     DBUG_ASSERT(is_relay_log);
     previous_gtid_set_relaylog= previous_gtid_set_param;
   }
+  /**
+    If the thread owns a GTID, this function generates an empty
+    transaction and releases ownership of the GTID.
+
+    - If the binary log is disabled for this thread, the GTID is
+      inserted directly into the mysql.gtid_executed table and the
+      GTID is included in @@global.gtid_executed.  (This only happens
+      for DDL, since DML will save the GTID into table and release
+      ownership inside ha_commit_trans.)
+
+    - If the binary log is enabled for this thread, an empty
+      transaction consisting of GTID, BEGIN, COMMIT is written to the
+      binary log, the GTID is included in @@global.gtid_executed, and
+      the GTID is added to the mysql.gtid_executed table on the next
+      binlog rotation.
+
+    This function must be called by any committing statement (COMMIT,
+    implicitly committing statements, or Xid_log_event), after the
+    statement has completed execution, regardless of whether the
+    statement updated the database.
+
+    This logic ensures that an empty transaction is generated for the
+    following cases:
+
+    - Explicit empty transaction:
+      SET GTID_NEXT = 'UUID:NUMBER'; BEGIN; COMMIT;
+
+    - Transaction or DDL that gets completely filtered out in the
+      slave thread.
+
+    @param thd The committing thread
+
+    @retval 0 Success
+    @retval nonzero Error
+  */
+  int gtid_end_transaction(THD *thd);
 private:
-  /* The prevoius gtid set in relay log. */
+  Atomic_int32 log_state; /* atomic enum_log_state */
+
+  /* The previous gtid set in relay log. */
   Gtid_set* previous_gtid_set_relaylog;
 
   bool snapshot_lock_acquired;
@@ -635,6 +688,7 @@ public:
   int open_binlog(const char *opt_name);
   void close();
   enum_result commit(THD *thd, bool all);
+  enum_result write_binlog_and_commit_engine(THD *thd, bool all);
   int rollback(THD *thd, bool all);
   int prepare(THD *thd, bool all);
   int recover(IO_CACHE *log, Format_description_log_event *fdle,
@@ -711,7 +765,8 @@ public:
   }
 
   int wait_for_update_relay_log(THD* thd, const struct timespec * timeout);
-  int  wait_for_update_bin_log(THD* thd, const struct timespec * timeout);
+  int wait_for_update_bin_log(THD* thd, const struct timespec * timeout);
+  bool do_write_cache(IO_CACHE *cache, class Binlog_event_writer *writer);
 public:
   void init_pthread_objects();
   void cleanup();
@@ -743,8 +798,10 @@ public:
   int new_file(Format_description_log_event *extra_description_event);
 
   bool write_event(Log_event* event_info);
-  bool write_cache(THD *thd, class binlog_cache_data *binlog_cache_data);
-  int  do_write_cache(THD *thd, IO_CACHE *cache);
+  bool write_cache(THD *thd, class binlog_cache_data *binlog_cache_data,
+                   class Binlog_event_writer *writer);
+  bool write_gtid(THD *thd, binlog_cache_data *cache_data,
+                  class Binlog_event_writer *writer);
 
   void set_write_error(THD *thd, bool is_transactional);
   bool check_write_error(THD *thd);
@@ -772,7 +829,7 @@ public:
   int remove_logs_from_index(LOG_INFO* linfo, bool need_update_threads);
   int rotate(bool force_rotate, bool* check_purge);
   void purge();
-  int rotate_and_purge(bool force_rotate);
+  int rotate_and_purge(THD* thd, bool force_rotate);
   /**
      Flush binlog cache and synchronize to disk.
 
@@ -810,7 +867,7 @@ public:
   int register_create_index_entry(const char* entry);
   int purge_index_entry(THD *thd, ulonglong *decrease_log_space,
                         bool need_lock_index);
-  bool reset_logs(THD* thd);
+  bool reset_logs(THD* thd, bool delete_only= false);
   void close(uint exiting);
 
   // iterating through the log index file
@@ -881,7 +938,6 @@ void check_binlog_cache_size(THD *thd);
 void check_binlog_stmt_cache_size(THD *thd);
 bool binlog_enabled();
 void register_binlog_handler(THD *thd, bool trx);
-int gtid_empty_group_log_and_cleanup(THD *thd);
 int query_error_code(THD *thd, bool not_killed);
 
 bool generate_new_log_name(char *new_name, ulong *new_ext,

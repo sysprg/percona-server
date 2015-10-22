@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,8 +14,10 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "mysys_err.h"
 #include <errno.h>
+#include "my_thread_local.h"
 
 
 /**
@@ -114,7 +116,7 @@ size_t my_write(File Filedes, const uchar *Buffer, size_t Count, myf MyFlags)
     if (MyFlags & (MY_WME | MY_FAE | MY_FNABP))
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(EE_WRITE, MYF(ME_BELL+ME_WAITTANG), my_filename(Filedes),
+      my_error(EE_WRITE, MYF(0), my_filename(Filedes),
                my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     }
     DBUG_RETURN(MY_FILE_ERROR);

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -63,10 +63,10 @@ struct ib_rbt_t;
 /** Type flags of an index: OR'ing of the flags is allowed to define a
 combination of types */
 /* @{ */
-#define DICT_CLUSTERED	1	/*!< clustered index */
+#define DICT_CLUSTERED	1	/*!< clustered index; for other than
+				auto-generated clustered indexes,
+				also DICT_UNIQUE will be set */
 #define DICT_UNIQUE	2	/*!< unique index */
-#define	DICT_UNIVERSAL	4	/*!< index which can contain records from any
-				other index */
 #define	DICT_IBUF	8	/*!< insert buffer tree */
 #define	DICT_CORRUPT	16	/*!< bit to store the corrupted flag
 				in SYS_INDEXES.TYPE */
@@ -74,8 +74,9 @@ combination of types */
 				other flags */
 #define	DICT_SPATIAL	64	/* SPATIAL index; can't be combined with the
 				other flags */
+#define	DICT_VIRTUAL	128	/* Index on Virtual column */
 
-#define	DICT_IT_BITS	7	/*!< number of bits used for
+#define	DICT_IT_BITS	8	/*!< number of bits used for
 				SYS_INDEXES.TYPE */
 /* @} */
 
@@ -137,11 +138,20 @@ This flag prevents older engines from attempting to open the table and
 allows InnoDB to update_create_info() accordingly. */
 #define DICT_TF_WIDTH_DATA_DIR		1
 
+/** Width of the SHARED tablespace flag.
+It is used to identify tables that exist inside a shared general tablespace.
+If a table is created with the TABLESPACE=tsname option, an older engine will
+not be able to find that table. This flag prevents older engines from attempting
+to open the table and allows InnoDB to quickly find the tablespace. */
+
+#define DICT_TF_WIDTH_SHARED_SPACE	1
+
 /** Width of all the currently known table flags */
-#define DICT_TF_BITS	(DICT_TF_WIDTH_COMPACT		\
-			+ DICT_TF_WIDTH_ZIP_SSIZE	\
-			+ DICT_TF_WIDTH_ATOMIC_BLOBS	\
-			+ DICT_TF_WIDTH_DATA_DIR)
+#define DICT_TF_BITS	(DICT_TF_WIDTH_COMPACT			\
+			+ DICT_TF_WIDTH_ZIP_SSIZE		\
+			+ DICT_TF_WIDTH_ATOMIC_BLOBS		\
+			+ DICT_TF_WIDTH_DATA_DIR		\
+			+ DICT_TF_WIDTH_SHARED_SPACE)
 
 /** A mask of all the known/used bits in table flags */
 #define DICT_TF_BIT_MASK	(~(~0 << DICT_TF_BITS))
@@ -157,9 +167,12 @@ allows InnoDB to update_create_info() accordingly. */
 /** Zero relative shift position of the DATA_DIR field */
 #define DICT_TF_POS_DATA_DIR		(DICT_TF_POS_ATOMIC_BLOBS	\
 					+ DICT_TF_WIDTH_ATOMIC_BLOBS)
-/** Zero relative shift position of the start of the UNUSED bits */
-#define DICT_TF_POS_UNUSED		(DICT_TF_POS_DATA_DIR		\
+/** Zero relative shift position of the SHARED TABLESPACE field */
+#define DICT_TF_POS_SHARED_SPACE	(DICT_TF_POS_DATA_DIR		\
 					+ DICT_TF_WIDTH_DATA_DIR)
+/** Zero relative shift position of the start of the UNUSED bits */
+#define DICT_TF_POS_UNUSED		(DICT_TF_POS_SHARED_SPACE	\
+					+ DICT_TF_WIDTH_SHARED_SPACE)
 
 /** Bit mask of the COMPACT field */
 #define DICT_TF_MASK_COMPACT				\
@@ -177,6 +190,10 @@ allows InnoDB to update_create_info() accordingly. */
 #define DICT_TF_MASK_DATA_DIR				\
 		((~(~0 << DICT_TF_WIDTH_DATA_DIR))	\
 		<< DICT_TF_POS_DATA_DIR)
+/** Bit mask of the SHARED_SPACE field */
+#define DICT_TF_MASK_SHARED_SPACE			\
+		((~(~0 << DICT_TF_WIDTH_SHARED_SPACE))	\
+		<< DICT_TF_POS_SHARED_SPACE)
 
 /** Return the value of the COMPACT field */
 #define DICT_TF_GET_COMPACT(flags)			\
@@ -194,6 +211,10 @@ allows InnoDB to update_create_info() accordingly. */
 #define DICT_TF_HAS_DATA_DIR(flags)			\
 		((flags & DICT_TF_MASK_DATA_DIR)	\
 		>> DICT_TF_POS_DATA_DIR)
+/** Return the value of the SHARED_SPACE field */
+#define DICT_TF_HAS_SHARED_SPACE(flags)			\
+		((flags & DICT_TF_MASK_SHARED_SPACE)	\
+		>> DICT_TF_POS_SHARED_SPACE)
 /** Return the contents of the UNUSED bits */
 #define DICT_TF_GET_UNUSED(flags)			\
 		(flags >> DICT_TF_POS_UNUSED)
@@ -211,7 +232,8 @@ for unknown bits in order to protect backward incompatibility. */
 /* @{ */
 /** Total number of bits in table->flags2. */
 #define DICT_TF2_BITS			8
-#define DICT_TF2_BIT_MASK		~(~0 << DICT_TF2_BITS)
+#define DICT_TF2_UNUSED_BIT_MASK	(~0 << DICT_TF2_BITS)
+#define DICT_TF2_BIT_MASK		~DICT_TF2_UNUSED_BIT_MASK
 
 /** TEMPORARY; TRUE for tables from CREATE TEMPORARY TABLE. */
 #define DICT_TF2_TEMPORARY		1
@@ -273,26 +295,26 @@ before proceeds. */
 /**********************************************************************//**
 Creates a table memory object.
 @return own: table object */
-
 dict_table_t*
 dict_mem_table_create(
 /*==================*/
 	const char*	name,		/*!< in: table name */
 	ulint		space,		/*!< in: space where the clustered index
 					of the table is placed */
-	ulint		n_cols,		/*!< in: number of columns */
+	ulint		n_cols,		/*!< in: total number of columns
+					including virtual and non-virtual
+					columns */
+	ulint		n_v_cols,	/*!< in: number of virtual columns */
 	ulint		flags,		/*!< in: table flags */
 	ulint		flags2);	/*!< in: table flags2 */
 /****************************************************************//**
 Free a table memory object. */
-
 void
 dict_mem_table_free(
 /*================*/
 	dict_table_t*	table);		/*!< in: table */
 /**********************************************************************//**
 Adds a column definition to a table. */
-
 void
 dict_mem_table_add_col(
 /*===================*/
@@ -303,21 +325,44 @@ dict_mem_table_add_col(
 	ulint		prtype,	/*!< in: precise type */
 	ulint		len)	/*!< in: precision */
 	__attribute__((nonnull(1)));
+/** Adds a virtual column definition to a table.
+@param[in,out]	table		table
+@param[in]	heap		temporary memory heap, or NULL. It is
+				used to store name when we have not finished
+				adding all columns. When all columns are
+				added, the whole name will copy to memory from
+				table->heap
+@param[in]	name		column name
+@param[in]	mtype		main datatype
+@param[in]	prtype		precise type
+@param[in]	len		length
+@param[in]	pos		position in a table
+@param[in]	num_base	number of base columns
+@return the virtual column definition */
+dict_v_col_t*
+dict_mem_table_add_v_col(
+	dict_table_t*	table,
+	mem_heap_t*	heap,
+	const char*	name,
+	ulint		mtype,
+	ulint		prtype,
+	ulint		len,
+	ulint		pos,
+	ulint		num_base);
 /**********************************************************************//**
 Renames a column of a table in the data dictionary cache. */
-
 void
 dict_mem_table_col_rename(
 /*======================*/
 	dict_table_t*	table,	/*!< in/out: table */
 	unsigned	nth_col,/*!< in: column index */
 	const char*	from,	/*!< in: old column name */
-	const char*	to)	/*!< in: new column name */
-	__attribute__((nonnull));
+	const char*	to,	/*!< in: new column name */
+	bool		is_virtual);
+				/*!< in: if this is a virtual column */
 /**********************************************************************//**
 This function populates a dict_col_t memory structure with
 supplied information. */
-
 void
 dict_mem_fill_column_struct(
 /*========================*/
@@ -347,7 +392,6 @@ dict_mem_fill_index_struct(
 /**********************************************************************//**
 Creates an index memory object.
 @return own: index object */
-
 dict_index_t*
 dict_mem_index_create(
 /*==================*/
@@ -363,7 +407,6 @@ dict_mem_index_create(
 Adds a field definition to an index. NOTE: does not take a copy
 of the column name if the field is a column. The memory occupied
 by the column name may be released only after publishing the index. */
-
 void
 dict_mem_index_add_field(
 /*=====================*/
@@ -374,7 +417,6 @@ dict_mem_index_add_field(
 					INDEX (textcol(25)) */
 /**********************************************************************//**
 Frees an index memory object. */
-
 void
 dict_mem_index_free(
 /*================*/
@@ -382,7 +424,6 @@ dict_mem_index_free(
 /**********************************************************************//**
 Creates and initializes a foreign constraint memory object.
 @return own: foreign constraint struct */
-
 dict_foreign_t*
 dict_mem_foreign_create(void);
 /*=========================*/
@@ -392,7 +433,6 @@ Sets the foreign_table_name_lookup pointer based on the value of
 lower_case_table_names.  If that is 0 or 1, foreign_table_name_lookup
 will point to foreign_table_name.  If 2, then another string is
 allocated from the heap and set to lower case. */
-
 void
 dict_mem_foreign_table_name_lookup_set(
 /*===================================*/
@@ -404,7 +444,6 @@ Sets the referenced_table_name_lookup pointer based on the value of
 lower_case_table_names.  If that is 0 or 1, referenced_table_name_lookup
 will point to referenced_table_name.  If 2, then another string is
 allocated from the heap and set to lower case. */
-
 void
 dict_mem_referenced_table_name_lookup_set(
 /*======================================*/
@@ -423,7 +462,6 @@ reasonably unique temporary file name.
 @param[in]	dbtab	Table name in the form database/table name
 @param[in]	id	Table id
 @return A unique temporary tablename suitable for InnoDB use */
-
 char*
 dict_mem_create_temporary_tablename(
 	mem_heap_t*	heap,
@@ -431,9 +469,58 @@ dict_mem_create_temporary_tablename(
 	table_id_t	id);
 
 /** Initialize dict memory variables */
-
 void
 dict_mem_init(void);
+
+/** SQL identifier name wrapper for pretty-printing */
+class id_name_t
+{
+public:
+	/** Default constructor */
+	id_name_t()
+		: m_name()
+	{}
+	/** Constructor
+	@param[in]	name	identifier to assign */
+	explicit id_name_t(
+		const char*	name)
+		: m_name(name)
+	{}
+
+	/** Assignment operator
+	@param[in]	name	identifier to assign */
+	id_name_t& operator=(
+		const char*	name)
+	{
+		m_name = name;
+		return(*this);
+	}
+
+	/** Implicit type conversion
+	@return the name */
+	operator const char*() const
+	{
+		return(m_name);
+	}
+
+	/** Explicit type conversion
+	@return the name */
+	const char* operator()() const
+	{
+		return(m_name);
+	}
+
+private:
+	/** The name in internal representation */
+	const char*	m_name;
+};
+
+/** Table name wrapper for pretty-printing */
+struct table_name_t
+{
+	/** The name in internal representation */
+	char*	m_name;
+};
 
 /** Data structure for a column in a table */
 struct dict_col_t{
@@ -480,6 +567,21 @@ struct dict_col_t{
 					3072 for Barracuda table */
 };
 
+/** Data structure for a virtual column in a table */
+struct dict_v_col_t{
+	/** column structure */
+	dict_col_t		m_col;
+
+	/** array of base column ptr */
+	dict_col_t**		base_col;
+
+	/** number of base column */
+	ulint			num_base;
+
+	/** column pos in table */
+	ulint			v_pos;
+};
+
 /** @brief DICT_ANTELOPE_MAX_INDEX_COL_LEN is measured in bytes and
 is the maximum indexed column length (or indexed prefix length) in
 ROW_FORMAT=REDUNDANT and ROW_FORMAT=COMPACT. Also, in any format,
@@ -514,7 +616,7 @@ be REC_VERSION_56_MAX_INDEX_COL_LEN (3072) bytes */
 /** Data structure for a field in an index */
 struct dict_field_t{
 	dict_col_t*	col;		/*!< pointer to the table column */
-	const char*	name;		/*!< name of the column */
+	id_name_t	name;		/*!< name of the column */
 	unsigned	prefix_len:12;	/*!< 0 or the length of the column
 					prefix in bytes in a MySQL index of
 					type, e.g., INDEX (textcol(25));
@@ -570,7 +672,7 @@ extern ulong	zip_pad_max;
 an uncompressed page should be left as padding to avoid compression
 failures. This estimate is based on a self-adapting heuristic. */
 struct zip_pad_info_t {
-	SysMutex	mutex;	/*!< mutex protecting the info */
+	SysMutex*	mutex;	/*!< mutex protecting the info */
 	ulint		pad;	/*!< number of bytes used as pad */
 	ulint		success;/*!< successful compression ops during
 				current round */
@@ -578,6 +680,9 @@ struct zip_pad_info_t {
 				current round */
 	ulint		n_rounds;/*!< number of currently successful
 				rounds */
+	volatile os_once::state_t
+			mutex_created;
+				/*!< Creation state of mutex member */
 };
 
 /** If key is fixed length key then cache the record offsets on first
@@ -686,17 +791,22 @@ struct dict_index_t{
 	hash_table_t*	search_table; /*!< hash table protected by
 				      search_latch */
 	mem_heap_t*	heap;	/*!< memory heap */
-	const char*	name;	/*!< index name */
+	id_name_t	name;	/*!< index name */
 	const char*	table_name;/*!< table name */
 	dict_table_t*	table;	/*!< back pointer to table */
 #ifndef UNIV_HOTBACKUP
 	unsigned	space:32;
 				/*!< space where the index tree is placed */
 	unsigned	page:32;/*!< index tree root page number */
+	unsigned	merge_threshold:6;
+				/*!< In the pessimistic delete, if the page
+				data size drops below this limit in percent,
+				merging it to a neighbor is tried */
+# define DICT_INDEX_MERGE_THRESHOLD_DEFAULT 50
 #endif /* !UNIV_HOTBACKUP */
 	unsigned	type:DICT_IT_BITS;
 				/*!< index type (DICT_CLUSTERED, DICT_UNIQUE,
-				DICT_UNIVERSAL, DICT_IBUF, DICT_CORRUPT) */
+				DICT_IBUF, DICT_CORRUPT) */
 #define MAX_KEY_LENGTH_BITS 12
 	unsigned	trx_id_offset:MAX_KEY_LENGTH_BITS;
 				/*!< position of the trx id column
@@ -727,9 +837,6 @@ struct dict_index_t{
 				entry uniquely */
 	unsigned	n_def:10;/*!< number of fields defined so far */
 	unsigned	n_fields:10;/*!< number of fields in the index */
-	unsigned	auto_gen_clust_index:1;
-				/*!< true if index is auto-generated clustered
-				index. */
 	unsigned	n_nullable:10;/*!< number of nullable fields */
 	unsigned	cached:1;/*!< TRUE if the index object is in the
 				dictionary cache */
@@ -743,16 +850,21 @@ struct dict_index_t{
 				by dict_operation_lock and
 				dict_sys->mutex. Other changes are
 				protected by index->lock. */
+	unsigned	uncommitted:1;
+				/*!< a flag that is set for secondary indexes
+				that have not been committed to the
+				data dictionary yet */
+
 #ifdef UNIV_DEBUG
 	uint32_t	magic_n;/*!< magic number */
 /** Value of dict_index_t::magic_n */
 # define DICT_INDEX_MAGIC_N	76789786
 #endif
 	dict_field_t*	fields;	/*!< array of field descriptions */
-	st_mysql_ftparser*	parser;/*!< fulltext plugin parser */
-	bool		is_redo_skipped;
-				/*!< TRUE if skip redo log for allocation
-				under special cases, such as bulk load. */
+	st_mysql_ftparser*
+			parser;	/*!< fulltext parser plugin */
+	bool		is_ngram;
+				/*!< true if it's ngram parser */
 #ifndef UNIV_HOTBACKUP
 	UT_LIST_NODE_T(dict_index_t)
 			indexes;/*!< list of indexes of the table */
@@ -816,6 +928,24 @@ struct dict_index_t{
 				compression failures and successes */
 	rw_lock_t	lock;	/*!< read-write lock protecting the
 				upper levels of the index tree */
+
+	/** Determine if the index has been committed to the
+	data dictionary.
+	@return whether the index definition has been committed */
+	bool is_committed() const
+	{
+		ut_ad(!uncommitted || !(type & DICT_CLUSTERED));
+		return(UNIV_LIKELY(!uncommitted));
+	}
+
+	/** Flag an index committed or uncommitted.
+	@param[in]	committed	whether the index is committed */
+	void set_committed(bool committed)
+	{
+		ut_ad(!to_be_dropped);
+		ut_ad(committed || !(type & DICT_CLUSTERED));
+		uncommitted = !committed;
+	}
 #endif /* !UNIV_HOTBACKUP */
 };
 
@@ -1040,6 +1170,24 @@ a foreign key constraint is enforced, therefore RESTRICT just means no flag */
 #define DICT_FOREIGN_ON_UPDATE_NO_ACTION 32	/*!< ON UPDATE NO ACTION */
 /* @} */
 
+/** Display an identifier.
+@param[in,out]	s	output stream
+@param[in]	id_name	SQL identifier (other than table name)
+@return the output stream */
+std::ostream&
+operator<<(
+	std::ostream&		s,
+	const id_name_t&	id_name);
+
+/** Display a table name.
+@param[in,out]	s		output stream
+@param[in]	table_name	table name
+@return the output stream */
+std::ostream&
+operator<<(
+	std::ostream&		s,
+	const table_name_t&	table_name);
+
 /** List of locks that different transactions have acquired on a table. This
 list has a list node that is embedded in a nested union/structure. We have to
 generate a specific template for it. */
@@ -1052,9 +1200,21 @@ if table->memcached_sync_count == DICT_TABLE_IN_DDL means there's DDL running on
 the table, DML from memcached will be blocked. */
 #define DICT_TABLE_IN_DDL -1
 
+struct innodb_col_templ_t;
 /** Data structure for a database table.  Most fields will be
 initialized to 0, NULL or FALSE in dict_mem_table_create(). */
 struct dict_table_t {
+
+	/** Get reference count.
+	@return current value of n_ref_count */
+	inline ulint get_ref_count() const;
+
+	/** Acquire the table handle. */
+	inline void acquire();
+
+	/** Release the table handle. */
+	inline void release();
+
 	/** Id of the table. */
 	table_id_t				id;
 
@@ -1070,7 +1230,7 @@ struct dict_table_t {
 	mem_heap_t*				heap;
 
 	/** Table name. */
-	char*					name;
+	table_name_t				name;
 
 	/** NULL or the directory path where a TEMPORARY table that was
 	explicitly created by a user should be placed if innodb_file_per_table
@@ -1081,8 +1241,12 @@ struct dict_table_t {
 	/** NULL or the directory path specified by DATA DIRECTORY. */
 	char*					data_dir_path;
 
-	/** Ppace where the clustered index of the table is placed. */
-	unsigned				space:32;
+	/** NULL or the tablespace name that this table is assigned to,
+	specified by the TABLESPACE option.*/
+	id_name_t				tablespace;
+
+	/** Space where the clustered index of the table is placed. */
+	uint32_t				space;
 
 	/** Stores information about:
 	1 row format (redundant or compact),
@@ -1120,11 +1284,23 @@ struct dict_table_t {
 	dict_operation_lock. */
 	unsigned				to_be_dropped:1;
 
-	/** Number of columns defined so far. */
+	/** Number of non-virtual columns defined so far. */
 	unsigned				n_def:10;
 
-	/** Number of columns. */
+	/** Number of non-virtual columns. */
 	unsigned				n_cols:10;
+
+	/** Number of total columns (inlcude virtual and non-virtual) */
+	unsigned				n_t_cols:10;
+
+	/** Number of total columns defined so far. */
+	unsigned                                n_t_def:10;
+
+	/** Number of virtual columns defined so far. */
+	unsigned                                n_v_def:10;
+
+	/** Number of virtual columns. */
+	unsigned                                n_v_cols:10;
 
 	/** TRUE if it's not an InnoDB system table or a table that has no FK
 	relationships. */
@@ -1140,11 +1316,17 @@ struct dict_table_t {
 	/** Array of column descriptions. */
 	dict_col_t*				cols;
 
+	/** Array of virtual column descriptions. */
+	dict_v_col_t*				v_cols;
+
 	/** Column names packed in a character string
 	"name1\0name2\0...nameN\0". Until the string contains n_cols, it will
 	be allocated from a temporary heap. The final string will be allocated
 	from table->heap. */
 	const char*				col_names;
+
+	/** Virtual column names */
+	const char*				v_col_names;
 
 #ifndef UNIV_HOTBACKUP
 	/** Hash chain node. */
@@ -1152,6 +1334,9 @@ struct dict_table_t {
 
 	/** Hash chain node. */
 	hash_node_t				id_hash;
+
+	/** The FTS_DOC_ID_INDEX, or NULL if no fulltext indexes exist */
+	dict_index_t*				fts_doc_id_index;
 
 	/** List of indexes of the table. */
 	UT_LIST_BASE_NODE_T(dict_index_t)	indexes;
@@ -1328,8 +1513,11 @@ struct dict_table_t {
 	from a select. */
 	lock_t*					autoinc_lock;
 
+	/** Creation state of autoinc_mutex member */
+	volatile os_once::state_t		autoinc_mutex_created;
+
 	/** Mutex protecting the autoincrement counter. */
-	ib_mutex_t				autoinc_mutex;
+	ib_mutex_t*				autoinc_mutex;
 
 	/** Autoinc counter value to give to the next inserted row. */
 	ib_uint64_t				autoinc;
@@ -1367,11 +1555,15 @@ struct dict_table_t {
 	It is protected by lock_sys->mutex. */
 	ulint					n_rec_locks;
 
+#ifndef UNIV_DEBUG
+private:
+#endif
 	/** Count of how many handles are opened to this table. Dropping of the
 	table is NOT allowed until this count gets to zero. MySQL does NOT
 	itself check the number of open handles at DROP. */
 	ulint					n_ref_count;
 
+public:
 	/** List of locks on the table. Protected by lock_sys->mutex. */
 	table_lock_list_t			locks;
 
@@ -1401,11 +1593,16 @@ struct dict_table_t {
 	/** Magic number. */
 	ulint					magic_n;
 #endif /* UNIV_DEBUG */
+	/** mysql_row_templ_t for base columns used for compute the virtual
+	columns */
+	innodb_col_templ_t*			vc_templ;
+
+	/** whether above vc_templ comes from purge allocation */
+	bool					vc_templ_purge;
 };
 
 /*******************************************************************//**
 Initialise the table lock list. */
-
 void
 lock_table_lock_list_init(
 /*======================*/
@@ -1423,6 +1620,87 @@ struct dict_foreign_add_to_referenced_table {
 		}
 	}
 };
+
+/** Destroy the autoinc latch of the given table.
+This function is only called from either single threaded environment
+or from a thread that has not shared the table object with other threads.
+@param[in,out]	table	table whose stats latch to destroy */
+inline
+void
+dict_table_autoinc_destroy(
+	dict_table_t*	table)
+{
+	if (table->autoinc_mutex_created == os_once::DONE
+	    && table->autoinc_mutex != NULL) {
+		mutex_free(table->autoinc_mutex);
+		UT_DELETE(table->autoinc_mutex);
+	}
+}
+
+/** Request for lazy creation of the autoinc latch of a given table.
+This function is only called from either single threaded environment
+or from a thread that has not shared the table object with other threads.
+@param[in,out]	table	table whose autoinc latch is to be created. */
+inline
+void
+dict_table_autoinc_create_lazy(
+	dict_table_t*	table)
+{
+	table->autoinc_mutex = NULL;
+	table->autoinc_mutex_created = os_once::NEVER_DONE;
+}
+
+/** Request a lazy creation of dict_index_t::zip_pad::mutex.
+This function is only called from either single threaded environment
+or from a thread that has not shared the table object with other threads.
+@param[in,out]	index	index whose zip_pad mutex is to be created */
+inline
+void
+dict_index_zip_pad_mutex_create_lazy(
+	dict_index_t*	index)
+{
+	index->zip_pad.mutex = NULL;
+	index->zip_pad.mutex_created = os_once::NEVER_DONE;
+}
+
+/** Destroy the zip_pad_mutex of the given index.
+This function is only called from either single threaded environment
+or from a thread that has not shared the table object with other threads.
+@param[in,out]	table	table whose stats latch to destroy */
+inline
+void
+dict_index_zip_pad_mutex_destroy(
+	dict_index_t*	index)
+{
+	if (index->zip_pad.mutex_created == os_once::DONE
+	    && index->zip_pad.mutex != NULL) {
+		mutex_free(index->zip_pad.mutex);
+		UT_DELETE(index->zip_pad.mutex);
+	}
+}
+
+/** Release the zip_pad_mutex of a given index.
+@param[in,out]	index	index whose zip_pad_mutex is to be released */
+inline
+void
+dict_index_zip_pad_unlock(
+	dict_index_t*	index)
+{
+	mutex_exit(index->zip_pad.mutex);
+}
+
+#ifdef UNIV_DEBUG
+/** Check if the current thread owns the autoinc_mutex of a given table.
+@param[in]	table	the autoinc_mutex belongs to this table
+@return true, if the current thread owns the autoinc_mutex, false otherwise.*/
+inline
+bool
+dict_table_autoinc_own(
+	const dict_table_t*	table)
+{
+	return(mutex_own(table->autoinc_mutex));
+}
+#endif /* UNIV_DEBUG */
 
 #ifndef UNIV_NONINL
 #include "dict0mem.ic"

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2005, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2005, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -87,7 +87,7 @@ ulint
 page_zip_get_size(
 /*==============*/
 	const page_zip_des_t*	page_zip)	/*!< in: compressed page */
-	__attribute__((nonnull, pure));
+	__attribute__((warn_unused_result));
 /**********************************************************************//**
 Set the size of a compressed page in bytes. */
 UNIV_INLINE
@@ -112,12 +112,11 @@ page_zip_rec_needs_ext(
 	ulint			comp,
 	ulint			n_fields,
 	const page_size_t&	page_size)
-__attribute__((const));
+	__attribute__((warn_unused_result));
 
 /**********************************************************************//**
 Determine the guaranteed free space on an empty page.
 @return minimum payload size on the page */
-
 ulint
 page_zip_empty_size(
 /*================*/
@@ -137,7 +136,6 @@ page_zip_des_init(
 
 /**********************************************************************//**
 Configure the zlib allocator to use the given memory heap. */
-
 void
 page_zip_set_alloc(
 /*===============*/
@@ -148,7 +146,6 @@ page_zip_set_alloc(
 Compress a page.
 @return TRUE on success, FALSE on failure; page_zip will be left
 intact on failure. */
-
 ibool
 page_zip_compress(
 /*==============*/
@@ -169,7 +166,6 @@ page_zip_compress(
 /**********************************************************************//**
 Write the index information for the compressed page.
 @return used size of buf */
-
 ulint
 page_zip_fields_encode(
 /*===================*/
@@ -188,7 +184,6 @@ Decompress a page.  This function should tolerate errors on the compressed
 page.  Instead of letting assertions fail, it will return FALSE if an
 inconsistency is detected.
 @return TRUE on success, FALSE on failure */
-
 ibool
 page_zip_decompress(
 /*================*/
@@ -217,7 +212,6 @@ page_zip_simple_validate(
 /**********************************************************************//**
 Check that the compressed and decompressed pages match.
 @return TRUE if valid, FALSE if not */
-
 ibool
 page_zip_validate_low(
 /*==================*/
@@ -229,7 +223,6 @@ page_zip_validate_low(
 	__attribute__((nonnull(1,2)));
 /**********************************************************************//**
 Check that the compressed and decompressed pages match. */
-
 ibool
 page_zip_validate(
 /*==============*/
@@ -249,7 +242,7 @@ page_zip_max_ins_size(
 /*==================*/
 	const page_zip_des_t*	page_zip,/*!< in: compressed page */
 	ibool			is_clust)/*!< in: TRUE if clustered index */
-	__attribute__((nonnull, pure));
+	__attribute__((warn_unused_result));
 
 /**********************************************************************//**
 Determine if enough space is available in the modification log.
@@ -263,7 +256,7 @@ page_zip_available(
 	ulint			length,	/*!< in: combined size of the record */
 	ulint			create)	/*!< in: nonzero=add the record to
 					the heap */
-	__attribute__((nonnull, pure));
+	__attribute__((warn_unused_result));
 
 /**********************************************************************//**
 Write data to the uncompressed header portion of a page.  The data must
@@ -281,7 +274,6 @@ page_zip_write_header(
 /**********************************************************************//**
 Write an entire record on the compressed page.  The data must already
 have been written to the uncompressed page. */
-
 void
 page_zip_write_rec(
 /*===============*/
@@ -295,7 +287,6 @@ page_zip_write_rec(
 /***********************************************************//**
 Parses a log record of writing a BLOB pointer of a record.
 @return end of log record or NULL */
-
 byte*
 page_zip_parse_write_blob_ptr(
 /*==========================*/
@@ -307,7 +298,6 @@ page_zip_parse_write_blob_ptr(
 /**********************************************************************//**
 Write a BLOB pointer of a record on the leaf page of a clustered index.
 The information must already have been updated on the uncompressed page. */
-
 void
 page_zip_write_blob_ptr(
 /*====================*/
@@ -317,14 +307,12 @@ page_zip_write_blob_ptr(
 	dict_index_t*	index,	/*!< in: index of the page */
 	const ulint*	offsets,/*!< in: rec_get_offsets(rec, index) */
 	ulint		n,	/*!< in: column index */
-	mtr_t*		mtr)	/*!< in: mini-transaction handle,
+	mtr_t*		mtr);	/*!< in: mini-transaction handle,
 				or NULL if no logging is needed */
-	__attribute__((nonnull(1,2,3,4)));
 
 /***********************************************************//**
 Parses a log record of writing the node pointer of a record.
 @return end of log record or NULL */
-
 byte*
 page_zip_parse_write_node_ptr(
 /*==========================*/
@@ -335,7 +323,6 @@ page_zip_parse_write_node_ptr(
 
 /**********************************************************************//**
 Write the node pointer of a record on a non-leaf compressed page. */
-
 void
 page_zip_write_node_ptr(
 /*====================*/
@@ -343,12 +330,10 @@ page_zip_write_node_ptr(
 	byte*		rec,	/*!< in/out: record */
 	ulint		size,	/*!< in: data size of rec */
 	ulint		ptr,	/*!< in: node pointer */
-	mtr_t*		mtr)	/*!< in: mini-transaction, or NULL */
-	__attribute__((nonnull(1,2)));
+	mtr_t*		mtr);	/*!< in: mini-transaction, or NULL */
 
 /**********************************************************************//**
 Write the trx_id and roll_ptr of a record on a B-tree leaf node page. */
-
 void
 page_zip_write_trx_id_and_roll_ptr(
 /*===============================*/
@@ -363,7 +348,6 @@ page_zip_write_trx_id_and_roll_ptr(
 /**********************************************************************//**
 Write the "deleted" flag of a record on a compressed page.  The flag must
 already have been written on the uncompressed page. */
-
 void
 page_zip_rec_set_deleted(
 /*=====================*/
@@ -375,7 +359,6 @@ page_zip_rec_set_deleted(
 /**********************************************************************//**
 Write the "owned" flag of a record on a compressed page.  The n_owned field
 must already have been written on the uncompressed page. */
-
 void
 page_zip_rec_set_owned(
 /*===================*/
@@ -386,7 +369,6 @@ page_zip_rec_set_owned(
 
 /**********************************************************************//**
 Insert a record to the dense page directory. */
-
 void
 page_zip_dir_insert(
 /*================*/
@@ -399,7 +381,6 @@ page_zip_dir_insert(
 /**********************************************************************//**
 Shift the dense page directory and the array of BLOB pointers
 when a record is deleted. */
-
 void
 page_zip_dir_delete(
 /*================*/
@@ -413,7 +394,6 @@ page_zip_dir_delete(
 
 /**********************************************************************//**
 Add a slot to the dense page directory. */
-
 void
 page_zip_dir_add_slot(
 /*==================*/
@@ -425,7 +405,6 @@ page_zip_dir_add_slot(
 /***********************************************************//**
 Parses a log record of writing to the header of a page.
 @return end of log record or NULL */
-
 byte*
 page_zip_parse_write_header(
 /*========================*/
@@ -461,7 +440,6 @@ bits in the same mini-transaction in such a way that the modification
 will be redo-logged.
 @return TRUE on success, FALSE on failure; page_zip will be left
 intact on failure, but page will be overwritten. */
-
 ibool
 page_zip_reorganize(
 /*================*/
@@ -478,7 +456,6 @@ Copy the records of a page byte for byte.  Do not copy the page header
 or trailer, except those B-tree header fields that are directly
 related to the storage of records.  Also copy PAGE_MAX_TRX_ID.
 NOTE: The caller must update the lock table and the adaptive hash index. */
-
 void
 page_zip_copy_recs(
 /*===============*/
@@ -489,41 +466,41 @@ page_zip_copy_recs(
 	const page_zip_des_t*	src_zip,	/*!< in: compressed page */
 	const page_t*		src,		/*!< in: page */
 	dict_index_t*		index,		/*!< in: index of the B-tree */
-	mtr_t*			mtr)		/*!< in: mini-transaction */
-	__attribute__((nonnull));
+	mtr_t*			mtr);		/*!< in: mini-transaction */
 #endif /* !UNIV_HOTBACKUP */
 
 /**********************************************************************//**
 Parses a log record of compressing an index page.
 @return end of log record or NULL */
-
 byte*
 page_zip_parse_compress(
 /*====================*/
-	byte*		ptr,	/*!< in: buffer */
-	byte*		end_ptr,/*!< in: buffer end */
-	page_t*		page,	/*!< out: uncompressed page */
-	page_zip_des_t*	page_zip)/*!< out: compressed page */
-	__attribute__((nonnull(1,2)));
+	byte*		ptr,		/*!< in: buffer */
+	byte*		end_ptr,	/*!< in: buffer end */
+	page_t*		page,		/*!< out: uncompressed page */
+	page_zip_des_t*	page_zip);	/*!< out: compressed page */
 
 #endif /* !UNIV_INNOCHECKSUM */
-/**********************************************************************//**
-Calculate the compressed page checksum.
-@return page checksum */
 
-ib_uint32_t
+/** Calculate the compressed page checksum.
+@param[in]	data			compressed page
+@param[in]	size			size of compressed page
+@param[in]	algo			algorithm to use
+@param[in]	use_legacy_big_endian	only used if algo is
+SRV_CHECKSUM_ALGORITHM_CRC32 or SRV_CHECKSUM_ALGORITHM_STRICT_CRC32 - if true
+then use big endian byteorder when converting byte strings to integers.
+@return page checksum */
+uint32_t
 page_zip_calc_checksum(
-/*===================*/
-        const void*     data,   /*!< in: compressed page */
-        ulint           size,   /*!< in: size of compressed page */
-	srv_checksum_algorithm_t algo) /*!< in: algorithm to use */
-	__attribute__((nonnull));
+	const void*			data,
+	ulint				size,
+	srv_checksum_algorithm_t	algo,
+	bool				use_legacy_big_endian = false);
 
 /**********************************************************************//**
 Verify a compressed page's checksum.
 @return TRUE if the stored checksum is valid according to the value of
 innodb_checksum_algorithm */
-
 ibool
 page_zip_verify_checksum(
 /*=====================*/

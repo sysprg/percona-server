@@ -1,7 +1,7 @@
 #ifndef ITEM_CMPFUNC_INCLUDED
 #define ITEM_CMPFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,15 +19,16 @@
 
 /* compare and test functions */
 
-#include "thr_malloc.h"                         /* sql_calloc */
-#include "item_func.h"             /* Item_int_func, Item_bool_func */
-#include "my_regex.h"
-#include "mem_root_array.h"
-#include "template_utils.h"
+#include "mem_root_array.h"  // Mem_root_array
+#include "my_regex.h"        // my_regex_t
+#include "item_func.h"       // Item_int_func
+#include "item_row.h"        // Item_row
+#include "template_utils.h"  // down_cast
 
-extern Item_result item_cmp_type(Item_result a,Item_result b);
-class Item_bool_func2;
 class Arg_comparator;
+class Item_sum_hybrid;
+class Item_row;
+struct Json_scalar_holder;
 
 typedef int (Arg_comparator::*arg_cmp_func)();
 
@@ -41,8 +42,6 @@ class Arg_comparator: public Sql_alloc
   Arg_comparator *comparators;   // used only for compare_row()
   double precision;
   /* Fields used in DATE/DATETIME comparison. */
-  THD *thd;
-  enum_field_types a_type, b_type; // Types of a and b items
   Item *a_cache, *b_cache;         // Cached values of a and b items
   bool is_nulls_eq;                // TRUE <=> compare for the EQUAL_FUNC
   bool set_null;                   // TRUE <=> set owner->null_value
@@ -54,16 +53,25 @@ class Arg_comparator: public Sql_alloc
   bool try_year_cmp_func(Item_result type);
   static bool get_date_from_const(Item *date_arg, Item *str_arg,
                                   ulonglong *value);
+  /**
+    Only used by compare_json() in the case where a JSON value is
+    compared to an SQL value. This member points to pre-allocated
+    memory that can be used instead of the heap when converting the
+    SQL value to a JSON value.
+  */
+  Json_scalar_holder *json_scalar;
 public:
   DTCollation cmp_collation;
   /* Allow owner function to use string buffers. */
   String value1, value2;
 
-  Arg_comparator(): comparators(0), thd(0), a_cache(0), b_cache(0), set_null(TRUE),
-    get_value_a_func(0), get_value_b_func(0) {};
-  Arg_comparator(Item **a1, Item **a2): a(a1), b(a2), comparators(0), thd(0),
+  Arg_comparator(): comparators(0), a_cache(0), b_cache(0), set_null(TRUE),
+    get_value_a_func(0), get_value_b_func(0), json_scalar(0)
+  {}
+  Arg_comparator(Item **a1, Item **a2): a(a1), b(a2), comparators(0),
     a_cache(0), b_cache(0), set_null(TRUE),
-    get_value_a_func(0), get_value_b_func(0) {};
+    get_value_a_func(0), get_value_b_func(0), json_scalar(0)
+  {}
 
   int set_compare_func(Item_result_field *owner, Item_result type);
   inline int set_compare_func(Item_result_field *owner_arg)
@@ -72,17 +80,12 @@ public:
                                                      (*b)->result_type()));
   }
   int set_cmp_func(Item_result_field *owner_arg,
-			  Item **a1, Item **a2,
-			  Item_result type);
+                   Item **a1, Item **a2,
+                   Item_result type);
 
-  inline int set_cmp_func(Item_result_field *owner_arg,
-			  Item **a1, Item **a2, bool set_null_arg)
-  {
-    set_null= set_null_arg;
-    return set_cmp_func(owner_arg, a1, a2,
-                        item_cmp_type((*a1)->result_type(),
-                                      (*a2)->result_type()));
-  }
+  int set_cmp_func(Item_result_field *owner_arg,
+                   Item **a1, Item **a2, bool set_null_arg);
+
   inline int compare() { return (this->*func)(); }
 
   int compare_string();		 // compare args[0] & args[1]
@@ -106,6 +109,7 @@ public:
   int compare_real_fixed();
   int compare_e_real_fixed();
   int compare_datetime();        // compare args[0] & args[1] as DATETIMEs
+  int compare_json();
 
   static bool can_compare_as_dates(Item *a, Item *b, ulonglong *const_val_arg);
 
@@ -118,11 +122,7 @@ public:
     return (owner->type() == Item::FUNC_ITEM &&
            ((Item_func*)owner)->functype() == Item_func::EQUAL_FUNC);
   }
-  void cleanup()
-  {
-    delete [] comparators;
-    comparators= 0;
-  }
+  void cleanup();
   /*
     Set correct cmp_context if items would be compared as INTs.
   */
@@ -141,6 +141,9 @@ class Item_bool_func :public Item_int_func
 {
 public:
   Item_bool_func() : Item_int_func(), m_created_by_in2exists(false) {}
+  explicit Item_bool_func(const POS &pos)
+  : Item_int_func(pos), m_created_by_in2exists(false)
+  {}
 
   Item_bool_func(Item *a) : Item_int_func(a),
     m_created_by_in2exists(false)  {}
@@ -315,37 +318,72 @@ public:
   Item *transform(Item_transformer transformer, uchar *arg);
 };
 
+/// Abstract factory interface for creating comparison predicates.
 class Comp_creator
 {
 public:
-  Comp_creator() {}                           /* Remove gcc warning */
-  virtual ~Comp_creator() {}                  /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const = 0;
+  virtual ~Comp_creator() {}
+  virtual Item_bool_func* create(Item *a, Item *b) const = 0;
+
+  /// This interface is only used by Item_allany_subselect.
   virtual const char* symbol(bool invert) const = 0;
   virtual bool eqne_op() const = 0;
   virtual bool l_op() const = 0;
 };
 
-class Eq_creator :public Comp_creator
+/// Abstract base class for the comparison operators =, <> and <=>.
+class Linear_comp_creator :public Comp_creator
 {
 public:
-  Eq_creator() {}                             /* Remove gcc warning */
-  virtual ~Eq_creator() {}                    /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const;
-  virtual const char* symbol(bool invert) const { return invert? "<>" : "="; }
-  virtual bool eqne_op() const { return 1; }
-  virtual bool l_op() const { return 0; }
+  virtual Item_bool_func *create(Item *a, Item *b) const;
+  virtual bool eqne_op() const { return true; }
+  virtual bool l_op() const { return false; }
+
+protected:
+  /**
+    Creates only an item tree node, without attempting to rewrite row
+    constructors.
+    @see create()
+  */
+  virtual Item_bool_func *create_scalar_predicate(Item *a, Item *b) const = 0;
+
+  /// Combines a list of conditions <code>exp op exp</code>.
+  virtual Item_bool_func *combine(List<Item> list) const = 0;
 };
 
-class Ne_creator :public Comp_creator
+class Eq_creator :public Linear_comp_creator
 {
 public:
-  Ne_creator() {}                             /* Remove gcc warning */
-  virtual ~Ne_creator() {}                    /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const;
-  virtual const char* symbol(bool invert) const { return invert? "=" : "<>"; }
-  virtual bool eqne_op() const { return 1; }
-  virtual bool l_op() const { return 0; }
+  virtual const char* symbol(bool invert) const { return invert ? "<>" : "="; }
+
+protected:
+  virtual Item_bool_func *create_scalar_predicate(Item *a, Item *b) const;
+  virtual Item_bool_func *combine(List<Item> list) const;
+};
+
+class Equal_creator :public Linear_comp_creator
+{
+public:
+  virtual const char* symbol(bool invert) const
+  {
+    // This will never be called with true.
+    DBUG_ASSERT(!invert);
+    return "<=>";
+  }
+
+protected:
+  virtual Item_bool_func *create_scalar_predicate(Item *a, Item *b) const;
+  virtual Item_bool_func *combine(List<Item> list) const;
+};
+
+class Ne_creator :public Linear_comp_creator
+{
+public:
+  virtual const char* symbol(bool invert) const { return invert ? "=" : "<>"; }
+
+protected:
+  virtual Item_bool_func *create_scalar_predicate(Item *a, Item *b) const;
+  virtual Item_bool_func *combine(List<Item> list) const;
 };
 
 class Gt_creator :public Comp_creator
@@ -353,7 +391,7 @@ class Gt_creator :public Comp_creator
 public:
   Gt_creator() {}                             /* Remove gcc warning */
   virtual ~Gt_creator() {}                    /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const;
+  virtual Item_bool_func* create(Item *a, Item *b) const;
   virtual const char* symbol(bool invert) const { return invert? "<=" : ">"; }
   virtual bool eqne_op() const { return 0; }
   virtual bool l_op() const { return 0; }
@@ -364,7 +402,7 @@ class Lt_creator :public Comp_creator
 public:
   Lt_creator() {}                             /* Remove gcc warning */
   virtual ~Lt_creator() {}                    /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const;
+  virtual Item_bool_func* create(Item *a, Item *b) const;
   virtual const char* symbol(bool invert) const { return invert? ">=" : "<"; }
   virtual bool eqne_op() const { return 0; }
   virtual bool l_op() const { return 1; }
@@ -375,7 +413,7 @@ class Ge_creator :public Comp_creator
 public:
   Ge_creator() {}                             /* Remove gcc warning */
   virtual ~Ge_creator() {}                    /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const;
+  virtual Item_bool_func* create(Item *a, Item *b) const;
   virtual const char* symbol(bool invert) const { return invert? "<" : ">="; }
   virtual bool eqne_op() const { return 0; }
   virtual bool l_op() const { return 0; }
@@ -386,7 +424,7 @@ class Le_creator :public Comp_creator
 public:
   Le_creator() {}                             /* Remove gcc warning */
   virtual ~Le_creator() {}                    /* Remove gcc warning */
-  virtual Item_bool_func2* create(Item *a, Item *b) const;
+  virtual Item_bool_func* create(Item *a, Item *b) const;
   virtual const char* symbol(bool invert) const { return invert? ">" : "<="; }
   virtual bool eqne_op() const { return 0; }
   virtual bool l_op() const { return 1; }
@@ -534,15 +572,21 @@ public:
   enum enum_trig_type
   {
     /**
-       In t1 LEFT JOIN t2, ON can be tested on t2's row only if that row is
-       not NULL-complemented
+      This trigger type deactivates join conditions when a row has been
+      NULL-complemented. For example, in t1 LEFT JOIN t2, the join condition
+      can be tested on t2's row only if that row is not NULL-complemented.
     */
     IS_NOT_NULL_COMPL,
+
     /**
-       In t1 LEFT JOIN t2, the WHERE pushed to t2 can be tested only after at
-       least one t2's row has been found
+      This trigger type deactivates predicated from WHERE condition when no
+      row satisfying the join condition has been found. For Example, in t1
+      LEFT JOIN t2, the where condition pushed to t2 can be tested only after
+      at least one t2 row has been produced, which may be a NULL-complemented
+      row.
     */
     FOUND_MATCH,
+
     /**
        In IN->EXISTS subquery transformation, new predicates are added:
        WHERE inner_field=outer_field OR inner_field IS NULL,
@@ -670,6 +714,7 @@ public:
   Item *negated_item();
   virtual bool equality_substitution_analyzer(uchar **arg) { return true; }
   virtual Item* equality_substitution_transformer(uchar *arg);
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -711,6 +756,7 @@ public:
   cond_result eq_cmp_result() const { return COND_TRUE; }
   const char *func_name() const { return ">="; }
   Item *negated_item();
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -728,6 +774,7 @@ public:
   cond_result eq_cmp_result() const { return COND_FALSE; }
   const char *func_name() const { return ">"; }
   Item *negated_item();
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -746,6 +793,8 @@ public:
   cond_result eq_cmp_result() const { return COND_TRUE; }
   const char *func_name() const { return "<="; }
   Item *negated_item();
+  bool gc_subst_analyzer(uchar **arg) { return true; }
+
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -763,6 +812,8 @@ public:
   cond_result eq_cmp_result() const { return COND_FALSE; }
   const char *func_name() const { return "<"; }
   Item *negated_item();
+  bool gc_subst_analyzer(uchar **arg) { return true; }
+
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
@@ -859,6 +910,7 @@ public:
   bool is_bool_func() { return 1; }
   const CHARSET_INFO *compare_collation() { return cmp_collation.collation; }
   uint decimal_precision() const { return 1; }
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -905,12 +957,6 @@ class Item_func_interval :public Item_int_func
   my_bool use_decimal_comparison;
   interval_range *intervals;
 public:
-  Item_func_interval(Item_row *a)
-    :Item_int_func(a),row(a),intervals(0)
-  {
-    allowed_arg_cols= 0;    // Fetch this value from first argument
-  }
-
   Item_func_interval(const POS &pos, MEM_ROOT *mem_root, Item *expr1,
                      Item *expr2, class PT_item_list *opt_expr_list= NULL)
     :super(pos, alloc_row(pos, mem_root, expr1, expr2, opt_expr_list)),
@@ -947,6 +993,11 @@ public:
   double real_op();
   longlong int_op();
   String *str_op(String *);
+  /**
+    Get the result of COALESCE as a JSON value.
+    @param[in,out] wr   the result value holder
+  */
+  bool val_json(Json_wrapper *wr);
   bool date_op(MYSQL_TIME *ltime, my_time_flags_t fuzzydate);
   bool time_op(MYSQL_TIME *ltime);
   my_decimal *decimal_op(my_decimal *);
@@ -973,6 +1024,7 @@ public:
   bool date_op(MYSQL_TIME *ltime, my_time_flags_t fuzzydate);
   bool time_op(MYSQL_TIME *ltime);
   my_decimal *decimal_op(my_decimal *);
+  bool val_json(Json_wrapper *result);
   void fix_length_and_dec();
   const char *func_name() const { return "ifnull"; }
   Field *tmp_table_field(TABLE *table);
@@ -1011,6 +1063,7 @@ public:
   longlong val_int();
   String *val_str(String *str);
   my_decimal *val_decimal(my_decimal *);
+  bool val_json(Json_wrapper *wr);
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate);
   bool get_time(MYSQL_TIME *ltime);
   enum Item_result result_type () const { return cached_result_type; }
@@ -1248,14 +1301,13 @@ public:
 class in_datetime :public in_longlong
 {
 public:
-  THD *thd;
   /* An item used to issue warnings. */
   Item *warn_item;
   /* Cache for the left item. */
   Item *lval_cache;
 
   in_datetime(THD *thd_arg, Item *warn_item_arg, uint elements)
-    : in_longlong(thd_arg, elements), thd(thd_arg), warn_item(warn_item_arg),
+    : in_longlong(thd_arg, elements), warn_item(warn_item_arg),
       lval_cache(0)
   {};
   void set(uint pos,Item *item);
@@ -1436,14 +1488,13 @@ class cmp_item_datetime : public cmp_item_scalar
 {
   longlong value;
 public:
-  THD *thd;
   /* Item used for issuing warnings. */
   Item *warn_item;
   /* Cache for the left item. */
   Item *lval_cache;
 
   cmp_item_datetime(Item *warn_item_arg)
-    :thd(current_thd), warn_item(warn_item_arg), lval_cache(0) {}
+    :warn_item(warn_item_arg), lval_cache(0) {}
   void store_value(Item *item);
   int cmp(Item *arg);
   int compare(const cmp_item *ci) const;
@@ -1541,6 +1592,7 @@ public:
   longlong val_int();
   String *val_str(String *);
   my_decimal *val_decimal(my_decimal *);
+  bool val_json(Json_wrapper *wr);
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate);
   bool get_time(MYSQL_TIME *ltime);
   bool fix_fields(THD *thd, Item **ref);
@@ -1606,11 +1658,16 @@ public:
                          st_select_lex *removed_select);
   void fix_length_and_dec();
   uint decimal_precision() const { return 1; }
-  void cleanup()
+
+  /**
+    Cleanup data and comparator arrays.
+
+    @note Used during regular cleanup and to free arrays after GC substitution.
+    @see JOIN::substitute_gc().
+  */
+  void cleanup_arrays()
   {
     uint i;
-    DBUG_ENTER("Item_func_in::cleanup");
-    Item_int_func::cleanup();
     delete array;
     array= 0;
     for (i= 0; i <= (uint)DECIMAL_RESULT + 1; i++)
@@ -1618,6 +1675,13 @@ public:
       delete cmp_items[i];
       cmp_items[i]= 0;
     }
+  }
+
+  void cleanup()
+  {
+    DBUG_ENTER("Item_func_in::cleanup");
+    Item_int_func::cleanup();
+    cleanup_arrays();
     DBUG_VOID_RETURN;
   }
   optimize_type select_optimize() const
@@ -1627,6 +1691,7 @@ public:
   const char *func_name() const { return " IN "; }
   bool is_bool_func() { return 1; }
   const CHARSET_INFO *compare_collation() { return cmp_collation.collation; }
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -1842,17 +1907,20 @@ class Item_func_like :public Item_bool_func2
   
   bool escape_used_in_parsing;
 
+  bool escape_evaluated;  ///< Tells if the escape clause has been evaluated.
+  bool eval_escape_clause(THD *thd);
+
 public:
   int escape;
 
   Item_func_like(Item *a,Item *b, Item *escape_arg, bool escape_used)
     :Item_bool_func2(a,b), can_do_bm(false), pattern(0), pattern_len(0), 
      bmGs(0), bmBc(0), escape_item(escape_arg),
-     escape_used_in_parsing(escape_used) {}
+     escape_used_in_parsing(escape_used), escape_evaluated(false) {}
   Item_func_like(const POS &pos, Item *a, Item *b, Item *opt_escape_arg)
     :super(pos, a, b), can_do_bm(false), pattern(0), pattern_len(0), 
      bmGs(0), bmBc(0), escape_item(opt_escape_arg),
-     escape_used_in_parsing(opt_escape_arg != NULL)
+     escape_used_in_parsing(opt_escape_arg != NULL), escape_evaluated(false)
   {}
 
   virtual bool itemize(Parse_context *pc, Item **res);
@@ -1869,6 +1937,14 @@ public:
                  using "expr LIKE pat ESCAPE 'escape_char'" syntax
   */
   bool escape_was_used_in_parsing() const { return escape_used_in_parsing; }
+
+  /**
+    Has the escape clause been evaluated? It only needs to be evaluated
+    once per execution, since we require it to be constant during execution.
+    The escape member has a valid value if and only if this function returns
+    true.
+  */
+  bool escape_is_evaluated() const { return escape_evaluated; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -1908,6 +1984,8 @@ public:
 
 class Item_cond :public Item_bool_func
 {
+  typedef Item_bool_func super;
+
 protected:
   List<Item> list;
   bool abort_on_null;
@@ -1916,12 +1994,20 @@ public:
   /* Item_cond() is only used to create top level items */
   Item_cond(): Item_bool_func(), abort_on_null(1)
   { const_item_cache=0; }
+
   Item_cond(Item *i1,Item *i2)
     :Item_bool_func(), abort_on_null(0)
   {
     list.push_back(i1);
     list.push_back(i2);
   }
+  Item_cond(const POS &pos, Item *i1, Item *i2)
+    :Item_bool_func(pos), abort_on_null(0)
+  {
+    list.push_back(i1);
+    list.push_back(i2);
+  }
+
   Item_cond(THD *thd, Item_cond *item);
   Item_cond(List<Item> &nlist)
     :Item_bool_func(), list(nlist), abort_on_null(0) {}
@@ -1940,6 +2026,9 @@ public:
     DBUG_ASSERT(nlist->elements);
     list.prepand(nlist);
   }
+
+  virtual bool itemize(Parse_context *pc, Item **res);
+
   bool fix_fields(THD *, Item **ref);
   void fix_after_pullout(st_select_lex *parent_select,
                          st_select_lex *removed_select);
@@ -2143,7 +2232,10 @@ public:
                              the current and level and reference
                              to multiple equalities of upper and levels */  
   Item_cond_and() :Item_cond() {}
+
   Item_cond_and(Item *i1,Item *i2) :Item_cond(i1,i2) {}
+  Item_cond_and(const POS &pos, Item *i1, Item *i2) :Item_cond(pos, i1, i2) {}
+
   Item_cond_and(THD *thd, Item_cond_and *item) :Item_cond(thd, item) {}
   Item_cond_and(List<Item> &list_arg): Item_cond(list_arg) {}
   enum Functype functype() const { return COND_AND_FUNC; }
@@ -2157,6 +2249,7 @@ public:
     return item;
   }
   Item *neg_transformer(THD *thd);
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
@@ -2164,20 +2257,15 @@ public:
                              double rows_in_table);
 };
 
-inline bool is_cond_and(Item *item)
-{
-  if (item->type() != Item::COND_ITEM)
-    return FALSE;
-
-  Item_cond *cond_item= (Item_cond*) item;
-  return (cond_item->functype() == Item_func::COND_AND_FUNC);
-}
 
 class Item_cond_or :public Item_cond
 {
 public:
   Item_cond_or() :Item_cond() {}
+
   Item_cond_or(Item *i1,Item *i2) :Item_cond(i1,i2) {}
+  Item_cond_or(const POS &pos, Item *i1,Item *i2) :Item_cond(pos, i1, i2) {}
+
   Item_cond_or(THD *thd, Item_cond_or *item) :Item_cond(thd, item) {}
   Item_cond_or(List<Item> &list_arg): Item_cond(list_arg) {}
   enum Functype functype() const { return COND_OR_FUNC; }
@@ -2191,21 +2279,13 @@ public:
     return item;
   }
   Item *neg_transformer(THD *thd);
+  bool gc_subst_analyzer(uchar **arg) { return true; }
 
   float get_filtering_effect(table_map filter_for_table,
                              table_map read_tables,
                              const MY_BITMAP *fields_to_ignore,
                              double rows_in_table);
 };
-
-inline bool is_cond_or(Item *item)
-{
-  if (item->type() != Item::COND_ITEM)
-    return FALSE;
-
-  Item_cond *cond_item= (Item_cond*) item;
-  return (cond_item->functype() == Item_func::COND_OR_FUNC);
-}
 
 /* Some useful inline functions */
 
@@ -2225,13 +2305,13 @@ longlong get_datetime_value(THD *thd, Item ***item_arg, Item **cache_arg,
 
 bool get_mysql_time_from_str(THD *thd, String *str, timestamp_type warn_type,
                              const char *warn_name, MYSQL_TIME *l_time);
-
 /*
   These need definitions from this file but the variables are defined
   in mysqld.h. The variables really belong in this component, but for
   the time being we leave them in mysqld.cc to avoid merge problems.
 */
 extern Eq_creator eq_creator;
+extern Equal_creator equal_creator;
 extern Ne_creator ne_creator;
 extern Gt_creator gt_creator;
 extern Lt_creator lt_creator;

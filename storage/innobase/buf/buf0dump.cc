@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2011, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2011, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -23,6 +23,12 @@ Implements a buffer pool dump/load.
 Created April 08, 2011 Vasil Dimov
 *******************************************************/
 
+#include "my_global.h"
+#include "my_thread.h"
+
+#include "mysql/psi/mysql_stage.h"
+#include "mysql/psi/psi.h"
+
 #include "univ.i"
 
 #include "buf0buf.h"
@@ -38,8 +44,8 @@ Created April 08, 2011 Vasil Dimov
 #include <algorithm>
 
 enum status_severity {
+	STATUS_VERBOSE,
 	STATUS_INFO,
-	STATUS_NOTICE,
 	STATUS_ERR
 };
 
@@ -68,7 +74,6 @@ Wakes up the buffer pool dump/load thread and instructs it to start
 a dump. This function is called by MySQL code via buffer_pool_dump_now()
 and it should return immediately because the whole MySQL is frozen during
 its execution. */
-
 void
 buf_dump_start()
 /*============*/
@@ -82,7 +87,6 @@ Wakes up the buffer pool dump/load thread and instructs it to start
 a load. This function is called by MySQL code via buffer_pool_load_now()
 and it should return immediately because the whole MySQL is frozen during
 its execution. */
-
 void
 buf_load_start()
 /*============*/
@@ -118,10 +122,17 @@ buf_dump_status(
 		sizeof(export_vars.innodb_buffer_pool_dump_status),
 		fmt, ap);
 
-	if (severity == STATUS_NOTICE || severity == STATUS_ERR) {
-		ut_print_timestamp(stderr);
-		fprintf(stderr, " InnoDB: %s\n",
-			export_vars.innodb_buffer_pool_dump_status);
+	switch (severity) {
+	case STATUS_INFO:
+		ib::info() << export_vars.innodb_buffer_pool_dump_status;
+		break;
+
+	case STATUS_ERR:
+		ib::error() << export_vars.innodb_buffer_pool_dump_status;
+		break;
+
+	case STATUS_VERBOSE:
+		break;
 	}
 
 	va_end(ap);
@@ -153,10 +164,17 @@ buf_load_status(
 		sizeof(export_vars.innodb_buffer_pool_load_status),
 		fmt, ap);
 
-	if (severity == STATUS_NOTICE || severity == STATUS_ERR) {
-		ut_print_timestamp(stderr);
-		fprintf(stderr, " InnoDB: %s\n",
-			export_vars.innodb_buffer_pool_load_status);
+	switch (severity) {
+	case STATUS_INFO:
+		ib::info() << export_vars.innodb_buffer_pool_load_status;
+		break;
+
+	case STATUS_ERR:
+		ib::error() << export_vars.innodb_buffer_pool_load_status;
+		break;
+
+	case STATUS_VERBOSE:
+		break;
 	}
 
 	va_end(ap);
@@ -191,7 +209,7 @@ buf_dump(
 	ut_snprintf(tmp_filename, sizeof(tmp_filename),
 		    "%s.incomplete", full_filename);
 
-	buf_dump_status(STATUS_NOTICE, "Dumping buffer pool(s) to %s",
+	buf_dump_status(STATUS_INFO, "Dumping buffer pool(s) to %s",
 			full_filename);
 
 	f = fopen(tmp_filename, "w");
@@ -279,7 +297,7 @@ buf_dump(
 
 			if (j % 128 == 0) {
 				buf_dump_status(
-					STATUS_INFO,
+					STATUS_VERBOSE,
 					"Dumping buffer pool"
 					" " ULINTPF "/" ULINTPF ","
 					" page " ULINTPF "/" ULINTPF,
@@ -325,7 +343,7 @@ buf_dump(
 
 	ut_sprintf_timestamp(now);
 
-	buf_dump_status(STATUS_NOTICE,
+	buf_dump_status(STATUS_INFO,
 			"Buffer pool(s) dump completed at %s", now);
 }
 
@@ -424,7 +442,7 @@ buf_load()
 		    "%s%c%s", srv_data_home, OS_PATH_SEPARATOR,
 		    srv_buf_dump_filename);
 
-	buf_load_status(STATUS_NOTICE,
+	buf_load_status(STATUS_INFO,
 			"Loading buffer pool(s) from %s", full_filename);
 
 	f = fopen(full_filename, "r");
@@ -529,7 +547,7 @@ buf_load()
 	if (dump_n == 0) {
 		ut_free(dump);
 		ut_sprintf_timestamp(now);
-		buf_load_status(STATUS_NOTICE,
+		buf_load_status(STATUS_INFO,
 				"Buffer pool(s) load completed at %s"
 				" (%s was empty)", now, full_filename);
 		return;
@@ -542,13 +560,20 @@ buf_load()
 	ulint		last_check_time = 0;
 	ulint		last_activity_cnt = 0;
 
-	/* Avoid calling the expensive fil_space_get_page_size() for each
+	/* Avoid calling the expensive fil_space_acquire_silent() for each
 	page within the same tablespace. dump[] is sorted by (space, page),
 	so all pages from a given tablespace are consecutive. */
 	ulint		cur_space_id = BUF_DUMP_SPACE(dump[0]);
-	bool		found;
-	page_size_t	page_size(fil_space_get_page_size(
-					cur_space_id, &found));
+	fil_space_t*	space = fil_space_acquire_silent(cur_space_id);
+	page_size_t	page_size(space ? space->flags : 0);
+
+#ifdef HAVE_PSI_STAGE_INTERFACE
+	PSI_stage_progress*	pfs_stage_progress
+		= mysql_set_stage(srv_stage_buffer_pool_load.m_key);
+#endif /* HAVE_PSI_STAGE_INTERFACE */
+
+	mysql_stage_set_work_estimated(pfs_stage_progress, dump_n);
+	mysql_stage_set_work_completed(pfs_stage_progress, 0);
 
 	for (i = 0; i < dump_n && !SHUTTING_DOWN(); i++) {
 
@@ -556,17 +581,21 @@ buf_load()
 		const ulint	this_space_id = BUF_DUMP_SPACE(dump[i]);
 
 		if (this_space_id != cur_space_id) {
+			if (space != NULL) {
+				fil_space_release(space);
+			}
+
 			cur_space_id = this_space_id;
+			space = fil_space_acquire_silent(cur_space_id);
 
-			const page_size_t	cur_page_size(
-				fil_space_get_page_size(cur_space_id, &found));
-
-			if (found) {
+			if (space != NULL) {
+				const page_size_t	cur_page_size(
+					space->flags);
 				page_size.copy_from(cur_page_size);
 			}
 		}
 
-		if (!found) {
+		if (space == NULL) {
 			continue;
 		}
 
@@ -578,18 +607,36 @@ buf_load()
 			os_aio_simulated_wake_handler_threads();
 		}
 
-		if (i % 128 == 0) {
-			buf_load_status(STATUS_INFO,
+		/* Update the progress every 32 MiB, which is every Nth page,
+		where N = 32*1024^2 / page_size. */
+		static const ulint	update_status_every_n_mb = 32;
+		static const ulint	update_status_every_n_pages
+			= update_status_every_n_mb * 1024 * 1024
+			/ page_size.physical();
+
+		if (i % update_status_every_n_pages == 0) {
+			buf_load_status(STATUS_VERBOSE,
 					"Loaded " ULINTPF "/" ULINTPF " pages",
 					i + 1, dump_n);
+			mysql_stage_set_work_completed(pfs_stage_progress, i);
 		}
 
 		if (buf_load_abort_flag) {
+			if (space != NULL) {
+				fil_space_release(space);
+			}
 			buf_load_abort_flag = FALSE;
 			ut_free(dump);
 			buf_load_status(
-				STATUS_NOTICE,
+				STATUS_INFO,
 				"Buffer pool(s) load aborted on request");
+			/* Premature end, set estimated = completed = i and
+			end the current stage event. */
+			mysql_stage_set_work_estimated(pfs_stage_progress, i);
+			mysql_stage_set_work_completed(pfs_stage_progress, i);
+#ifdef HAVE_PSI_STAGE_INTERFACE
+			mysql_end_stage();
+#endif /* HAVE_PSI_STAGE_INTERFACE */
 			return;
 		}
 
@@ -597,19 +644,29 @@ buf_load()
 			&last_check_time, &last_activity_cnt, i);
 	}
 
+	if (space != NULL) {
+		fil_space_release(space);
+	}
+
 	ut_free(dump);
 
 	ut_sprintf_timestamp(now);
 
-	buf_load_status(STATUS_NOTICE,
+	buf_load_status(STATUS_INFO,
 			"Buffer pool(s) load completed at %s", now);
+
+	/* Make sure that estimated = completed when we end. */
+	mysql_stage_set_work_completed(pfs_stage_progress, dump_n);
+	/* End the stage progress event. */
+#ifdef HAVE_PSI_STAGE_INTERFACE
+	mysql_end_stage();
+#endif /* HAVE_PSI_STAGE_INTERFACE */
 }
 
 /*****************************************************************//**
 Aborts a currently running buffer pool load. This function is called by
 MySQL code via buffer_pool_load_abort() and it should return immediately
 because the whole MySQL is frozen during its execution. */
-
 void
 buf_load_abort()
 /*============*/
@@ -637,8 +694,8 @@ DECLARE_THREAD(buf_dump_thread)(
 
 	srv_buf_dump_thread_active = TRUE;
 
-	buf_dump_status(STATUS_INFO, "not started");
-	buf_load_status(STATUS_INFO, "not started");
+	buf_dump_status(STATUS_VERBOSE, "not started");
+	buf_load_status(STATUS_VERBOSE, "not started");
 
 	if (srv_buffer_pool_load_at_startup) {
 		buf_load();

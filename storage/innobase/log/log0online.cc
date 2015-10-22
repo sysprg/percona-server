@@ -292,16 +292,17 @@ log_online_read_bitmap_page(
 	     <= bitmap_file->size - MODIFIED_PAGE_BLOCK_SIZE);
 	ut_a(bitmap_file->offset % MODIFIED_PAGE_BLOCK_SIZE == 0);
 
-	success = os_file_read(bitmap_file->file, page, bitmap_file->offset,
-			       MODIFIED_PAGE_BLOCK_SIZE);
+	// TODO laurynas: appropriate request type?
+	IORequest io_request(IORequest::LOG | IORequest::READ);
+	success = os_file_read(io_request, bitmap_file->file, page,
+			       bitmap_file->offset, MODIFIED_PAGE_BLOCK_SIZE);
 
 	if (UNIV_UNLIKELY(!success)) {
 
 		/* The following call prints an error message */
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Failed reading changed page bitmap file \'%s\'",
-			bitmap_file->name);
+		ib::warn() << "Failed reading changed page bitmap file \'"
+			   << bitmap_file->name << "\'";
 		return false;
 	}
 
@@ -358,10 +359,9 @@ log_online_read_last_tracked_lsn(void)
 				(page + MODIFIED_PAGE_IS_LAST_BLOCK);
 		} else {
 
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Corruption detected in \'%s\' at offset "
-				UINT64PF,
-				log_bmp_sys->out.name, read_offset);
+			ib::warn() << "Corruption detected in \'"
+				   << log_bmp_sys->out.name << "\' at offset "
+				   << read_offset;
 		}
 	};
 
@@ -372,10 +372,9 @@ log_online_read_last_tracked_lsn(void)
 	any */
 	if (!os_file_set_eof_at(log_bmp_sys->out.file,
 				log_bmp_sys->out.offset)) {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Failed truncating changed page bitmap file \'%s\' to "
-			UINT64PF " bytes",
-			log_bmp_sys->out.name, log_bmp_sys->out.offset);
+		ib::warn() << "Failed truncating changed page bitmap file \'"
+			   << log_bmp_sys->out.name << "\' to "
+			   << log_bmp_sys->out.offset << " bytes";
 		result = 0;
 	}
 	return result;
@@ -423,11 +422,10 @@ log_online_can_track_missing(
 	last_tracked_lsn = ut_max(last_tracked_lsn, MIN_TRACKED_LSN);
 
 	if (last_tracked_lsn > tracking_start_lsn) {
-		ib_logf(IB_LOG_LEVEL_FATAL,
-			"Last tracked LSN " LSN_PF " is ahead of tracking "
-			"start LSN " LSN_PF ".  This can be caused by "
-			"mismatched bitmap files.",
-			last_tracked_lsn, tracking_start_lsn);
+		ib::fatal() << "Last tracked LSN " << last_tracked_lsn
+			    << " is ahead of tracking start LSN "
+			    << tracking_start_lsn << ".  This can be caused "
+			"by mismatched bitmap files.";
 	}
 
 	return (last_tracked_lsn == tracking_start_lsn)
@@ -451,17 +449,17 @@ log_online_track_missing_on_startup(
 {
 	ut_ad(last_tracked_lsn != tracking_start_lsn);
 
-	ib_logf(IB_LOG_LEVEL_WARN, "Last tracked LSN in \'%s\' is " LSN_PF
-		", but the last checkpoint LSN is " LSN_PF ".  This might be "
-		"due to a server crash or a very fast shutdown.",
-		log_bmp_sys->out.name, last_tracked_lsn, tracking_start_lsn);
+	ib::warn() << "Last tracked LSN in \'" << log_bmp_sys->out.name
+		   << "\' is " << last_tracked_lsn
+		   << ", but the last checkpoint LSN is "
+		   << tracking_start_lsn << ".  This might be due to a server "
+		"crash or a very fast shutdown.";
 
 	/* See if we can fully recover the missing interval */
 	if (log_online_can_track_missing(last_tracked_lsn,
 					 tracking_start_lsn)) {
 
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"Reading the log to advance the last tracked LSN.");
+		ib::info() << "Reading the log to advance the last tracked LSN.";
 
 		log_bmp_sys->start_lsn = ut_max(last_tracked_lsn,
 						MIN_TRACKED_LSN);
@@ -471,23 +469,20 @@ log_online_track_missing_on_startup(
 		}
 		ut_ad(log_bmp_sys->end_lsn >= tracking_start_lsn);
 
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"Continuing tracking changed pages from LSN " LSN_PF,
-			log_bmp_sys->end_lsn);
+		ib::info() << "Continuing tracking changed pages from LSN "
+			   << log_bmp_sys->end_lsn;
 	}
 	else {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"The age of last tracked LSN exceeds log capacity, "
-			"tracking-based incremental backups will work only "
-			"from the higher LSN!");
+		ib::warn() << "The age of last tracked LSN exceeds log "
+			"capacity, tracking-based incremental backups will "
+			"work only from the higher LSN!";
 
 		log_bmp_sys->end_lsn = log_bmp_sys->start_lsn
 			= tracking_start_lsn;
 		log_set_tracked_lsn(log_bmp_sys->start_lsn);
 
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"Starting tracking changed pages from LSN " LSN_PF,
-			log_bmp_sys->end_lsn);
+		ib::info() << "Starting tracking changed pages from LSN "
+			   << log_bmp_sys->end_lsn;
 	}
 }
 
@@ -555,8 +550,8 @@ log_online_start_bitmap_file(void)
 
 		/* The following call prints an error message */
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Cannot create \'%s\'", log_bmp_sys->out.name);
+		ib::error() << "Cannot create \'" << log_bmp_sys->out.name
+			    << "\'";
 		return false;
 	}
 
@@ -641,7 +636,7 @@ log_online_read_init(void)
 	log_bmp_sys->read_buf = static_cast<byte *>
 		(ut_align(log_bmp_sys->read_buf_ptr, OS_FILE_LOG_BLOCK_SIZE));
 
-	mutex_create("log_bmp_sys", &log_bmp_sys->mutex);
+	mutex_create(LATCH_ID_LOG_ONLINE, &log_bmp_sys->mutex);
 
 	/* Initialize bitmap file directory from srv_data_home and add a path
 	separator if needed.  */
@@ -692,9 +687,8 @@ log_online_read_init(void)
 
 	if (os_file_closedir(bitmap_dir)) {
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_ERROR, "Cannot close \'%s\'",
-			log_bmp_sys->bmp_file_home);
-		exit(1);
+		ib::fatal() << "Cannot close \'" << log_bmp_sys->bmp_file_home
+			    << "\'";
 	}
 
 	if (!log_bmp_sys->out_seq_num) {
@@ -730,11 +724,9 @@ log_online_read_init(void)
 
 		if (log_bmp_sys->out.offset % MODIFIED_PAGE_BLOCK_SIZE != 0) {
 
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Truncated block detected in \'%s\' at offset "
-				UINT64PF,
-				log_bmp_sys->out.name,
-				log_bmp_sys->out.offset);
+			ib::warn() << "Truncated block detected in \'"
+				   << log_bmp_sys->out.name << "\' at offset "
+				   << log_bmp_sys->out.offset;
 			log_bmp_sys->out.offset -=
 				log_bmp_sys->out.offset
 				% MODIFIED_PAGE_BLOCK_SIZE;
@@ -766,18 +758,17 @@ log_online_read_init(void)
 
 		if (last_tracked_lsn > tracking_start_lsn) {
 
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Last tracked LSN is " LSN_PF ", but the last "
-				"checkpoint LSN is " LSN_PF ". The "
-				"tracking-based incremental backups will work "
-				"only from the latter LSN!",
-				last_tracked_lsn, tracking_start_lsn);
+			ib::warn() << "Last tracked LSN is "
+				   << last_tracked_lsn << ", but the last "
+				"checkpoint LSN is " << tracking_start_lsn
+				   << ". The tracking-based incremental "
+				"backups will work only from the latter LSN!";
 		}
 
 	}
 
-	ib_logf(IB_LOG_LEVEL_INFO, "Starting tracking changed pages from LSN "
-		LSN_PF, tracking_start_lsn);
+	ib::info() << "Starting tracking changed pages from LSN "
+		   << tracking_start_lsn;
 	log_bmp_sys->start_lsn = tracking_start_lsn;
 	log_set_tracked_lsn(tracking_start_lsn);
 }
@@ -918,11 +909,10 @@ log_online_is_valid_log_seg(
 
 	if (!checksum_is_ok) {
 
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Log block checksum mismatch: expected " ULINTPF ", "
-			"calculated checksum " ULINTPF,
-			log_block_get_checksum(log_block),
-			log_block_calc_checksum(log_block));
+		ib::error() << "Log block checksum mismatch: expected "
+			    << log_block_get_checksum(log_block) << ", "
+			    << "calculated checksum "
+			    << log_block_calc_checksum(log_block);
 	}
 
 	return checksum_is_ok;
@@ -1111,15 +1101,18 @@ log_online_write_bitmap_page(
 	/* Simulate a write error */
 	DBUG_EXECUTE_IF("bitmap_page_write_error", return false;);
 
-	success = os_file_write(log_bmp_sys->out.name, log_bmp_sys->out.file,
-				block, log_bmp_sys->out.offset,
+	// TODO laurynas: correct type?
+	IORequest io_request(IORequest::WRITE);
+	success = os_file_write(io_request, log_bmp_sys->out.name,
+				log_bmp_sys->out.file, block,
+				log_bmp_sys->out.offset,
 				MODIFIED_PAGE_BLOCK_SIZE);
 	if (UNIV_UNLIKELY(!success)) {
 
 		/* The following call prints an error message */
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_ERROR, "Failed writing changed page "
-			"bitmap file \'%s\'", log_bmp_sys->out.name);
+		ib::error() << "Failed writing changed page bitmap file \'"
+			    << log_bmp_sys->out.name << "\'";
 		return false;
 	}
 
@@ -1128,8 +1121,8 @@ log_online_write_bitmap_page(
 
 		/* The following call prints an error message */
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_ERROR, "Failed flushing changed page "
-			"bitmap file \'%s\'",	log_bmp_sys->out.name);
+		ib::error() << "Failed flushing changed page bitmap file \'"
+			    << log_bmp_sys->out.name << "\'";
 		return false;
 	}
 
@@ -1273,9 +1266,8 @@ log_online_diagnose_inconsistent_dir(
 	log_online_bitmap_file_range_t	*bitmap_files)	/*!<in/out: bitmap file
 							range */
 {
-	ib_logf(IB_LOG_LEVEL_WARN,
-		"Inconsistent bitmap file directory for a "
-		"INFORMATION_SCHEMA.INNODB_CHANGED_PAGES query");
+	ib::warn() << "Inconsistent bitmap file directory for a "
+		"INFORMATION_SCHEMA.INNODB_CHANGED_PAGES query";
 	ut_free(bitmap_files->files);
 }
 
@@ -1316,9 +1308,8 @@ log_online_setup_bitmap_file_range(
 	bitmap_dir = os_file_opendir(srv_data_home, false);
 	if (UNIV_UNLIKELY(!bitmap_dir)) {
 
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Failed to open bitmap directory \'%s\'",
-			srv_data_home);
+		ib::error() << "Failed to open bitmap directory \'"
+			    << srv_data_home << "\'";
 		return false;
 	}
 
@@ -1367,8 +1358,8 @@ log_online_setup_bitmap_file_range(
 	if (UNIV_UNLIKELY(os_file_closedir(bitmap_dir))) {
 
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_ERROR, "Cannot close \'%s\'",
-			srv_data_home);
+		ib::error() << "Cannot close \'"
+			    << srv_data_home << "\'";
 		return false;
 	}
 
@@ -1387,9 +1378,8 @@ log_online_setup_bitmap_file_range(
 	bitmap_dir = os_file_opendir(srv_data_home, false);
 	if (UNIV_UNLIKELY(!bitmap_dir)) {
 
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Failed to open bitmap directory \'%s\'",
-			srv_data_home);
+		ib::error() << "Failed to open bitmap directory \'"
+			    << srv_data_home << "\'";
 		return false;
 	}
 
@@ -1438,8 +1428,8 @@ log_online_setup_bitmap_file_range(
 	if (UNIV_UNLIKELY(os_file_closedir(bitmap_dir))) {
 
 		os_file_get_last_error(true);
-		ib_logf(IB_LOG_LEVEL_ERROR, "Cannot close \'%s\'",
-			srv_data_home);
+		ib::error() << "Cannot close \'"
+			    << srv_data_home << "\'";
 		free(bitmap_files->files);
 		return false;
 	}
@@ -1503,9 +1493,8 @@ log_online_open_bitmap_file_read_only(
 
 		/* Here and below assume that bitmap file names do not
 		contain apostrophes, thus no need for ut_print_filename(). */
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Error opening the changed page bitmap \'%s\'",
-			bitmap_file->name);
+		ib::warn() << "Error opening the changed page bitmap \'"
+			   << bitmap_file->name << "\'";
 		return false;
 	}
 
@@ -1548,9 +1537,8 @@ log_online_diagnose_bitmap_eof(
 			to read, it's junk.  This error is not fatal in
 			itself. */
 
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Junk at the end of changed page bitmap file "
-				"\'%s\'.", bitmap_file->name);
+			ib::warn() << "Junk at the end of changed page bitmap "
+				"file \'" << bitmap_file->name << "\'.";
 		}
 
 		if (UNIV_UNLIKELY(!last_page_in_run)) {
@@ -1559,10 +1547,9 @@ log_online_diagnose_bitmap_eof(
 			a run */
 			/* It's a "Warning" here because it's not a fatal error
 			for the whole server */
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Changed page bitmap file \'%s\' does not "
-				"contain a complete run at the end.",
-				bitmap_file->name);
+			ib::warn() << "Changed page bitmap file \'"
+				   << bitmap_file->name << "\' does not "
+				"contain a complete run at the end.";
 			return false;
 		}
 	}
@@ -1754,9 +1741,9 @@ log_online_bitmap_iterator_next(
 		if (UNIV_UNLIKELY(!success)) {
 
 			os_file_get_last_error(true);
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Failed reading changed page bitmap file "
-				"\'%s\'", i->in_files.files[i->in_i].name);
+			ib::warn() << "Failed reading changed page bitmap "
+				"file \'" << i->in_files.files[i->in_i].name
+				   << "\'";
 			i->failed = true;
 			return false;
 		}

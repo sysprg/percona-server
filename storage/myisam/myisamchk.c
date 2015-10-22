@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -207,7 +207,7 @@ static struct my_option my_long_options[] =
    "Skip rows bigger than this if myisamchk can't allocate memory to hold it",
    &check_param.max_record_length,
    &check_param.max_record_length,
-   0, GET_ULL, REQUIRED_ARG, LONGLONG_MAX, 0, LONGLONG_MAX, 0, 0, 0},
+   0, GET_ULL, REQUIRED_ARG, LLONG_MAX, 0, LLONG_MAX, 0, 0, 0},
   {"medium-check", 'm',
    "Faster than extend-check, but only finds 99.99% of all errors. Should be good enough for most cases.",
    0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0},
@@ -737,7 +737,7 @@ static void get_options(int *argc,char ***argv)
   if (*argc == 0)
   {
     usage();
-    exit(-1);
+    exit(1);
   }
 
   if ((check_param.testflag & T_UNPACK) &&
@@ -910,7 +910,7 @@ static int myisamchk(MI_CHECK *param, char * filename)
       (void) fprintf(stderr,
 		   "MyISAM-table '%s' is not fixed because of errors\n",
 	      filename);
-      return(-1);
+      DBUG_RETURN(-1);
     }
     recreate=1;
     if (!(param->testflag & T_REP_ANY))
@@ -1080,7 +1080,7 @@ static int myisamchk(MI_CHECK *param, char * filename)
       {
 	if (param->testflag & (T_EXTEND | T_MEDIUM))
 	  (void) init_key_cache(dflt_key_cache,opt_key_cache_block_size,
-                              param->use_buffers, 0, 0);
+                                (size_t)param->use_buffers, 0, 0);
 	(void) init_io_cache(&param->read_cache,datafile,
 			   (uint) param->read_buffer_length,
 			   READ_CACHE,
@@ -1592,10 +1592,6 @@ err:
     (void) my_close(new_file,MYF(MY_WME));
     (void) my_delete(param->temp_filename, MYF(MY_WME));
   }
-  if (temp_buff)
-  {
-    my_afree((uchar*) temp_buff);
-  }
   my_free(mi_get_rec_buff_ptr(info, sort_param.record));
   info->opt_flag&= ~(READ_CACHE_USED | WRITE_CACHE_USED);
   (void) end_io_cache(&info->rec_cache);
@@ -1687,12 +1683,8 @@ static int sort_record_index(MI_SORT_PARAM *sort_param,MI_INFO *info,
     mi_check_print_error(param,"%d when updating keyblock",my_errno);
     goto err;
   }
-  if (temp_buff)
-    my_afree((uchar*) temp_buff);
   DBUG_RETURN(0);
 err:
-  if (temp_buff)
-    my_afree((uchar*) temp_buff);
   DBUG_RETURN(1);
 } /* sort_record_index */
 

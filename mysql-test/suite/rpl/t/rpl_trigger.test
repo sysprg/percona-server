@@ -3,7 +3,6 @@
 # Adding statement include due to Bug 12574
 # TODO: Remove statement include once 12574 is patched
 --source include/have_binlog_format_mixed_or_statement.inc 
---source include/have_slave_parallel_type_database.inc
 --source include/master-slave.inc
 --source include/not_gtid_enabled.inc
 --source include/have_myisam.inc
@@ -12,6 +11,7 @@ disable_query_log;
 call mtr.add_suppression("Unsafe statement written to the binary log using statement format since BINLOG_FORMAT = STATEMENT");
 --connection slave
 call mtr.add_suppression("The master's UUID has changed, although this should not happen unless you have changed it manually.");
+call mtr.add_suppression("Either event.*is from an old master");
 --connection master
 enable_query_log;
 
@@ -349,16 +349,16 @@ SELECT MASTER_POS_WAIT('master-bin.000001', 513) >= 0;
 SHOW TABLES LIKE 't_';
 --replace_column 6 #
 SHOW TRIGGERS;
+# We disable warnings here since it affects the result file in different ways
+# depending on the mode being used.
+disable_warnings;
+
 SELECT * FROM t1;
 SELECT * FROM t2;
 
 # 2. Check that the trigger is non-SUID on the slave;
 # 3. Check that the trigger can be activated on the slave.
 #
-# We disable warnings here since it affects the result file in
-# different ways depending on the mode being used.
-
-disable_warnings;
 INSERT INTO t1 VALUES(2);
 enable_warnings;
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,8 +13,7 @@
    along with this program; if not, write to the Free Software Foundation,
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
-#include "sql_priv.h"
-#include "unireg.h"
+#include "my_global.h"
 #include "mysql.h"
 #include "sp.h"                                // sp_eval_expr
 #include "sql_cursor.h"
@@ -98,7 +97,7 @@ bool sp_rcontext::alloc_arrays(THD *thd)
     size_t n= m_root_parsing_ctx->get_num_case_exprs();
     m_case_expr_holders.reset(
       static_cast<Item_cache **> (
-        thd->calloc(n * sizeof (Item_cache*))),
+        thd->mem_calloc(n * sizeof (Item_cache*))),
       n);
   }
 
@@ -425,7 +424,7 @@ bool sp_rcontext::handle_sql_condition(THD *thd,
 
   /* End aborted result set. */
   if (end_partial_result_set)
-    thd->protocol->end_partial_result_set(thd);
+    thd->get_protocol()->end_partial_result_set();
 
   /* Reset error state. */
   thd->clear_error();
@@ -588,23 +587,23 @@ bool sp_cursor::fetch(THD *thd, List<sp_variable> *vars)
 
 
 ///////////////////////////////////////////////////////////////////////////
-// sp_cursor::Select_fetch_into_spvars implementation.
+// sp_cursor::Query_fetch_into_spvars implementation.
 ///////////////////////////////////////////////////////////////////////////
 
 
-int sp_cursor::Select_fetch_into_spvars::prepare(List<Item> &fields,
-                                                 SELECT_LEX_UNIT *u)
+int sp_cursor::Query_fetch_into_spvars::prepare(List<Item> &fields,
+                                                SELECT_LEX_UNIT *u)
 {
   /*
     Cache the number of columns in the result set in order to easily
     return an error if column count does not match value count.
   */
   field_count= fields.elements;
-  return select_result_interceptor::prepare(fields, u);
+  return Query_result_interceptor::prepare(fields, u);
 }
 
 
-bool sp_cursor::Select_fetch_into_spvars::send_data(List<Item> &items)
+bool sp_cursor::Query_fetch_into_spvars::send_data(List<Item> &items)
 {
   List_iterator_fast<sp_variable> spvar_iter(*spvar_list);
   List_iterator_fast<Item> item_iter(items);

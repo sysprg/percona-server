@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2005, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2005, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,12 +14,11 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "sql_priv.h"
-#include "unireg.h"
+#include "events.h"
+
 #include "sql_parse.h"                          // check_access
 #include "sql_base.h"                           // close_mysql_tables
 #include "sql_show.h"                           // append_definer
-#include "events.h"
 #include "sql_db.h"                          // check_db_dir_existence
 #include "sql_table.h"                       // write_bin_log
 #include "tztime.h"                             // struct Time_zone
@@ -30,8 +29,8 @@
 #include "event_queue.h"
 #include "event_scheduler.h"
 #include "sp_head.h" // for Stored_program_creation_ctx
-#include "set_var.h"
 #include "lock.h"   // lock_object_name
+#include "log.h"
 #include "mysql/psi/mysql_sp.h"
 
 /**
@@ -573,7 +572,6 @@ bool
 Events::drop_event(THD *thd, LEX_STRING dbname, LEX_STRING name, bool if_exists)
 {
   int ret;
-  bool save_binlog_row_based;
   DBUG_ENTER("Events::drop_event");
 
   if (check_if_system_tables_error())
@@ -581,13 +579,6 @@ Events::drop_event(THD *thd, LEX_STRING dbname, LEX_STRING name, bool if_exists)
 
   if (check_access(thd, EVENT_ACL, dbname.str, NULL, NULL, 0, 0))
     DBUG_RETURN(TRUE);
-
-  /*
-    Turn off row binlogging of this statement and use statement-based so
-    that all supporting tables are updated for DROP EVENT command.
-  */
-  if ((save_binlog_row_based= thd->is_current_stmt_binlog_format_row()))
-    thd->clear_current_stmt_binlog_format_row();
 
   if (lock_object_name(thd, MDL_key::EVENT,
                        dbname.str, name.str))
@@ -608,10 +599,6 @@ Events::drop_event(THD *thd, LEX_STRING dbname, LEX_STRING name, bool if_exists)
                   dbname.str, dbname.length, name.str, name.length);
 #endif 
   }
-  /* Restore the state of binlog format */
-  DBUG_ASSERT(!thd->is_current_stmt_binlog_format_row());
-  if (save_binlog_row_based)
-    thd->set_current_stmt_binlog_format_row();
   DBUG_RETURN(ret);
 }
 
@@ -691,11 +678,11 @@ send_show_create_event(THD *thd, Event_timed *et, Protocol *protocol)
   field_list.push_back(
     new Item_empty_string("Database Collation", MY_CS_NAME_SIZE));
 
-  if (protocol->send_result_set_metadata(&field_list,
-                            Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+  if (thd->send_result_metadata(&field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
     DBUG_RETURN(TRUE);
 
-  protocol->prepare_for_resend();
+  protocol->start_row();
 
   protocol->store(et->name.str, et->name.length, system_charset_info);
   protocol->store(sql_mode.str, sql_mode.length, system_charset_info);
@@ -712,7 +699,7 @@ send_show_create_event(THD *thd, Event_timed *et, Protocol *protocol)
                   strlen(et->creation_ctx->get_db_cl()->name),
                   system_charset_info);
 
-  if (protocol->write())
+  if (protocol->end_row())
     DBUG_RETURN(TRUE);
 
   my_eof(thd);
@@ -759,7 +746,7 @@ Events::show_create_event(THD *thd, LEX_STRING dbname, LEX_STRING name)
   ret= db_repository->load_named_event(thd, dbname, name, &et);
 
   if (!ret)
-    ret= send_show_create_event(thd, &et, thd->protocol);
+    ret= send_show_create_event(thd, &et, thd->get_protocol());
 
   DBUG_RETURN(ret);
 }
@@ -797,12 +784,29 @@ Events::fill_schema_events(THD *thd, TABLE_LIST *tables, Item * /* cond */)
   */
   if (thd->lex->sql_command == SQLCOM_SHOW_EVENTS)
   {
-    DBUG_ASSERT(thd->lex->select_lex->db);
-    if (!is_infoschema_db(thd->lex->select_lex->db) && // No events in I_S
-        check_access(thd, EVENT_ACL, thd->lex->select_lex->db,
-                     NULL, NULL, 0, 0))
-      DBUG_RETURN(1);
     db= thd->lex->select_lex->db;
+    DBUG_ASSERT(db != NULL);
+    /*
+      Nobody has EVENT_ACL for I_S and P_S,
+      even with a GRANT ALL to *.*,
+      because these schemas have additional ACL restrictions:
+      see ACL_internal_schema_registry.
+
+      Yet there are no events in I_S and P_S to hide either,
+      so this check voluntarily does not enforce ACL for
+      SHOW EVENTS in I_S or P_S,
+      to return an empty list instead of an access denied error.
+
+      This is more user friendly, in particular for tools.
+
+      EVENT_ACL is not fine grained enough to differentiate:
+      - creating / updating / deleting events
+      - viewing existing events
+    */
+    if (! is_infoschema_db(db) &&
+        ! is_perfschema_db(db) &&
+        check_access(thd, EVENT_ACL, db, NULL, NULL, 0, 0))
+      DBUG_RETURN(1);
   }
   ret= db_repository->fill_schema_events(thd, tables, db);
 
@@ -1006,7 +1010,7 @@ PSI_stage_info *all_events_stages[]=
 
 static PSI_memory_info all_events_memory[]=
 {
-  { &key_memory_event_basic_root, "Event_basic::mem_root", 0}
+  { &key_memory_event_basic_root, "Event_basic::mem_root", PSI_FLAG_GLOBAL}
 };
 
 static void init_events_psi_keys(void)
@@ -1136,15 +1140,15 @@ Events::load_events_from_db(THD *thd)
     Temporarily reset it to read-write.
   */
 
-  saved_master_access= thd->security_ctx->master_access;
-  thd->security_ctx->master_access |= SUPER_ACL;
+  saved_master_access= thd->security_context()->master_access();
+  thd->security_context()->set_master_access(saved_master_access | SUPER_ACL);
   bool save_tx_read_only= thd->tx_read_only;
   thd->tx_read_only= false;
 
   ret= db_repository->open_event_table(thd, TL_WRITE, &table);
 
   thd->tx_read_only= save_tx_read_only;
-  thd->security_ctx->master_access= saved_master_access;
+  thd->security_context()->set_master_access(saved_master_access);
 
   if (ret)
   {

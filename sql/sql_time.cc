@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,12 +16,11 @@
 
 /* Functions to handle date and time */
 
-#include "sql_priv.h"
-#include "unireg.h"                      // REQUIRED by other includes
 #include "sql_time.h"
 #include "tztime.h"                             // struct Time_zone
 #include "sql_class.h"  // THD, MODE_STRICT_ALL_TABLES, MODE_STRICT_TRANS_TABLES
 #include <m_ctype.h>
+#include "item_timefunc.h"   // INTERNAL_FORMAT
 
 
 	/* Some functions to calculate dates */
@@ -241,7 +240,7 @@ to_ascii(const CHARSET_INFO *cs,
          wc < 128)
   {
     src+= cnvres;
-    *dst++= wc;
+    *dst++= static_cast<char>(wc);
   }
   *dst= '\0';
   return dst - dst0;
@@ -356,7 +355,7 @@ bool datetime_add_nanoseconds_with_round(MYSQL_TIME *ltime,
     return false;
 
   ltime->second_part%= 1000000;
-  INTERVAL interval;
+  Interval interval;
   memset(&interval, 0, sizeof(interval));
   interval.second= 1;
   /* date_add_interval cannot handle bad dates */
@@ -386,7 +385,7 @@ str_to_datetime_with_warn(String *str, MYSQL_TIME *l_time,
 {
   MYSQL_TIME_STATUS status;
   THD *thd= current_thd;
-  if (thd->is_strict_mode())
+  if (thd->variables.sql_mode & MODE_NO_ZERO_DATE)
     flags|= TIME_NO_ZERO_DATE;
   if (thd->variables.sql_mode & MODE_INVALID_DATES)
     flags|= TIME_INVALID_DATES;
@@ -410,7 +409,7 @@ static bool lldiv_t_to_datetime(lldiv_t lld, MYSQL_TIME *ltime,
                                 my_time_flags_t flags, int *warnings)
 {
   if (lld.rem < 0 || // Catch negative numbers with zero int part, e.g: -0.1
-      number_to_datetime(lld.quot, ltime, flags, warnings) == LL(-1))
+      number_to_datetime(lld.quot, ltime, flags, warnings) == -1LL)
   {
     /* number_to_datetime does not clear ltime in case of ZERO DATE */
     set_zero_time(ltime, MYSQL_TIMESTAMP_ERROR);
@@ -430,7 +429,7 @@ static bool lldiv_t_to_datetime(lldiv_t lld, MYSQL_TIME *ltime,
   }
   else if (!(flags & TIME_NO_NSEC_ROUNDING))
   {
-    ltime->second_part= lld.rem / 1000;
+    ltime->second_part= static_cast<ulong>(lld.rem / 1000);
     return datetime_add_nanoseconds_with_round(ltime, lld.rem % 1000, warnings);
   }
   return false;
@@ -503,7 +502,7 @@ bool my_longlong_to_datetime_with_warn(longlong nr, MYSQL_TIME *ltime,
                                        my_time_flags_t flags)
 {
   int warnings= 0;
-  bool rc= number_to_datetime(nr, ltime, flags, &warnings) == LL(-1);
+  bool rc= number_to_datetime(nr, ltime, flags, &warnings) == -1LL;
   if (warnings)
     make_truncated_value_warning(ErrConvString(nr),  MYSQL_TIMESTAMP_NONE);
   return rc;
@@ -529,7 +528,7 @@ static bool lldiv_t_to_time(lldiv_t lld, MYSQL_TIME *ltime, int *warnings)
   */
   if ((ltime->neg|= (lld.rem < 0)))
     lld.rem= -lld.rem;
-  ltime->second_part= lld.rem / 1000;
+  ltime->second_part= static_cast<ulong>(lld.rem / 1000);
   return time_add_nanoseconds_with_round(ltime, lld.rem % 1000, warnings);
 }
 
@@ -771,7 +770,8 @@ str_to_time_with_warn(String *str, MYSQL_TIME *l_time)
 */
 void time_to_datetime(THD *thd, const MYSQL_TIME *ltime, MYSQL_TIME *ltime2)
 {
-  thd->variables.time_zone->gmt_sec_to_TIME(ltime2, thd->query_start());
+  thd->variables.time_zone->gmt_sec_to_TIME(ltime2,
+    static_cast<my_time_t>(thd->query_start()));
   ltime2->hour= ltime2->minute= ltime2->second= ltime2->second_part= 0;
   ltime2->time_type= MYSQL_TIMESTAMP_DATE;
   mix_date_and_time(ltime2, ltime);
@@ -831,7 +831,7 @@ void calc_time_from_sec(MYSQL_TIME *to, longlong seconds, long microseconds)
 */
 
 bool parse_date_time_format(timestamp_type format_type,
-			    DATE_TIME_FORMAT *date_time_format)
+			    Date_time_format *date_time_format)
 {
   const char *format= date_time_format->format.str;
   size_t format_length= date_time_format->format.length;
@@ -1046,7 +1046,7 @@ bool parse_date_time_format(timestamp_type format_type,
 
 
 /*
-  Create a copy of a DATE_TIME_FORMAT object
+  Create a copy of a Date_time_format object
 
   SYNOPSIS
     date_and_time_format_copy()
@@ -1061,15 +1061,15 @@ bool parse_date_time_format(timestamp_type format_type,
     new object
 */
 
-DATE_TIME_FORMAT *date_time_format_copy(THD *thd, DATE_TIME_FORMAT *format)
+Date_time_format *date_time_format_copy(THD *thd, Date_time_format *format)
 {
-  DATE_TIME_FORMAT *new_format;
+  Date_time_format *new_format;
   size_t length= sizeof(*format) + format->format.length + 1;
 
   if (thd)
-    new_format= (DATE_TIME_FORMAT *) thd->alloc(length);
+    new_format= (Date_time_format *) thd->alloc(length);
   else
-    new_format=  (DATE_TIME_FORMAT *) my_malloc(key_memory_DATE_TIME_FORMAT,
+    new_format=  (Date_time_format *) my_malloc(key_memory_DATE_TIME_FORMAT,
                                                 length, MYF(MY_WME));
   if (new_format)
   {
@@ -1079,7 +1079,7 @@ DATE_TIME_FORMAT *date_time_format_copy(THD *thd, DATE_TIME_FORMAT *format)
 	   sizeof(format->positions));
     new_format->time_separator= format->time_separator;
     /* We make the string null terminated for easy printf in SHOW VARIABLES */
-    memcpy((char*) new_format->format.str, format->format.str,
+    memcpy(new_format->format.str, format->format.str,
 	   format->format.length);
     new_format->format.str[format->format.length]= 0;
     new_format->format.length= format->format.length;
@@ -1088,7 +1088,7 @@ DATE_TIME_FORMAT *date_time_format_copy(THD *thd, DATE_TIME_FORMAT *format)
 }
 
 
-KNOWN_DATE_TIME_FORMAT known_date_time_formats[6]=
+Known_date_time_format known_date_time_formats[6]=
 {
   {"USA", "%m.%d.%Y", "%Y-%m-%d %H.%i.%s", "%h:%i:%s %p" },
   {"JIS", "%Y-%m-%d", "%Y-%m-%d %H:%i:%s", "%H:%i:%s" },
@@ -1104,7 +1104,7 @@ KNOWN_DATE_TIME_FORMAT known_date_time_formats[6]=
    If name is unknown, result is NULL
 */
 
-const char *get_date_time_format_str(KNOWN_DATE_TIME_FORMAT *format,
+const char *get_date_time_format_str(Known_date_time_format *format,
 				     timestamp_type type)
 {
   switch (type) {
@@ -1124,7 +1124,7 @@ const char *get_date_time_format_str(KNOWN_DATE_TIME_FORMAT *format,
   Functions to create default time/date/datetime strings
  
   NOTE:
-    For the moment the DATE_TIME_FORMAT argument is ignored becasue
+    For the moment the Date_time_format argument is ignored becasue
     MySQL doesn't support comparing of date/time/datetime strings that
     are not in arbutary order as dates are compared as strings in some
     context)
@@ -1142,7 +1142,7 @@ const char *get_date_time_format_str(KNOWN_DATE_TIME_FORMAT *format,
   @param[out] str      String to convert to
   @param      dec      Number of fractional digits.
 */
-void make_time(const DATE_TIME_FORMAT *format __attribute__((unused)),
+void make_time(const Date_time_format *format __attribute__((unused)),
                const MYSQL_TIME *l_time, String *str, uint dec)
 {
   uint length= (uint) my_time_to_str(l_time, (char*) str->ptr(), dec);
@@ -1157,7 +1157,7 @@ void make_time(const DATE_TIME_FORMAT *format __attribute__((unused)),
   @param      l_time   DATE value
   @param[out] str      String to convert to
 */
-void make_date(const DATE_TIME_FORMAT *format __attribute__((unused)),
+void make_date(const Date_time_format *format __attribute__((unused)),
                const MYSQL_TIME *l_time, String *str)
 {
   uint length= (uint) my_date_to_str(l_time, (char*) str->ptr());
@@ -1173,7 +1173,7 @@ void make_date(const DATE_TIME_FORMAT *format __attribute__((unused)),
   @param[out] str      String to convert to
   @param      dec      Number of fractional digits.
 */
-void make_datetime(const DATE_TIME_FORMAT *format __attribute__((unused)),
+void make_datetime(const Date_time_format *format __attribute__((unused)),
                    const MYSQL_TIME *l_time, String *str, uint dec)
 {
   uint length= (uint) my_datetime_to_str(l_time, (char*) str->ptr(), dec);
@@ -1223,7 +1223,7 @@ void make_truncated_value_warning(THD *thd,
     cs->cset->snprintf(cs, warn_buff, sizeof(warn_buff),
                        ER(ER_TRUNCATED_WRONG_VALUE_FOR_FIELD),
                        type_str, val.ptr(), field_name,
-                       (ulong) thd->get_stmt_da()->current_row_for_condition());
+                       (long) thd->get_stmt_da()->current_row_for_condition());
   else
   {
     if (time_type > MYSQL_TIMESTAMP_ERROR)
@@ -1241,7 +1241,8 @@ void make_truncated_value_warning(THD *thd,
 /* Daynumber from year 0 to 9999-12-31 */
 #define MAX_DAY_NUMBER 3652424L
 
-bool date_add_interval(MYSQL_TIME *ltime, interval_type int_type, INTERVAL interval)
+bool date_add_interval(MYSQL_TIME *ltime, interval_type int_type,
+                       Interval interval)
 {
   long period, sign;
 
@@ -1274,19 +1275,19 @@ bool date_add_interval(MYSQL_TIME *ltime, interval_type int_type, INTERVAL inter
     sec=((ltime->day-1)*3600*24L+ltime->hour*3600+ltime->minute*60+
 	 ltime->second +
 	 sign* (longlong) (interval.day*3600*24L +
-                           interval.hour*LL(3600)+interval.minute*LL(60)+
+                           interval.hour*3600LL+interval.minute*60LL+
                            interval.second))+ extra_sec;
     if (microseconds < 0)
     {
-      microseconds+= LL(1000000);
+      microseconds+= 1000000LL;
       sec--;
     }
-    days= sec/(3600*LL(24));
-    sec-= days*3600*LL(24);
+    days= sec/(3600*24LL);
+    sec-= days*3600*24LL;
     if (sec < 0)
     {
       days--;
-      sec+= 3600*LL(24);
+      sec+= 3600*24LL;
     }
     ltime->second_part= (uint) microseconds;
     ltime->second= (uint) (sec % 60);
@@ -1410,7 +1411,7 @@ calc_time_diff(const MYSQL_TIME *l_time1, const MYSQL_TIME *l_time2,
                             l_time1->second) -
                  l_sign*(longlong)(l_time2->hour*3600L +
                                    l_time2->minute*60L +
-                                   l_time2->second)) * LL(1000000) +
+                                   l_time2->second)) * 1000000LL +
                 (longlong)l_time1->second_part -
                 l_sign*(longlong)l_time2->second_part;
 

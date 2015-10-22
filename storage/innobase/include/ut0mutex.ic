@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2013, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2013, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -32,15 +32,17 @@ Created 2012/08/21 Sunny Bains
 #include "sync0arr.h"
 #include "sync0debug.h"
 
-#ifdef HAVE_ATOMIC_BUILTINS
-
 /**
 Wait in the sync array.
 @return true if the mutex acquisition was successful. */
 
 template <template <typename> class Policy>
 bool
-TTASEventMutex<Policy>::wait(const char* filename, ulint line) UNIV_NOTHROW
+TTASEventMutex<Policy>::wait(
+	const char*	filename,
+	ulint		line,
+	ulint		spin)
+	UNIV_NOTHROW
 {
 	sync_cell_t*	cell;
 	sync_array_t*	sync_arr = sync_array_get_and_reserve_cell(
@@ -57,7 +59,7 @@ TTASEventMutex<Policy>::wait(const char* filename, ulint line) UNIV_NOTHROW
 
 	/* Try to reserve still a few times. */
 
-	for (ulint i = 0; i < 4; ++i) {
+	for (ulint i = 0; i < spin; ++i) {
 
 		if (try_lock()) {
 
@@ -97,5 +99,3 @@ TTASEventMutex<Policy>::signal() UNIV_NOTHROW
 
 	sync_array_object_signalled();
 }
-
-#endif /* HAVE_ATOMIC_BUILTINS */

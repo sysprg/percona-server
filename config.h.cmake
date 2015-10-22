@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
  
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by
@@ -164,8 +164,6 @@
 
 #cmakedefine HAVE_KQUEUE_TIMERS 1
 #cmakedefine HAVE_POSIX_TIMERS 1
-#cmakedefine HAVE_WINDOWS_TIMERS 1
-#cmakedefine HAVE_MY_TIMER 1
 
 /* Endianess */
 #cmakedefine WORDS_BIGENDIAN 1 
@@ -253,7 +251,6 @@
 #cmakedefine INSTALL_PLUGINTESTDIR "@INSTALL_PLUGINTESTDIR@"
 #cmakedefine INSTALL_INFODIR "@default_prefix@/@INSTALL_INFODIR@"
 #cmakedefine INSTALL_MYSQLTESTDIR "@default_prefix@/@INSTALL_MYSQLTESTDIR@"
-#cmakedefine INSTALL_SQLBENCHDIR "@default_prefix@/@INSTALL_SQLBENCHDIR@"
 #cmakedefine INSTALL_DOCREADMEDIR "@default_prefix@/@INSTALL_DOCREADMEDIR@"
 #cmakedefine INSTALL_DOCDIR "@default_prefix@/@INSTALL_DOCDIR@"
 #cmakedefine INSTALL_MANDIR "@default_prefix@/@INSTALL_MANDIR@"
@@ -400,6 +397,7 @@
  * Other
  */
 #cmakedefine EXTRA_DEBUG 1
+#cmakedefine HAVE_CHOWN 1
 
 /*
  * Hardcoded values needed by libevent/NDB/memcached
@@ -418,5 +416,9 @@
 #define HAVE_SYS_STAT_H 1
 #define HAVE_SYS_TYPES_H 1
 #define SIZEOF_CHAR 1
+
+/* For --secure-file-priv */
+#cmakedefine DEFAULT_SECURE_FILE_PRIV_DIR @DEFAULT_SECURE_FILE_PRIV_DIR@
+#cmakedefine DEFAULT_SECURE_FILE_PRIV_EMBEDDED_DIR @DEFAULT_SECURE_FILE_PRIV_EMBEDDED_DIR@
 
 #endif

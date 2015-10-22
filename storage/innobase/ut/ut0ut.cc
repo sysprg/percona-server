@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1994, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -107,7 +107,6 @@ reimplement this function. */
 Returns system time. We do not specify the format of the time returned:
 the only way to manipulate it is to use the function ut_difftime.
 @return system time */
-
 ib_time_t
 ut_time(void)
 /*=========*/
@@ -122,7 +121,6 @@ Upon successful completion, the value 0 is returned; otherwise the
 value -1 is returned and the global variable errno is set to indicate the
 error.
 @return 0 on success, -1 otherwise */
-
 int
 ut_usectime(
 /*========*/
@@ -140,8 +138,8 @@ ut_usectime(
 
 		if (ret == -1) {
 			errno_gettimeofday = errno;
-			ib_logf(IB_LOG_LEVEL_ERROR, "gettimeofday(): %s",
-				strerror(errno_gettimeofday));
+			ib::error() << "gettimeofday(): "
+				<< strerror(errno_gettimeofday);
 			os_thread_sleep(100000);  /* 0.1 sec */
 			errno = errno_gettimeofday;
 		} else {
@@ -162,7 +160,6 @@ Returns the number of microseconds since epoch. Similar to
 time(3), the return value is also stored in *tloc, provided
 that tloc is non-NULL.
 @return us since epoch */
-
 uintmax_t
 ut_time_us(
 /*=======*/
@@ -187,7 +184,6 @@ Returns the number of milliseconds since some epoch.  The
 value may wrap around.  It should only be used for heuristic
 purposes.
 @return ms since epoch */
-
 ulint
 ut_time_ms(void)
 /*============*/
@@ -203,7 +199,6 @@ ut_time_ms(void)
 /**********************************************************//**
 Returns the difference of two times in seconds.
 @return time2 - time1 expressed in seconds */
-
 double
 ut_difftime(
 /*========*/
@@ -217,7 +212,6 @@ ut_difftime(
 
 /**********************************************************//**
 Prints a timestamp to a file. */
-
 void
 ut_print_timestamp(
 /*===============*/
@@ -265,7 +259,6 @@ ut_print_timestamp(
 
 /**********************************************************//**
 Sprintfs a timestamp to a buffer, 13..14 chars plus terminating NUL. */
-
 void
 ut_sprintf_timestamp(
 /*=================*/
@@ -305,7 +298,6 @@ ut_sprintf_timestamp(
 /**********************************************************//**
 Sprintfs a timestamp to a buffer with no spaces and with ':' characters
 replaced by '_'. */
-
 void
 ut_sprintf_timestamp_without_extra_chars(
 /*=====================================*/
@@ -343,7 +335,6 @@ ut_sprintf_timestamp_without_extra_chars(
 
 /**********************************************************//**
 Returns current year, month, day. */
-
 void
 ut_get_year_month_day(
 /*==================*/
@@ -379,7 +370,6 @@ ut_get_year_month_day(
 Runs an idle loop on CPU. The argument gives the desired delay
 in microseconds on 100 MHz Pentium + Visual C++.
 @return dummy value */
-
 ulint
 ut_delay(
 /*=====*/
@@ -408,7 +398,6 @@ ut_delay(
 
 /*************************************************************//**
 Prints the contents of a memory buffer in hex and ascii. */
-
 void
 ut_print_buf(
 /*=========*/
@@ -439,10 +428,8 @@ ut_print_buf(
 	putc(';', file);
 }
 
-#ifndef DBUG_OFF
 /*************************************************************//**
 Prints the contents of a memory buffer in hex. */
-
 void
 ut_print_buf_hex(
 /*=============*/
@@ -471,7 +458,6 @@ ut_print_buf_hex(
 
 /*************************************************************//**
 Prints the contents of a memory buffer in hex and ascii. */
-
 void
 ut_print_buf(
 /*=========*/
@@ -491,12 +477,10 @@ ut_print_buf(
 
 	ut_print_buf_hex(o, buf, len);
 }
-#endif /* !DBUG_OFF */
 
 /*************************************************************//**
 Calculates fast the number rounded up to the nearest power of 2.
 @return first power of 2 which is >= n */
-
 ulint
 ut_2_power_up(
 /*==========*/
@@ -516,48 +500,18 @@ ut_2_power_up(
 }
 
 #ifndef UNIV_HOTBACKUP
-/**********************************************************************//**
-Get  a fixed-length string, quoted as an SQL identifier.
+/** Get a fixed-length string, quoted as an SQL identifier.
 If the string contains a slash '/', the string will be
 output as two identifiers separated by a period (.),
 as in SQL database_name.identifier.
  @param		[in]	trx		transaction (NULL=no quotes).
- @param		[in]	table_id	TRUE=get a table name,
-					FALSE=get other identifier.
- @param		[in]	name		name to retrive.
+ @param		[in]	name		table name.
  @retval	String quoted as an SQL identifier.
 */
-
 std::string
 ut_get_name(
 	const trx_t*	trx,
-	ibool		table_id,
 	const char*	name)
-{
-	return(ut_get_namel(trx, table_id, name, strlen(name)));
-}
-
-/**********************************************************************//**
-Get a fixed-length string, quoted as an SQL identifier.
-If the string contains a slash '/', the string will be
-output as two identifiers separated by a period (.),
-as in SQL database_name.identifier.
-Use ut_get_name() as wrapper function, instead of calling this function
-directly.
- @param		[in]	trx		transaction (NULL=no quotes).
- @param		[in]	tables_id	TRUE=get a table name,
-					FALSE=get other identifier.
- @param		[in]	name		name to retrive.
- @param		[in]	namelen		length of name.
- @retval	String quoted as an SQL identifier.
-*/
-
-std::string
-ut_get_namel(
-	const trx_t*	trx,
-	ibool		table_id,
-	const char*	name,
-	ulint		namelen)
 {
 	/* 2 * NAME_LEN for database and table name,
 	and some slack for the #mysql50# prefix and quotes */
@@ -565,9 +519,8 @@ ut_get_namel(
 	const char*	bufend;
 
 	bufend = innobase_convert_name(buf, sizeof buf,
-				       name, namelen,
-				       trx ? trx->mysql_thd : NULL,
-				       table_id);
+				       name, strlen(name),
+				       trx ? trx->mysql_thd : NULL);
 	buf[bufend - buf] = '\0';
 	return(std::string(buf, 0, bufend - buf));
 }
@@ -577,34 +530,12 @@ Outputs a fixed-length string, quoted as an SQL identifier.
 If the string contains a slash '/', the string will be
 output as two identifiers separated by a period (.),
 as in SQL database_name.identifier. */
-
 void
 ut_print_name(
 /*==========*/
 	FILE*		f,	/*!< in: output stream */
 	const trx_t*	trx,	/*!< in: transaction */
-	ibool		table_id,/*!< in: TRUE=print a table name,
-				FALSE=print other identifier */
 	const char*	name)	/*!< in: name to print */
-{
-	ut_print_namel(f, trx, table_id, name, strlen(name));
-}
-
-/**********************************************************************//**
-Outputs a fixed-length string, quoted as an SQL identifier.
-If the string contains a slash '/', the string will be
-output as two identifiers separated by a period (.),
-as in SQL database_name.identifier. */
-
-void
-ut_print_namel(
-/*===========*/
-	FILE*		f,	/*!< in: output stream */
-	const trx_t*	trx,	/*!< in: transaction (NULL=no quotes) */
-	ibool		table_id,/*!< in: TRUE=print a table name,
-				FALSE=print other identifier */
-	const char*	name,	/*!< in: name to print */
-	ulint		namelen)/*!< in: length of name */
 {
 	/* 2 * NAME_LEN for database and table name,
 	and some slack for the #mysql50# prefix and quotes */
@@ -612,32 +543,28 @@ ut_print_namel(
 	const char*	bufend;
 
 	bufend = innobase_convert_name(buf, sizeof buf,
-				       name, namelen,
-				       trx ? trx->mysql_thd : NULL,
-				       table_id);
+				       name, strlen(name),
+				       trx ? trx->mysql_thd : NULL);
 
 	if (fwrite(buf, 1, bufend - buf, f) != (size_t) (bufend - buf)) {
 		perror("fwrite");
 	}
 }
 
-/**********************************************************************//**
-Formats a table or index name, quoted as an SQL identifier. If the name
-contains a slash '/', the result will contain two identifiers separated by
-a period (.), as in SQL database_name.identifier.
+/** Format a table name, quoted as an SQL identifier.
+If the name contains a slash '/', the result will contain two
+identifiers separated by a period (.), as in SQL
+database_name.table_name.
+@see table_name_t
+@param[in]	name		table or index name
+@param[out]	formatted	formatted result, will be NUL-terminated
+@param[in]	formatted_size	size of the buffer in bytes
 @return pointer to 'formatted' */
-
 char*
 ut_format_name(
-/*===========*/
-	const char*	name,		/*!< in: table or index name, must be
-					'\0'-terminated */
-	ibool		is_table,	/*!< in: if TRUE then 'name' is a table
-					name */
-	char*		formatted,	/*!< out: formatted result, will be
-					'\0'-terminated */
-	ulint		formatted_size)	/*!< out: no more than this number of
-					bytes will be written to 'formatted' */
+	const char*	name,
+	char*		formatted,
+	ulint		formatted_size)
 {
 	switch (formatted_size) {
 	case 1:
@@ -650,7 +577,7 @@ ut_format_name(
 	char*	end;
 
 	end = innobase_convert_name(formatted, formatted_size,
-				    name, strlen(name), NULL, is_table);
+				    name, strlen(name), NULL);
 
 	/* If the space in 'formatted' was completely used, then sacrifice
 	the last character in order to write '\0' at the end. */
@@ -667,7 +594,6 @@ ut_format_name(
 
 /**********************************************************************//**
 Catenate files. */
-
 void
 ut_copy_file(
 /*=========*/
@@ -703,7 +629,6 @@ characters that would have been printed if the buffer was unlimited because
 VC's _vsnprintf() returns -1 in this case and we would need to call
 _vscprintf() in addition to estimate that but we would need another copy
 of "ap" for that and VC does not provide va_copy(). */
-
 void
 ut_vsnprintf(
 /*=========*/
@@ -721,7 +646,6 @@ A substitute for snprintf(3), formatted output conversion into
 a limited buffer.
 @return number of characters that would have been printed if the size
 were unlimited, not including the terminating '\0'. */
-
 int
 ut_snprintf(
 /*========*/
@@ -759,7 +683,6 @@ ut_snprintf(
 The returned string is static and should not be freed or modified.
 @param[in]	num	InnoDB internal error number
 @return string, describing the error */
-
 const char*
 ut_strerr(
 	dberr_t	num)
@@ -886,14 +809,26 @@ ut_strerr(
 	case DB_CANT_CREATE_GEOMETRY_OBJECT:
 		return("Can't create specificed geometry data object");
 	case DB_CANNOT_OPEN_FILE:
-		return ("Cannot open a file");
+		return("Cannot open a file");
 	case DB_TABLE_CORRUPT:
 		return("Table is corrupted");
 	case DB_FTS_TOO_MANY_WORDS_IN_PHRASE:
 		return("Too many words in a FTS phrase or proximity search");
+	case DB_IO_DECOMPRESS_FAIL:
+		return("Page decompress failed after reading from disk");
+	case DB_IO_NO_PUNCH_HOLE:
+		return("No punch hole support");
+	case DB_IO_NO_PUNCH_HOLE_FS:
+		return("Punch hole not supported by the file system");
+	case DB_IO_NO_PUNCH_HOLE_TABLESPACE:
+		return("Punch hole not supported by the tablespace");
+	case DB_IO_PARTIAL_FAILED:
+		return("Partial IO failed");
 	case DB_FORCED_ABORT:
 		return("Transaction aborted by another higher priority "
 		       "transaction");
+	case DB_WRONG_FILE_NAME:
+		return("Invalid Filename");
 
 	/* do not add default: in order to produce a warning if new code
 	is added to the enum but not added here */
@@ -980,6 +915,15 @@ fatal::~fatal()
 {
 	sql_print_error("[FATAL] InnoDB: %s", m_oss.str().c_str());
 	ut_error;
+}
+
+error_or_warn::~error_or_warn()
+{
+	if (m_error) {
+		sql_print_error("InnoDB: %s", m_oss.str().c_str());
+	} else {
+		sql_print_warning("InnoDB: %s", m_oss.str().c_str());
+	}
 }
 
 } // namespace ib

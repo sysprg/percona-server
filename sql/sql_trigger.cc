@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2004, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2004, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,15 +17,19 @@
 
 #include "my_global.h"                // NO_EMBEDDED_ACCESS_CHECKS
 #include "sql_trigger.h"
+
+#include "auth_common.h"              // check_table_access
 #include "sp.h"                       // sp_add_to_query_tables()
 #include "sql_base.h"                 // find_temporary_table()
 #include "sql_table.h"                // build_table_filename()
                                       // write_bin_log()
 #include "sql_handler.h"              // mysql_ha_rm_tables()
 #include "sp_cache.h"                 // sp_invalidate_cache()
-#include "sql_parse.h"                // check_table_access()
 #include "trigger_loader.h"           // Trigger_loader
 #include "table_trigger_dispatcher.h" // Table_trigger_dispatcher
+#include "binlog.h"
+#include "sp_head.h"                  // sp_name
+
 #include "mysql/psi/mysql_sp.h"
 
 ///////////////////////////////////////////////////////////////////////////
@@ -110,7 +114,7 @@ bool mysql_create_or_drop_trigger(THD *thd, TABLE_LIST *tables, bool create)
     applies to them too.
   */
   if (!trust_function_creators && mysql_bin_log.is_open() &&
-      !(thd->security_ctx->master_access & SUPER_ACL))
+      !(thd->security_context()->check_access(SUPER_ACL)))
   {
     my_error(ER_BINLOG_CREATE_ROUTINE_NEED_SUPER, MYF(0));
     DBUG_RETURN(TRUE);
@@ -133,12 +137,8 @@ bool mysql_create_or_drop_trigger(THD *thd, TABLE_LIST *tables, bool create)
     */
     thd->lex->sql_command= backup.sql_command;
 
-    if (opt_readonly && !(thd->security_ctx->master_access & SUPER_ACL) &&
-        !thd->slave_thread)
-    {
-      my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--read-only");
+    if (check_readonly(thd, true))
       goto end;
-    }
 
     if (add_table_for_trigger(thd,
                               thd->lex->spname->m_db,

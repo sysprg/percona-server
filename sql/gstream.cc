@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,9 +18,8 @@
   NOTE: These functions assumes that the string is end \0 terminated!
 */
 
-#include "sql_priv.h"
 #include "gstream.h"
-#include "m_string.h"                           // LEX_STRING
+#include "mysql/mysql_lex_string.h"              // LEX_STRING
 /* key_memory_Gis_read_stream_err_msg */
 #include "mysqld.h"
 

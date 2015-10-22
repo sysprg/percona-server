@@ -373,6 +373,24 @@ create table VAR_SAMP(a int);
 --error ER_PARSE_ERROR
 create table VAR_SAMP (a int);
 
+--echo #
+--echo # Test "UNIQUE KEY" and "UNIQUE" "KEY" grammar ambiguity
+--echo #
+
+CREATE TABLE t1 (i INT KEY);
+SHOW CREATE TABLE t1;
+
+CREATE TABLE t2 (i INT UNIQUE);
+SHOW CREATE TABLE t2;
+
+CREATE TABLE t3 (i INT UNIQUE KEY);
+--echo # Should output "UNIQUE KEY `i` (`i`)" only:
+SHOW CREATE TABLE t3;
+
+DROP TABLE t1, t2, t3;
+
+--echo #
+
 #
 # Bug#25930 (CREATE TABLE x SELECT ... parses columns wrong when ran with
 #            ANSI_QUOTES mode)
@@ -557,8 +575,6 @@ select make_set(1);
 select master_pos_wait();
 -- error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
 select master_pos_wait(1);
--- error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
-select master_pos_wait(1, 2, 3, 4);
 
 -- error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
 select rand(1, 2, 3);
@@ -1246,6 +1262,62 @@ SELECT  !('' XOR LENGTH());
 
 --error ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT
 SELECT  !((UNHEX() IS NULL));
+
+--echo #
+--echo # Bug #20086997: PARSER CONFUSES WITH 7BIT-CHARACTER STRING DETECTION
+--echo #
+
+CREATE DATABASE mysqltest1 CHARACTER SET LATIN2;
+USE mysqltest1;
+CREATE TABLE t1 (a VARCHAR(255) CHARACTER SET LATIN2);
+SET CHARACTER SET cp1250_latin2;
+INSERT INTO t1 VALUES ('£¥ª¯');
+INSERT INTO t1 VALUES ('£¥ª¯' '');
+SELECT HEX(a) FROM t1;
+DROP DATABASE mysqltest1;
+USE test;
+
+--echo #
+--echo # WL #7201, WL #7202 and WL#8062 coverage tests
+--echo #
+
+CREATE TABLE t1 (i INT);
+
+INSERT INTO t1 () SELECT * FROM t1;
+INSERT INTO t1 SELECT HIGH_PRIORITY * FROM t1;
+--error ER_WRONG_USAGE
+INSERT INTO t1 SELECT DISTINCT ALL * FROM t1;
+--error ER_WRONG_TABLE_NAME
+REPLACE INTO `` SELECT * FROM ``;
+DELETE QUICK FROM t1 WHERE i = 0;
+
+DROP TABLE t1;
+
+--echo #
+--echo # Bug #21035515: PARSE_GCOL_EXPR SHOULD BE A KIND OF RESERVED WORD,
+--echo #                NOT A KEYWORD
+
+SET @parse_gcol_expr = 1;
+
+SELECT 1 AS parse_gcol_expr;
+
+CREATE TABLE parse_gcol_expr (i INT);
+DROP TABLE parse_gcol_expr;
+
+DELIMITER |;
+--echo # parse_gcol_expr can't be a label:
+--error ER_PARSE_ERROR
+CREATE PROCEDURE p1()
+BEGIN
+parse_gcol_expr: LOOP
+  SELECT 1;
+END LOOP label1;
+END|
+DELIMITER ;|
+
+--echo # PARSE_GCOL_EXPR is not a valid statement:
+--error ER_PARSE_ERROR
+PARSE_GCOL_EXPR (1);
 
 --echo #
 

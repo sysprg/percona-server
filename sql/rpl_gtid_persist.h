@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License as
@@ -18,11 +18,11 @@
 #ifndef RPL_GTID_PERSIST_H_
 #define RPL_GTID_PERSIST_H_
 
-#include <string>
-#include "rpl_table_access.h"
-using std::string;
+#include "my_global.h"
+#include "rpl_table_access.h"        // System_table_access
+#include "sql_class.h"               // Open_tables_backup
 
-class Open_tables_backup;
+#include <string>
 
 
 class Gtid_table_access_context : public System_table_access
@@ -101,7 +101,10 @@ class Gtid_table_persistor
 public:
   static const uint number_fields= 3;
 
-  Gtid_table_persistor() : m_count(0) { };
+  Gtid_table_persistor()
+  {
+    m_count.atomic_set(0);
+  };
   virtual ~Gtid_table_persistor() { };
 
   /**
@@ -117,7 +120,7 @@ public:
     @retval
       -1   Error
   */
-  int save(THD *thd, Gtid *gtid);
+  int save(THD *thd, const Gtid *gtid);
   /**
     Insert the gtid set into table.
 
@@ -129,7 +132,7 @@ public:
     @retval
       -1   Error
   */
-  int save(Gtid_set *gtid_set);
+  int save(const Gtid_set *gtid_set);
   /**
     Delete all rows from the table.
 
@@ -172,10 +175,41 @@ public:
       -1   Error
   */
   int compress(THD *thd);
+  /**
+    Push a waring to client if user is modifying
+    the gtid_executed table explicitly.
+
+    @param thd Thread requesting to access the table
+    @param table The table is being accessed.
+
+    @retval true A warning was pushed to the client.
+    @retval false No warning was pushed to the client.
+  */
+  bool warn_on_explicit_modification(THD *thd, TABLE_LIST *table)
+  {
+    DBUG_ENTER("Gtid_table_persistor::warn_on_explicit_modification");
+
+    if (!thd->is_operating_gtid_table_implicitly &&
+        table->lock_type >= TL_WRITE_ALLOW_WRITE &&
+        !strcmp(table->table_name, Gtid_table_access_context::TABLE_NAME.str))
+    {
+      /*
+        Push a waring to client if user is modifying
+        the gtid_executed table explicitly.
+      */
+      push_warning_printf(thd, Sql_condition::SL_WARNING,
+                          ER_WARN_ON_MODIFYING_GTID_EXECUTED_TABLE,
+                          ER(ER_WARN_ON_MODIFYING_GTID_EXECUTED_TABLE),
+                          table->table_name);
+      DBUG_RETURN(true);
+    }
+
+    DBUG_RETURN(false);
+  }
 
 private:
   /* Count the append size of the table */
-  ulong m_count;
+  Atomic_int64 m_count;
   /**
     Compress the gtid_executed table, read each row by the
     PK(sid, gno_start) in increasing order, compress the first
@@ -278,7 +312,7 @@ private:
     @param  table Reference to a table object.
     @retval Return the encoded gtid text.
   */
-  string encode_gtid_text(TABLE *table);
+  std::string encode_gtid_text(TABLE *table);
   /**
     Get gtid interval from the the current row of the table.
 
@@ -287,7 +321,7 @@ private:
     @param  gno_star[out] The first GNO of the gtid interval.
     @param  gno_end[out]  The last GNO of the gtid interval.
   */
-  void get_gtid_interval(TABLE *table, string &sid,
+  void get_gtid_interval(TABLE *table, std::string &sid,
                          rpl_gno &gno_start, rpl_gno &gno_end);
   /**
     Insert the gtid set into table.
@@ -301,7 +335,7 @@ private:
     @retval
       -1   Error
   */
-  int save(TABLE *table, Gtid_set *gtid_set);
+  int save(TABLE *table, const Gtid_set *gtid_set);
   /* Prevent user from invoking default assignment function. */
   Gtid_table_persistor &operator=(const Gtid_table_persistor &info);
   /* Prevent user from invoking default constructor function. */

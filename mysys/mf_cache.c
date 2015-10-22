@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,6 +16,7 @@
 /* Open a temporary file and cache it with io_cache. Delete it on close */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include <m_string.h>
 #include "my_static.h"
 #include "mysys_err.h"
@@ -30,7 +31,7 @@ static my_bool cache_remove_open_tmp(IO_CACHE *cache __attribute__((unused)),
 {
 #if O_TEMPORARY == 0
   /* The following should always succeed */
-  (void) my_delete(name,MYF(MY_WME | ME_NOINPUT));
+  (void) my_delete(name,MYF(MY_WME));
 #endif /* O_TEMPORARY == 0 */
   return 0;
 }

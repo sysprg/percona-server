@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -73,16 +73,15 @@
   we are forced to use mysql_lock_merge.
 */
 
-#include "sql_priv.h"
 #include "debug_sync.h"
-#include "unireg.h"                    // REQUIRED: for other includes
 #include "lock.h"
 #include "sql_base.h"                       // close_tables_for_reopen
 #include "sql_parse.h"                     // is_log_table_write_query
 #include "auth_common.h"                   // SUPER_ACL
+#include "session_tracker.h"
 #include <hash.h>
 #include <assert.h>
-
+#include "my_atomic.h"
 /**
   @defgroup Locking Locking
   @{
@@ -116,7 +115,6 @@ static int
 lock_tables_check(THD *thd, TABLE **tables, size_t count, uint flags)
 {
   uint system_count= 0, i= 0;
-  bool is_superuser= false;
   /*
     Identifies if the executed sql command can updated either a log
     or rpl info table.
@@ -125,7 +123,6 @@ lock_tables_check(THD *thd, TABLE **tables, size_t count, uint flags)
 
   DBUG_ENTER("lock_tables_check");
 
-  is_superuser= thd->security_ctx->master_access & SUPER_ACL;
   log_table_write_query=
      is_log_table_write_query(thd->lex->sql_command);
 
@@ -191,11 +188,8 @@ lock_tables_check(THD *thd, TABLE **tables, size_t count, uint flags)
     if (!(flags & MYSQL_LOCK_IGNORE_GLOBAL_READ_ONLY) && !t->s->tmp_table)
     {
       if (t->reginfo.lock_type >= TL_WRITE_ALLOW_WRITE &&
-          !is_superuser && opt_readonly && !thd->slave_thread)
-      {
-        my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--read-only");
-        DBUG_RETURN(1);
-      }
+        check_readonly(thd, true))
+          DBUG_RETURN(1);
     }
   }
 
@@ -248,6 +242,35 @@ static void reset_lock_data(MYSQL_LOCK *sql_lock)
     (*ldata)->type= TL_UNLOCK;
   }
   DBUG_VOID_RETURN;
+}
+
+
+/**
+  Scan array of tables for access types; update transaction tracker
+  accordingly.
+
+   @param thd          The current thread.
+   @param tables       An array of pointers to the tables to lock.
+   @param count        The number of tables to lock.
+*/
+
+static void track_table_access(THD *thd, TABLE **tables, size_t count)
+{
+  Transaction_state_tracker *tst= (Transaction_state_tracker *)
+    thd->session_tracker.get_tracker(TRANSACTION_INFO_TRACKER);
+  enum enum_tx_state         s;
+
+  while (count--)
+  {
+    TABLE *t= tables[count];
+
+    if (t)
+    {
+      s= tst->calc_trx_state(thd, t->reginfo.lock_type,
+                             t->file->has_transactions());
+      tst->add_trx_state(thd, s);
+    }
+  }
 }
 
 
@@ -312,7 +335,12 @@ MYSQL_LOCK *mysql_lock_tables(THD *thd, TABLE **tables, size_t count, uint flags
   rc= thr_lock_errno_to_mysql[(int) thr_multi_lock(sql_lock->locks +
                                                    sql_lock->lock_count,
                                                    sql_lock->lock_count,
-                                                   &thd->lock_info, timeout)];
+                                                   &thd->lock_info, timeout,
+                                                   thd->mysys_var)];
+
+  DBUG_EXECUTE_IF("mysql_lock_tables_kill_query",
+                  thd->killed= THD::KILL_QUERY;);
+
   if (rc)
   {
     if (sql_lock->table_count)
@@ -321,6 +349,7 @@ MYSQL_LOCK *mysql_lock_tables(THD *thd, TABLE **tables, size_t count, uint flags
     if (! thd->killed)
       my_error(rc, MYF(0));
   }
+
 end:
   if (!(flags & MYSQL_OPEN_IGNORE_KILLED) && thd->killed)
   {
@@ -331,6 +360,9 @@ end:
       sql_lock= 0;
     }
   }
+
+  if (thd->variables.session_track_transaction_info > TX_TRACK_NONE)
+    track_table_access(thd, tables, count);
 
   thd->set_time_after_lock();
   DBUG_RETURN(sql_lock);
@@ -771,8 +803,7 @@ bool lock_schema_name(THD *thd, const char *db)
 
   if (thd->locked_tables_mode)
   {
-    my_message(ER_LOCK_OR_ACTIVE_TRANSACTION,
-               ER(ER_LOCK_OR_ACTIVE_TRANSACTION), MYF(0));
+    my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
     return TRUE;
   }
 
@@ -800,6 +831,58 @@ bool lock_schema_name(THD *thd, const char *db)
 
   DEBUG_SYNC(thd, "after_wait_locked_schema_name");
   return FALSE;
+}
+
+
+/**
+  Obtain an exclusive metadata lock on a tablespace name.
+
+  @param thd         Thread handle.
+  @param tablespace  The tablespace name.
+
+  This function cannot be called while holding the LOCK_open mutex.
+  To avoid deadlocks, we do not try to obtain exclusive metadata
+  locks in LOCK TABLES mode, since in this mode there may be
+  other metadata locks already taken by the current connection,
+  and we must not wait for MDL locks while holding locks.
+
+  @retval false  Success.
+  @retval true   Failure: we're in LOCK TABLES mode, out of memory,
+                 connection was killed, or numerous other reasons.
+*/
+
+bool lock_tablespace_name(THD *thd, const char *tablespace)
+{
+  MDL_request_list mdl_requests;
+  MDL_request global_request;
+  MDL_request mdl_request;
+
+  if (thd->locked_tables_mode)
+  {
+    my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
+    return true;
+  }
+
+  if (thd->global_read_lock.can_acquire_protection())
+    return true;
+
+  MDL_REQUEST_INIT(&global_request,
+                   MDL_key::GLOBAL, "", "", MDL_INTENTION_EXCLUSIVE,
+                   MDL_STATEMENT);
+
+  MDL_REQUEST_INIT(&mdl_request,
+                   MDL_key::TABLESPACE, "", tablespace,
+                   MDL_EXCLUSIVE, MDL_TRANSACTION);
+
+  mdl_requests.push_front(&mdl_request);
+  mdl_requests.push_front(&global_request);
+
+  if (thd->mdl_context.acquire_locks(&mdl_requests,
+                                     thd->variables.lock_wait_timeout))
+    return true;
+
+  DEBUG_SYNC(thd, "after_wait_locked_tablespace_name");
+  return false;
 }
 
 
@@ -834,8 +917,7 @@ bool lock_object_name(THD *thd, MDL_key::enum_mdl_namespace mdl_type,
 
   if (thd->locked_tables_mode)
   {
-    my_message(ER_LOCK_OR_ACTIVE_TRANSACTION,
-               ER(ER_LOCK_OR_ACTIVE_TRANSACTION), MYF(0));
+    my_error(ER_LOCK_OR_ACTIVE_TRANSACTION, MYF(0));
     return TRUE;
   }
 
@@ -872,22 +954,22 @@ static void print_lock_error(int error, const char *table)
 
   switch (error) {
   case HA_ERR_LOCK_WAIT_TIMEOUT:
-    my_error(ER_LOCK_WAIT_TIMEOUT, MYF(ME_BELL+ME_OLDWIN+ME_WAITTANG), error);
+    my_error(ER_LOCK_WAIT_TIMEOUT, MYF(0), error);
     break;
   case HA_ERR_READ_ONLY_TRANSACTION:
-    my_error(ER_READ_ONLY_TRANSACTION, MYF(ME_BELL+ME_OLDWIN+ME_WAITTANG),
+    my_error(ER_READ_ONLY_TRANSACTION, MYF(0),
              error);
     break;
   case HA_ERR_LOCK_DEADLOCK:
-    my_error(ER_LOCK_DEADLOCK, MYF(ME_BELL+ME_OLDWIN+ME_WAITTANG), error);
+    my_error(ER_LOCK_DEADLOCK, MYF(0), error);
     break;
   case HA_ERR_WRONG_COMMAND:
-    my_error(ER_ILLEGAL_HA, MYF(ME_BELL+ME_OLDWIN+ME_WAITTANG), table);
+    my_error(ER_ILLEGAL_HA, MYF(0), table);
     break;
   default:
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(ER_CANT_LOCK, MYF(ME_BELL+ME_OLDWIN+ME_WAITTANG),
+      my_error(ER_CANT_LOCK, MYF(0),
                error, my_strerror(errbuf, sizeof(errbuf), error));
     }
     break;
@@ -896,6 +978,7 @@ static void print_lock_error(int error, const char *table)
   DBUG_VOID_RETURN;
 }
 
+volatile int32 Global_read_lock::m_active_requests;
 
 /****************************************************************************
   Handling of global read locks
@@ -988,9 +1071,15 @@ bool Global_read_lock::lock_global_read_lock(THD *thd)
     MDL_REQUEST_INIT(&mdl_request,
                      MDL_key::GLOBAL, "", "", MDL_SHARED, MDL_EXPLICIT);
 
+    /* Increment static variable first to signal innodb memcached server
+       to release mdl locks held by it */
+    my_atomic_add32(&Global_read_lock::m_active_requests, 1);
     if (thd->mdl_context.acquire_lock(&mdl_request,
                                       thd->variables.lock_wait_timeout))
+    {
+      my_atomic_add32(&Global_read_lock::m_active_requests, -1);
       DBUG_RETURN(1);
+    }
 
     m_mdl_global_shared_lock= mdl_request.ticket;
     m_state= GRL_ACQUIRED;
@@ -1029,6 +1118,7 @@ void Global_read_lock::unlock_global_read_lock(THD *thd)
     m_mdl_blocks_commits_lock= NULL;
   }
   thd->mdl_context.release_lock(m_mdl_global_shared_lock);
+  my_atomic_add32(&Global_read_lock::m_active_requests, -1);
   m_mdl_global_shared_lock= NULL;
   m_state= GRL_NONE;
 

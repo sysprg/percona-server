@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,8 +17,6 @@
   Atomic rename of table;  RENAME TABLE t1 to t2, tmp to t1 [,...]
 */
 
-#include "sql_priv.h"
-#include "unireg.h"
 #include "sql_rename.h"
 #include "sql_cache.h"                          // query_cache_*
 #include "sql_table.h"                         // build_table_filename

@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,6 +19,7 @@ INCLUDE(CheckIncludeFiles)
 INCLUDE(CheckLibraryExists)
 
 OPTION(DEBUG_EXTNAME "" ON)
+OPTION(ENABLED_LOCAL_INFILE "" ON)
 
 IF(NOT COMPILATION_COMMENT)
   SET(COMPILATION_COMMENT "MySQL Community Server (GPL)")
@@ -53,9 +54,6 @@ IF(UNIX)
         ")
       ENDIF()
     ENDIF()
-
-    # Enable fast mutexes on Linux
-    OPTION(WITH_FAST_MUTEXES "" ON)
   ENDIF()
 
 ENDIF()

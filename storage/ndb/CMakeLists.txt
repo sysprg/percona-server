@@ -1,4 +1,4 @@
-# Copyright (c) 2008, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -117,9 +117,6 @@ IF(NOT MYSQL_CLUSTER_VERSION)
  # Global schema lock not supported in non
  # MySQL Cluster version yet, compile ndbcluster without it
  ADD_DEFINITIONS(-DNDB_WITHOUT_GLOBAL_SCHEMA_LOCK)
- # The function 'make_db_list' is not available in non
- # MySQL Cluster version yet, compile ndbcluster without it
- ADD_DEFINITIONS(-DNDB_WITHOUT_MAKE_DB_LIST)
 ENDIF()
 
 # NDB needs replication
@@ -257,6 +254,14 @@ ELSE()
     MESSAGE(STATUS "Default value for WITH_NDB_JAVA set to 0 since "
                    "bootstrapping was detected")
   ENDIF()
+  IF(NOT MYSQL_CLUSTER_VERSION)
+    # Don't build the Java parts of NDB by default in MySQL Server
+    # (this lowers the threshold for checking that things
+    #  work also with engine = NDB)
+    SET(WITH_NDB_JAVA_DEFAULT OFF)
+    MESSAGE(STATUS "Default value for WITH_NDB_JAVA set to 0 in "
+                   "MySQL Server version")
+  ENDIF()
 ENDIF()
 OPTION(WITH_NDB_JAVA
   "Include NDB Cluster Java components" ${WITH_NDB_JAVA_DEFAULT})
@@ -332,9 +337,5 @@ IF(WITH_NDBAPI_EXAMPLES)
   MESSAGE(STATUS "Building the NdbApi example programs")
   ADD_SUBDIRECTORY(ndbapi-examples)
 ENDIF()
-
-IF(WITHOUT_PARTITION_STORAGE_ENGINE)
-  MESSAGE(FATAL_ERROR "NDBCLUSTER can't be compiled without PARTITION")
-ENDIF(WITHOUT_PARTITION_STORAGE_ENGINE)
 
 ADD_SUBDIRECTORY(wix)

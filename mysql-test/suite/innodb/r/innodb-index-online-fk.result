@@ -116,12 +116,13 @@ SELECT t2.name, t1.name FROM information_schema.innodb_sys_columns t1, informati
 name	name
 test/child	a1
 test/child	a2
-SELECT NAME FROM information_schema.INNODB_SYS_TABLES;
+SELECT NAME FROM information_schema.INNODB_SYS_TABLES WHERE NAME not like 'sys\/%';
 NAME
 SYS_DATAFILES
 SYS_FOREIGN
 SYS_FOREIGN_COLS
 SYS_TABLESPACES
+SYS_VIRTUAL
 mysql/engine_cost
 mysql/gtid_executed
 mysql/help_category
@@ -130,7 +131,9 @@ mysql/help_relation
 mysql/help_topic
 mysql/innodb_index_stats
 mysql/innodb_table_stats
+mysql/plugin
 mysql/server_cost
+mysql/servers
 mysql/slave_master_info
 mysql/slave_relay_log_info
 mysql/slave_worker_info
@@ -321,12 +324,13 @@ SELECT t2.name, t1.name FROM information_schema.innodb_sys_columns t1, informati
 name	name
 test/child	a1
 test/child	a2
-SELECT NAME FROM information_schema.INNODB_SYS_TABLES;
+SELECT NAME FROM information_schema.INNODB_SYS_TABLES WHERE NAME not like 'sys\/%';
 NAME
 SYS_DATAFILES
 SYS_FOREIGN
 SYS_FOREIGN_COLS
 SYS_TABLESPACES
+SYS_VIRTUAL
 mysql/engine_cost
 mysql/gtid_executed
 mysql/help_category
@@ -335,7 +339,9 @@ mysql/help_relation
 mysql/help_topic
 mysql/innodb_index_stats
 mysql/innodb_table_stats
+mysql/plugin
 mysql/server_cost
+mysql/servers
 mysql/slave_master_info
 mysql/slave_relay_log_info
 mysql/slave_worker_info
@@ -360,12 +366,13 @@ SELECT t2.name, t1.name FROM information_schema.innodb_sys_columns t1, informati
 name	name
 test/child	a2
 test/child	a3
-SELECT NAME FROM information_schema.INNODB_SYS_TABLES;
+SELECT NAME FROM information_schema.INNODB_SYS_TABLES WHERE NAME not like 'sys\/%';
 NAME
 SYS_DATAFILES
 SYS_FOREIGN
 SYS_FOREIGN_COLS
 SYS_TABLESPACES
+SYS_VIRTUAL
 mysql/engine_cost
 mysql/gtid_executed
 mysql/help_category
@@ -374,7 +381,9 @@ mysql/help_relation
 mysql/help_topic
 mysql/innodb_index_stats
 mysql/innodb_table_stats
+mysql/plugin
 mysql/server_cost
+mysql/servers
 mysql/slave_master_info
 mysql/slave_relay_log_info
 mysql/slave_worker_info
@@ -410,12 +419,13 @@ SELECT t2.name, t1.name FROM information_schema.innodb_sys_columns t1, informati
 name	name
 test/child	a1
 test/child	a2
-SELECT NAME FROM information_schema.INNODB_SYS_TABLES;
+SELECT NAME FROM information_schema.INNODB_SYS_TABLES WHERE NAME not like 'sys\/%';
 NAME
 SYS_DATAFILES
 SYS_FOREIGN
 SYS_FOREIGN_COLS
 SYS_TABLESPACES
+SYS_VIRTUAL
 mysql/engine_cost
 mysql/gtid_executed
 mysql/help_category
@@ -424,7 +434,9 @@ mysql/help_relation
 mysql/help_topic
 mysql/innodb_index_stats
 mysql/innodb_table_stats
+mysql/plugin
 mysql/server_cost
+mysql/servers
 mysql/slave_master_info
 mysql/slave_relay_log_info
 mysql/slave_worker_info
@@ -460,12 +472,13 @@ SELECT t2.name, t1.name FROM information_schema.innodb_sys_columns t1, informati
 name	name
 test/child	a2
 test/child	a3
-SELECT NAME FROM information_schema.INNODB_SYS_TABLES;
+SELECT NAME FROM information_schema.INNODB_SYS_TABLES WHERE NAME not like 'sys\/%';
 NAME
 SYS_DATAFILES
 SYS_FOREIGN
 SYS_FOREIGN_COLS
 SYS_TABLESPACES
+SYS_VIRTUAL
 mysql/engine_cost
 mysql/gtid_executed
 mysql/help_category
@@ -474,7 +487,9 @@ mysql/help_relation
 mysql/help_topic
 mysql/innodb_index_stats
 mysql/innodb_table_stats
+mysql/plugin
 mysql/server_cost
+mysql/servers
 mysql/slave_master_info
 mysql/slave_relay_log_info
 mysql/slave_worker_info

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,23 +19,19 @@
 #ifndef _opt_range_h
 #define _opt_range_h
 
-#include "thr_malloc.h"                         /* sql_memdup */
-#include "records.h"                            /* READ_RECORD */
-#include "queues.h"                             /* QUEUE */
-/*
-  It is necessary to include set_var.h instead of item.h because there
-  are dependencies on include order for set_var.h and item.h. This
-  will be resolved later.
-*/
-#include "sql_class.h"                          // set_var.h: THD
-#include "set_var.h"                            /* Item */
-#include "prealloced_array.h"
+#include "my_global.h"
+#include "field.h"            // Field
+#include "prealloced_array.h" // Prealloced_array
+#include "priority_queue.h"   // Priority_queue
+#include "records.h"          // READ_RECORD
+#include "malloc_allocator.h"
 
 #include <algorithm>
 
 class JOIN;
 class Item_sum;
 class Opt_trace_context;
+class Unique;
 
 typedef struct st_key_part {
   uint16           key,part;
@@ -53,9 +49,18 @@ typedef struct st_key_part {
 
 
 class QUICK_RANGE :public Sql_alloc {
- public:
+public:
   uchar *min_key,*max_key;
-  uint16 min_length,max_length,flag;
+  uint16 min_length,max_length;
+
+  /// Stores bitwise-or'ed bits defined in enum key_range_flags.
+  uint16 flag;
+
+  /**
+    Stores one of the HA_READ_MBR_XXX items in enum ha_rkey_function, only
+    effective when flag has a GEOM_FLAG bit.
+  */
+  enum ha_rkey_function rkey_func_flag;
   key_part_map min_keypart_map, // bitmap of used keyparts in min_key
                max_keypart_map; // bitmap of used keyparts in max_key
 
@@ -64,7 +69,7 @@ class QUICK_RANGE :public Sql_alloc {
               key_part_map min_keypart_map_arg,
 	      const uchar *max_key_arg, uint max_length_arg,
               key_part_map max_keypart_map_arg,
-	      uint flag_arg);
+	      uint flag_arg, enum ha_rkey_function rkey_func);
 
   /**
      Initalizes a key_range object for communication with storage engine. 
@@ -388,7 +393,6 @@ public:
 };
 
 
-struct st_qsel_param;
 class PARAM;
 class SEL_ARG;
 
@@ -748,6 +752,23 @@ public:
 
 
 /*
+  Comparison function to be used QUICK_ROR_UNION_SELECT::queue priority
+  queue.
+*/
+struct Quick_ror_union_less
+{
+  explicit Quick_ror_union_less(const QUICK_SELECT_I *me)
+    : m_me(me)
+  {}
+  bool operator()(QUICK_SELECT_I *a, QUICK_SELECT_I *b)
+  {
+    return m_me->head->file->cmp_ref(a->last_rowid, b->last_rowid) > 0;
+  }
+  const QUICK_SELECT_I *m_me;
+};
+
+
+/*
   Rowid-Ordered Retrieval index union select.
   This quick select produces union of row sequences returned by several
   quick select it "merges".
@@ -811,7 +832,11 @@ public:
       quick->get_fields_used(used_fields);
   }
 
-  QUEUE queue;    /* Priority queue for merge operation */
+  Priority_queue<QUICK_SELECT_I*,
+                 std::vector<QUICK_SELECT_I*,
+                             Malloc_allocator<QUICK_SELECT_I*> >,
+                 Quick_ror_union_less>
+    queue;    /* Priority queue for merge operation */
   MEM_ROOT alloc; /* Memory pool for this and merged quick selects data. */
 
   THD *thd;             /* current thread */
@@ -1007,10 +1032,8 @@ FT_SELECT *get_ft_select(THD *thd, TABLE *table, uint key);
 QUICK_RANGE_SELECT *get_quick_select_for_ref(THD *thd, TABLE *table,
                                              struct st_table_ref *ref,
                                              ha_rows records);
-#ifdef WITH_PARTITION_STORAGE_ENGINE
 bool prune_partitions(THD *thd, TABLE *table, Item *pprune_cond);
 void store_key_image_to_rec(Field *field, uchar *ptr, uint len);
-#endif
 
 extern String null_string;
 

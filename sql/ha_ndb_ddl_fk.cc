@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 #include "ha_ndbcluster_glue.h"
 #include "ha_ndbcluster.h"
 #include "ndb_table_guard.h"
+#include "mysql/service_thd_alloc.h"
 
 #define ERR_RETURN(err)                  \
 {                                        \
@@ -1191,7 +1192,7 @@ ha_ndbcluster::create_fks(THD *thd, Ndb *ndb)
   List_iterator<Key> key_iterator(thd->lex->alter_info.key_list);
   while ((key=key_iterator++))
   {
-    if (key->type != Key::FOREIGN_KEY)
+    if (key->type != KEYTYPE_FOREIGN)
       continue;
 
     NDBDICT *dict= ndb->getDictionary();
@@ -1437,21 +1438,21 @@ ha_ndbcluster::create_fks(THD *thd, Ndb *ndb)
     ndbfk.setParent(* parent_tab.get_table(), parent_index, parentcols);
     ndbfk.setChild(* child_tab.get_table(), child_index, childcols);
 
-    switch((Foreign_key::fk_option)fk->delete_opt){
-    case Foreign_key::FK_OPTION_UNDEF:
-    case Foreign_key::FK_OPTION_NO_ACTION:
+    switch((fk_option)fk->delete_opt){
+    case FK_OPTION_UNDEF:
+    case FK_OPTION_NO_ACTION:
       ndbfk.setOnDeleteAction(NdbDictionary::ForeignKey::NoAction);
       break;
-    case Foreign_key::FK_OPTION_RESTRICT:
+    case FK_OPTION_RESTRICT:
       ndbfk.setOnDeleteAction(NdbDictionary::ForeignKey::Restrict);
       break;
-    case Foreign_key::FK_OPTION_CASCADE:
+    case FK_OPTION_CASCADE:
       ndbfk.setOnDeleteAction(NdbDictionary::ForeignKey::Cascade);
       break;
-    case Foreign_key::FK_OPTION_SET_NULL:
+    case FK_OPTION_SET_NULL:
       ndbfk.setOnDeleteAction(NdbDictionary::ForeignKey::SetNull);
       break;
-    case Foreign_key::FK_OPTION_DEFAULT:
+    case FK_OPTION_DEFAULT:
       ndbfk.setOnDeleteAction(NdbDictionary::ForeignKey::SetDefault);
       break;
     default:
@@ -1459,21 +1460,21 @@ ha_ndbcluster::create_fks(THD *thd, Ndb *ndb)
       ndbfk.setOnDeleteAction(NdbDictionary::ForeignKey::NoAction);
     }
 
-    switch((Foreign_key::fk_option)fk->update_opt){
-    case Foreign_key::FK_OPTION_UNDEF:
-    case Foreign_key::FK_OPTION_NO_ACTION:
+    switch((fk_option)fk->update_opt){
+    case FK_OPTION_UNDEF:
+    case FK_OPTION_NO_ACTION:
       ndbfk.setOnUpdateAction(NdbDictionary::ForeignKey::NoAction);
       break;
-    case Foreign_key::FK_OPTION_RESTRICT:
+    case FK_OPTION_RESTRICT:
       ndbfk.setOnUpdateAction(NdbDictionary::ForeignKey::Restrict);
       break;
-    case Foreign_key::FK_OPTION_CASCADE:
+    case FK_OPTION_CASCADE:
       ndbfk.setOnUpdateAction(NdbDictionary::ForeignKey::Cascade);
       break;
-    case Foreign_key::FK_OPTION_SET_NULL:
+    case FK_OPTION_SET_NULL:
       ndbfk.setOnUpdateAction(NdbDictionary::ForeignKey::SetNull);
       break;
-    case Foreign_key::FK_OPTION_DEFAULT:
+    case FK_OPTION_DEFAULT:
       ndbfk.setOnUpdateAction(NdbDictionary::ForeignKey::SetDefault);
       break;
     default:
@@ -1559,39 +1560,6 @@ ha_ndbcluster::can_switch_engines()
 {
   DBUG_ENTER("ha_ndbcluster::can_switch_engines");
 
-  if (m_table == 0)
-  {
-    DBUG_RETURN(0);
-  }
-
-  THD* thd= table->in_use;
-  if (thd == 0)
-  {
-    thd= current_thd;
-  }
-
-  if (thd == 0)
-  {
-    DBUG_RETURN(0);
-  }
-
-  // first shot
-
-  LEX *lex= thd->lex;
-  DBUG_ASSERT(lex != 0);
-  if (lex->sql_command != SQLCOM_ALTER_TABLE)
-    DBUG_RETURN(1);
-
-  Alter_info &alter_info= lex->alter_info;
-  uint alter_flags= alter_info.flags;
-
-  if (!(alter_flags & Alter_info::ALTER_OPTIONS))
-    DBUG_RETURN(1);
-
-  HA_CREATE_INFO &create_info= lex->create_info;
-  if (create_info.db_type->db_type == DB_TYPE_NDBCLUSTER)
-    DBUG_RETURN(1);
-
   if (is_child_or_parent_of_fk())
     DBUG_RETURN(0);
 
@@ -1666,7 +1634,7 @@ fk_split_name(char dst[], const char * src, bool index)
 
 struct Ndb_mem_root_guard {
   Ndb_mem_root_guard(MEM_ROOT *new_root) {
-    root_ptr= my_pthread_get_THR_MALLOC();
+    root_ptr= my_thread_get_THR_MALLOC();
     DBUG_ASSERT(root_ptr != 0);
     old_root= *root_ptr;
     *root_ptr= new_root;
@@ -2104,13 +2072,13 @@ ha_ndbcluster::get_foreign_key_create_info()
 
     fk_string.append(",");
     fk_string.append("\n ");
-    fk_string.append("CONSTRAINT `");
+    fk_string.append(" CONSTRAINT `");
     {
       char db_and_name[FN_LEN+1];
       const char * name = fk_split_name(db_and_name, fk.getName());
       fk_string.append(name);
     }
-    fk_string.append("` FOREIGN KEY(");
+    fk_string.append("` FOREIGN KEY (");
 
     {
       bool first= true;

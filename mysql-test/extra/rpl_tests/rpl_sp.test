@@ -86,7 +86,10 @@ create procedure foo3()
   insert into t1 values (15);
 
 # let's create a non-privileged user
+set @orig_sql_mode= @@sql_mode;
+set sql_mode= (select replace(@@sql_mode,'NO_AUTO_CREATE_USER',''));
 grant CREATE ROUTINE, EXECUTE on mysqltest1.* to "zedjzlcsjhd"@127.0.0.1;
+set sql_mode= @orig_sql_mode;
 grant SELECT on mysqltest1.t1 to "zedjzlcsjhd"@127.0.0.1;
 grant SELECT, INSERT on mysqltest1.t2 to "zedjzlcsjhd"@127.0.0.1;
 
@@ -306,6 +309,7 @@ end|
 
 delimiter ;|
 
+--error ER_DUP_ENTRY
 do fn1(100);
 
 --error ER_DUP_ENTRY
@@ -620,8 +624,8 @@ show function status like '%mysqltestbug36570%';
 connection master;
 flush logs;
 let $MYSQLD_DATADIR= `select @@datadir`;
---replace_regex s/$MYSQL_TEST_DIR/MYSQL_TEST_DIR/ s/TIMESTAMP=[0-9]*/TIMESTAMP=t/ s/SET @@SESSION.GTID_NEXT= .*;/SET @@SESSION.GTID_NEXT= 'GTID';/ s/GROUPS: .*:(.*,.*) /GROUPS: GTID:(X,X)/
---exec $MYSQL_BINLOG --short-form $MYSQLD_DATADIR/master-bin.000001
+--let $mysqlbinlog_parameters= --short-form $MYSQLD_DATADIR/master-bin.000001
+--source include/mysqlbinlog.inc
 use test;
 drop procedure mysqltestbug36570_p1;
 drop procedure ` mysqltestbug36570_p2`;

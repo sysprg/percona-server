@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,16 +17,33 @@
 
 #include "log.h"                 // sql_print_warning
 #include "mysqld_thd_manager.h"  // Global_THD_manager
-#include "sql_bootstrap.h"       // MAX_BOOTSTRAP_QUERY_SIZE
+#include "bootstrap_impl.h"
+#include "sql_initialize.h"
 #include "sql_class.h"           // THD
 #include "sql_connect.h"         // close_connection
 #include "sql_parse.h"           // mysql_parse
+
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
 
 static MYSQL_FILE *bootstrap_file= NULL;
 static int bootstrap_error= 0;
 
 
-static char *fgets_fn(char *buffer, size_t size, MYSQL_FILE* input, int *error)
+int File_command_iterator::next(std::string &query, int *error)
+{
+  static char query_buffer[MAX_BOOTSTRAP_QUERY_SIZE];
+  size_t length= 0;
+  int rc;
+
+  rc= read_bootstrap_query(query_buffer, &length, m_input, m_fgets_fn, error);
+  if (rc == READ_BOOTSTRAP_SUCCESS)
+    query.assign(query_buffer, length);
+  return rc;
+}
+
+
+char *mysql_file_fgets_fn(char *buffer, size_t size, MYSQL_FILE* input, int *error)
 {
   char *line= mysql_file_fgets(buffer, static_cast<int>(size), input);
   if (error)
@@ -34,34 +51,67 @@ static char *fgets_fn(char *buffer, size_t size, MYSQL_FILE* input, int *error)
   return line;
 }
 
+File_command_iterator::File_command_iterator(const char *file_name)
+{
+  is_allocated= false;
+  if (!(m_input= mysql_file_fopen(key_file_init, file_name,
+    O_RDONLY, MYF(MY_WME))))
+    return;
+  m_fgets_fn= mysql_file_fgets_fn;
+  is_allocated= true;
+}
+
+File_command_iterator::~File_command_iterator()
+{
+  end();
+}
+
+void File_command_iterator::end(void)
+{
+  if (is_allocated)
+  {
+    mysql_file_fclose(m_input, MYF(0));
+    is_allocated= false;
+    m_input= NULL;
+  }
+}
+
+Command_iterator *Command_iterator::current_iterator= NULL;
 
 static void handle_bootstrap_impl(THD *thd)
 {
-  MYSQL_FILE *file= bootstrap_file;
-  char buffer[MAX_BOOTSTRAP_QUERY_SIZE];
+  std::string query;
 
   DBUG_ENTER("handle_bootstrap");
+  File_command_iterator file_iter(bootstrap_file, mysql_file_fgets_fn);
+  Compiled_in_command_iterator comp_iter;
 
   thd->thread_stack= (char*) &thd;
-  thd->security_ctx->user= (char*) my_strdup(key_memory_Security_context,
-                                             "boot", MYF(MY_WME));
-  thd->security_ctx->priv_user[0]= thd->security_ctx->priv_host[0]= 0;
+  thd->security_context()->assign_user(STRING_WITH_LEN("boot"));
+  thd->security_context()->assign_priv_user("", 0);
+  thd->security_context()->assign_priv_host("", 0);
   /*
     Make the "client" handle multiple results. This is necessary
     to enable stored procedures with SELECTs and Dynamic SQL
     in init-file.
   */
-  thd->client_capabilities|= CLIENT_MULTI_RESULTS;
+    thd->get_protocol_classic()->add_client_capability(
+    CLIENT_MULTI_RESULTS);
 
   thd->init_for_queries();
 
-  buffer[0]= '\0';
+  if (opt_initialize)
+    Command_iterator::current_iterator= &comp_iter;
+  else
+    Command_iterator::current_iterator= &file_iter;
 
+  Command_iterator::current_iterator->begin();
   for ( ; ; )
   {
-    size_t length;
     int error= 0;
-    int rc= read_bootstrap_query(buffer, &length, file, fgets_fn, &error);
+    int rc;
+
+    rc= Command_iterator::current_iterator->next(query, &error);
 
     if (rc == READ_BOOTSTRAP_EOF)
       break;
@@ -78,8 +128,8 @@ static void handle_bootstrap_impl(THD *thd)
       thd->get_stmt_da()->reset_diagnostics_area();
 
       /* Get the nearest query text for reference. */
-      char *err_ptr= buffer + (length <= MAX_BOOTSTRAP_ERROR_LEN ?
-                                        0 : (length - MAX_BOOTSTRAP_ERROR_LEN));
+      const char *err_ptr= query.c_str() + (query.length() <= MAX_BOOTSTRAP_ERROR_LEN ?
+                                        0 : (query.length() - MAX_BOOTSTRAP_ERROR_LEN));
       switch (rc)
       {
       case READ_BOOTSTRAP_ERROR:
@@ -99,20 +149,20 @@ static void handle_bootstrap_impl(THD *thd)
         break;
       }
 
-      thd->protocol->end_statement();
+      thd->send_statement_status();
       bootstrap_error= 1;
       break;
     }
 
-    char *query= static_cast<char*>(thd->alloc(length + 1));
-    if (query == NULL)
+    char *query_copy= static_cast<char*>(thd->alloc(query.length() + 1));
+    if (query_copy == NULL)
     {
       bootstrap_error= 1;
       break;
     }
-    memcpy(query, buffer, length);
-    query[length]= '\0';
-    thd->set_query(query, length);
+    memcpy(query_copy, query.c_str(), query.length());
+    query_copy[query.length()]= '\0';
+    thd->set_query(query_copy, query.length());
     thd->set_query_id(next_query_id());
     DBUG_PRINT("query",("%-.4096s",thd->query().str));
 #if defined(ENABLED_PROFILING)
@@ -124,7 +174,7 @@ static void handle_bootstrap_impl(THD *thd)
     Parser_state parser_state;
     if (parser_state.init(thd, thd->query().str, thd->query().length))
     {
-      thd->protocol->end_statement();
+      thd->send_statement_status();
       bootstrap_error= 1;
       break;
     }
@@ -132,7 +182,7 @@ static void handle_bootstrap_impl(THD *thd)
     mysql_parse(thd, &parser_state);
 
     bootstrap_error= thd->is_error();
-    thd->protocol->end_statement();
+    thd->send_statement_status();
 
 #if defined(ENABLED_PROFILING)
     thd->profiling.finish_current_query();
@@ -145,6 +195,7 @@ static void handle_bootstrap_impl(THD *thd)
     thd->get_transaction()->free_memory(MYF(MY_KEEP_PREALLOC));
   }
 
+  Command_iterator::current_iterator->end();
   DBUG_VOID_RETURN;
 }
 
@@ -156,7 +207,7 @@ static void handle_bootstrap_impl(THD *thd)
 */
 
 namespace {
-pthread_handler_t handle_bootstrap(void *arg)
+extern "C" void *handle_bootstrap(void *arg)
 {
   THD *thd=(THD*) arg;
 
@@ -171,7 +222,7 @@ pthread_handler_t handle_bootstrap(void *arg)
 #endif
     thd->fatal_error();
     bootstrap_error= 1;
-    net_end(&thd->net);
+    thd->get_protocol_classic()->end_net();
   }
   else
   {
@@ -180,7 +231,7 @@ pthread_handler_t handle_bootstrap(void *arg)
 
     handle_bootstrap_impl(thd);
 
-    net_end(&thd->net);
+    thd->get_protocol_classic()->end_net();
     thd->release_resources();
     thd_manager->remove_thd(thd);
   }
@@ -196,28 +247,23 @@ int bootstrap(MYSQL_FILE *file)
 
   THD *thd= new THD;
   thd->bootstrap= 1;
-  my_net_init(&thd->net,(st_vio*) 0);
-  thd->max_client_packet_length= thd->net.max_packet;
-  thd->security_ctx->master_access= ~(ulong)0;
+  thd->get_protocol_classic()->init_net(NULL);
+  thd->security_context()->set_master_access(~(ulong)0);
 
   thd->set_new_thread_id();
 
   bootstrap_file=file;
 
-  pthread_attr_t thr_attr;
-  pthread_attr_init(&thr_attr);
+  my_thread_attr_t thr_attr;
+  my_thread_attr_init(&thr_attr);
+#ifndef _WIN32
   pthread_attr_setscope(&thr_attr, PTHREAD_SCOPE_SYSTEM);
   pthread_attr_setdetachstate(&thr_attr, PTHREAD_CREATE_JOINABLE);
-  int error;
-#ifdef _WIN32
-  HANDLE boot_handle= NULL;
-  pthread_t bootstrap_thread= 0;
-  error= pthread_create_get_handle(&bootstrap_thread, &thr_attr,
-                                   handle_bootstrap, thd, &boot_handle);
-#else
-  error= mysql_thread_create(key_thread_bootstrap,
-                             &thd->real_id, &thr_attr, handle_bootstrap, thd);
 #endif
+  my_thread_handle thread_handle;
+  // What about setting THD::real_id?
+  int error= mysql_thread_create(key_thread_bootstrap,
+                                 &thread_handle, &thr_attr, handle_bootstrap, thd);
   if (error)
   {
     sql_print_warning("Can't create thread to handle bootstrap (errno= %d)",
@@ -225,11 +271,7 @@ int bootstrap(MYSQL_FILE *file)
     DBUG_RETURN(-1);
   }
   /* Wait for thread to die */
-#ifdef _WIN32
-  pthread_join_with_handle(boot_handle);
-#else
-  pthread_join(thd->real_id, NULL);
-#endif
+  my_thread_join(&thread_handle, NULL);
   delete thd;
   DBUG_RETURN(bootstrap_error);
 }

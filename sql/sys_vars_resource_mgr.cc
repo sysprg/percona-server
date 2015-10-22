@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,7 +13,9 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "sys_vars_resource_mgr.h"
 #include <set_var.h>
+#include "mysqld.h"
 
 /**
   Returns the member that contains the given key (address).
@@ -56,13 +58,14 @@ bool Session_sysvar_resource_manager::init(char **var, const CHARSET_INFO * char
       my_hash_init(&m_sysvar_string_alloc_hash,
 	           const_cast<CHARSET_INFO *> (charset),
 		   4, 0, 0, (my_hash_get_key) sysvars_mgr_get_key,
-		   my_free, HASH_UNIQUE);
+		   my_free, HASH_UNIQUE,
+                   key_memory_THD_Session_sysvar_resource_manager);
     /* Create a new node & add it to the hash. */
     if ( !(element=
            (sys_var_ptr *) my_malloc(key_memory_THD_Session_sysvar_resource_manager,
                                      sizeof(sys_var_ptr), MYF(MY_WME))) ||
          !(ptr=
-           (char *) my_memdup(PSI_NOT_INSTRUMENTED,
+           (char *) my_memdup(key_memory_THD_Session_sysvar_resource_manager,
                               *var, strlen(*var) + 1, MYF(MY_WME))))
       return true;                            /* Error */
     element->data= (void *) ptr;
@@ -91,9 +94,14 @@ bool Session_sysvar_resource_manager::init(char **var, const CHARSET_INFO * char
 bool Session_sysvar_resource_manager::update(char **var, char *val,
                                              size_t val_len)
 {
-  sys_var_ptr *element;
-  char *ptr;
+  sys_var_ptr *element= NULL;
+  char *ptr= NULL;
+  char *old_key= NULL;
 
+  /*
+    Memory allocation for the new value of the variable and
+    copying the value in it.
+  */
   if (val)
   {
     if ( !(ptr=
@@ -102,37 +110,84 @@ bool Session_sysvar_resource_manager::update(char **var, char *val,
       return true;
     ptr[val_len]= 0;
   }
-  else
+
+  /* Get the handle for existing value in hash. */
+  if (*var)
   {
-    ptr= 0;
-    goto done;
+    element= (sys_var_ptr *) find(*var, strlen(*var));
+    if (element)
+      old_key= (char *) element->data;
   }
 
-  if (!(*var && (element= ((sys_var_ptr *)find(*var, strlen(*var))))))
+  /*
+    Update the value in hash when both the existing value
+    and the new value are not null.
+  */
+  if (val && *var)
+  {
+    /* Free the existing one & update the current address. */
+    element->data= ptr;
+    my_hash_update(&m_sysvar_string_alloc_hash, (uchar *) element,
+	           (uchar *)old_key, strlen(old_key));
+    if (old_key)
+      my_free(old_key);
+  }
+
+  /*
+    Delete the existing value from the hash when the new value is NULL.
+  */
+  else if ((val == NULL) && *var)
+  {
+    if (element)
+    {
+      my_hash_delete(&m_sysvar_string_alloc_hash, (uchar *)element);
+      if (old_key)
+	my_free(old_key);
+    }
+  }
+
+  /*
+    Insert the new value into the hash when it is not NULL, but the
+    existing value is.
+  */
+  else if ((*var == NULL) && val)
   {
     /* Create a new node & add it to the list. */
     if( !(element=
           (sys_var_ptr*) my_malloc(key_memory_THD_Session_sysvar_resource_manager,
 				   sizeof(sys_var_ptr), MYF(MY_WME))))
       return true;                            /* Error */
-    element->data= (char *) ptr;
+    element->data= ptr;
     my_hash_insert(&m_sysvar_string_alloc_hash, (uchar *) element);
   }
-  else
-  {
-    /* Free the existing one & update the current address. */
-    char *old_key;
-    old_key= (char *) element->data;
-    element->data= (char *) ptr;
-    my_hash_update(&m_sysvar_string_alloc_hash, (uchar *) element,
-	           (uchar *)old_key, strlen(old_key));
-    if (old_key)
-      my_free(old_key);
-  }
-done:
-  /* Update the variable to point to the newly alloced copy. */
+
+  /*
+    Update the variable to point to the newly alloced copy.
+    
+    When current value and the new value are both NULL,
+    the control directly reaches here. In that case this
+    function effectively does nothing.
+  */
   *var= ptr;
   return false;
+}
+
+void Session_sysvar_resource_manager::claim_memory_ownership()
+{
+  /* Release Sys_var_charptr resources here. */
+  sys_var_ptr *ptr;
+  int i= 0;
+  while ((ptr= (sys_var_ptr*)my_hash_element(&m_sysvar_string_alloc_hash, i)))
+  {
+    if (ptr->data)
+      my_claim(ptr->data);
+    i++;
+  }
+
+  if (m_sysvar_string_alloc_hash.records)
+  {
+    my_hash_claim(&m_sysvar_string_alloc_hash);
+  }
 }
 
 

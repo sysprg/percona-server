@@ -1,7 +1,7 @@
 #ifndef TABLE_INCLUDED
 #define TABLE_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,40 +17,46 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "my_global.h"                          /* NO_EMBEDDED_ACCESS_CHECKS */
-#include "sql_plist.h"
-#include "sql_alloc.h"
-#include "mdl.h"
-#include "datadict.h"
 
 #ifndef MYSQL_CLIENT
 
-#include "hash.h"                               /* HASH */
-#include "handler.h"                /* row_type, ha_choice, handler */
-#include "mysql_com.h"              /* enum_field_types */
-#include "thr_lock.h"                  /* thr_lock_type */
-#include "filesort_utils.h"
-#include "parse_file.h"
-#include "sql_sort.h"
-#include "table_id.h"
-#include "opt_costmodel.h"
+#include "hash.h"          // HASH
+#include "datadict.h"      // frm_type_enum
+#include "handler.h"       // row_type
+#include "mdl.h"           // MDL_wait_for_subgraph
+#include "opt_costmodel.h" // Cost_model_table
+#include "sql_bitmap.h"    // Bitmap
+#include "sql_sort.h"      // Filesort_info
+#include "table_id.h"      // Table_id
 
 /* Structs that defines the TABLE */
-
-class Item;				/* Needed by ORDER */
+class File_parser;
 class Item_subselect;
 class Item_field;
 class GRANT_TABLE;
 class st_select_lex_unit;
-class st_select_lex;
-class partition_info;
 class COND_EQUAL;
 class Security_context;
-struct TABLE_LIST;
 class ACL_internal_schema_access;
 class ACL_internal_table_access;
-class Field;
-class Field_temporal_with_date_and_time;
 class Table_cache_element;
+class Table_trigger_dispatcher;
+class Query_result_union;
+class Temp_table_param;
+class Index_hint;
+struct Name_resolution_context;
+struct LEX;
+typedef int8 plan_idx;
+class Opt_hints_qb;
+class Opt_hints_table;
+
+#define store_record(A,B) memcpy((A)->B,(A)->record[0],(size_t) (A)->s->reclength)
+#define restore_record(A,B) memcpy((A)->record[0],(A)->B,(size_t) (A)->s->reclength)
+#define cmp_record(A,B) memcmp((A)->record[0],(A)->B,(size_t) (A)->s->reclength)
+#define empty_record(A) { \
+                          restore_record((A),s->default_values); \
+                          memset((A)->null_flags, 255, (A)->s->null_bytes);\
+                        }
 
 /*
   Used to identify NESTED_JOIN structures within a join (applicable to
@@ -256,8 +262,7 @@ typedef struct st_grant_internal_info GRANT_INTERNAL_INFO;
    the level of the privilege to be checked and the type of object to be
    accessed. Due to the mentioned scattering of privilege checking
    functionality, it is necessary to keep track of the state of the
-   process. This information is stored in privilege, want_privilege, and
-   orig_want_privilege.
+   process. This information is stored in privilege and want_privilege.
 
    A GRANT_INFO also serves as a cache of the privilege hash tables. Relevant
    members are grant_table and version.
@@ -299,16 +304,15 @@ struct GRANT_INFO
      The set is implemented as a bitmap, with the bits defined in sql_acl.h.
    */
   ulong privilege;
+#ifndef DBUG_OFF
   /**
      @brief the set of privileges that the current user needs to fulfil in
-     order to carry out the requested operation.
+     order to carry out the requested operation. Used in debug build to
+     ensure individual column privileges are assigned consistently.
+     @todo remove this member in 5.8.
    */
   ulong want_privilege;
-  /**
-    Stores the requested access acl of top level tables list. Is used to
-    check access rights to the underlying tables of a view.
-  */
-  ulong orig_want_privilege;
+#endif
   /** The grant state for internal tables. */
   GRANT_INTERNAL_INFO m_internal;
 };
@@ -318,11 +322,7 @@ enum tmp_table_type
   NO_TMP_TABLE, NON_TRANSACTIONAL_TMP_TABLE, TRANSACTIONAL_TMP_TABLE,
   INTERNAL_TMP_TABLE, SYSTEM_TMP_TABLE
 };
-enum release_type { RELEASE_NORMAL, RELEASE_WAIT_FOR_DROP };
 
-
-class Field_blob;
-class Table_trigger_dispatcher;
 
 /**
   Category of table found in the table share.
@@ -473,10 +473,6 @@ enum enum_table_category
 };
 typedef enum enum_table_category TABLE_CATEGORY;
 
-TABLE_CATEGORY get_table_category(const LEX_STRING *db,
-                                  const LEX_STRING *name);
-
-
 extern ulong refresh_version;
 
 typedef struct st_table_field_type
@@ -585,6 +581,7 @@ struct TABLE_SHARE
 
   uchar	*default_values;		/* row with default values */
   LEX_STRING comment;			/* Comment about table */
+  LEX_STRING compress;			/* Compression algorithm */
   const CHARSET_INFO *table_charset;	/* Default charset of string fields */
 
   MY_BITMAP all_set;
@@ -613,15 +610,22 @@ struct TABLE_SHARE
   key_map keys_for_keyread;
   ha_rows min_rows, max_rows;		/* create information */
   ulong   avg_row_length;		/* create information */
+  /**
+    TABLE_SHARE version, if changed the TABLE_SHARE must be reopened.
+    NOTE: The TABLE_SHARE will not be reopened during LOCK TABLES in
+    close_thread_tables!!!
+  */
   ulong   version;
   ulong   mysql_version;		/* 0 if .frm is created before 5.0 */
   ulong   reclength;			/* Recordlength */
+  ulong   stored_rec_length;            /* Stored record length 
+                                           (no generated-only generated fields) */
 
   plugin_ref db_plugin;			/* storage engine plugin */
   inline handlerton *db_type() const	/* table_type for handler */
   { 
     // DBUG_ASSERT(db_plugin);
-    return db_plugin ? plugin_data(db_plugin, handlerton*) : NULL;
+    return db_plugin ? plugin_data<handlerton*>(db_plugin) : NULL;
   }
   enum row_type row_type;		/* How rows are stored */
   enum tmp_table_type tmp_table;
@@ -633,6 +637,8 @@ struct TABLE_SHARE
   enum_stats_auto_recalc stats_auto_recalc; /* Automatic recalc of stats. */
   uint null_bytes, last_null_bit_pos;
   uint fields;				/* Number of fields */
+  uint stored_fields;                   /* Number of stored fields 
+                                           (i.e. without generated-only ones) */
   uint rec_buff_length;                 /* Size of table->record[] buffer */
   uint keys;                            /* Number of keys defined for the table*/
   uint key_parts;                       /* Number of key parts of all keys
@@ -657,6 +663,7 @@ struct TABLE_SHARE
   uint error, open_errno, errarg;       /* error from open_table_def() */
   uint column_bitmap_size;
   uchar frm_version;
+  uint vfields;                         /* Number of generated fields */
   bool null_field_first;
   bool system;                          /* Set if system table (one record) */
   bool crypted;                         /* If .frm file is crypted */
@@ -684,14 +691,12 @@ struct TABLE_SHARE
   /* Name of the tablespace used for this table */
   char *tablespace;
 
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   /* filled in when reading from frm */
   bool auto_partitioned;
   char *partition_info_str;
   uint  partition_info_str_len;
   uint  partition_info_buffer_size;
   handlerton *default_part_db_type;
-#endif
 
   /**
     Cache the checked structure of this table.
@@ -933,6 +938,30 @@ public:
 };
 
 
+/**
+  Flags for TABLE::status (maximum 8 bits). Do NOT add new ones.
+  @todo: GARBAGE and NOT_FOUND could be unified. UPDATED and DELETED could be
+  changed to "bool current_row_has_already_been_modified" in the
+  multi_update/delete objects (one such bool per to-be-modified table).
+  @todo aim at removing the status. There should be more local ways.
+*/
+#define STATUS_GARBAGE          1
+/**
+   Means we were searching for a row and didn't find it. This is used by
+   storage engines (@see handler::index_read_map()) and the Server layer.
+*/
+#define STATUS_NOT_FOUND        2
+/// Reserved for use by multi-table update. Means the row has been updated.
+#define STATUS_UPDATED          16
+/**
+   Means that table->null_row is set. This is an artificial NULL-filled row
+   (one example: in outer join, if no match has been found in inner table).
+*/
+#define STATUS_NULL_ROW         32
+/// Reserved for use by multi-table delete. Means the row has been deleted.
+#define STATUS_DELETED          64
+
+
 /* Information for one open table */
 enum index_hint_type
 {
@@ -977,6 +1006,8 @@ public:
 
   THD	*in_use;                        /* Which thread uses this */
   Field **field;			/* Pointer to fields */
+  /// Count of hidden fields, if internal temporary table; 0 otherwise.
+  uint hidden_field_count;
 
   uchar *record[2];			/* Pointer to records */
   uchar *write_row_record;		/* Used as optimisation in
@@ -1021,10 +1052,8 @@ public:
 
   Field *next_number_field;		/* Set if next_number is activated */
   Field *found_next_number_field;	/* Set on open */
+  Field **vfield;                       /* Pointer to generated fields*/
   Field *hash_field;                    /* Field used by unique constraint */
-  /* Mask and bitmap are used along with hash_field */
-  uchar *hash_field_mask;
-  MY_BITMAP hash_field_bitmap;
   Field *fts_doc_id_field;              /* Set if FTS_DOC_ID field is present */
 
   /* Table's triggers, 0 if there are no of them */
@@ -1120,15 +1149,16 @@ public:
   uint		db_stat;		/* mode of file as in handler.h */
   int		current_lock;           /* Type of lock on table */
 
-  /*
-    0 or JOIN_TYPE_{LEFT|RIGHT}. Currently this is only compared to 0.
-    If maybe_null !=0, this table is inner w.r.t. some outer join operation,
-    and null_row may be true.
+private:
+  /**
+    If true, this table is inner w.r.t. some outer join operation, all columns
+    are nullable (in the query), and null_row may be true.
   */
-  uint maybe_null;
+  my_bool nullable;
+public:
   /*
     If true, the current table row is considered to have all columns set to 
-    NULL, including columns declared as "not null" (see maybe_null).
+    NULL, including columns declared as "not null" (see nullable).
   */
   my_bool null_row;
 
@@ -1162,6 +1192,10 @@ public:
      tree only.
    */
   my_bool key_read;
+  /**
+     Certain statements which need the full row, set this to ban index-only
+     access.
+  */
   my_bool no_keyread;
   my_bool locked_by_logger;
   /**
@@ -1182,13 +1216,30 @@ public:
   my_bool insert_or_update;             /* Can be used by the handler */
   my_bool alias_name_used;		/* true if table_name is alias */
   my_bool get_fields_in_item_tree;      /* Signal to fix_field */
+  /**
+    This table must be reopened and is not to be reused.
+    NOTE: The TABLE will not be reopened during LOCK TABLES in
+    close_thread_tables!!!
+  */
   my_bool m_needs_reopen;
 private:
   bool created; /* For tmp tables. TRUE <=> tmp table has been instantiated.*/
 public:
   uint max_keys; /* Size of allocated key_info array. */
 
-  REGINFO reginfo;			/* field connections */
+  struct /* field connections */
+  {
+    class JOIN_TAB *join_tab;
+    class QEP_TAB *qep_tab;
+    enum thr_lock_type lock_type;		/* How table is used */
+    bool not_exists_optimize;
+    /*
+      TRUE <=> range optimizer found that there is no rows satisfying
+      table conditions.
+    */
+    bool impossible_range;
+  } reginfo;
+
   /**
      @todo This member should not be declared in-line. That makes it
      impossible for any function that does memory allocation to take a const
@@ -1203,11 +1254,9 @@ public:
   Blob_mem_storage *blob_storage;
   GRANT_INFO grant;
   Filesort_info sort;
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   partition_info *part_info;            /* Partition related information */
   /* If true, all partitions have been pruned away */
   bool all_partitions_pruned_away;
-#endif
   MDL_ticket *mdl_ticket;
 
 private:
@@ -1216,10 +1265,12 @@ private:
 public:
 
   void init(THD *thd, TABLE_LIST *tl);
-  bool fill_item_list(List<Item> *item_list, uint limit= MAX_FIELDS) const;
-  void reset_item_list(List<Item> *item_list, uint limit) const;
+  bool fill_item_list(List<Item> *item_list) const;
+  void reset_item_list(List<Item> *item_list) const;
   void clear_column_bitmaps(void);
   void prepare_for_position(void);
+
+  void mark_column_used(THD *thd, Field *field, enum enum_mark_columns mark);
   void mark_columns_used_by_index_no_reset(uint index, MY_BITMAP *map);
   void mark_columns_used_by_index(uint index);
   void mark_auto_increment_column(void);
@@ -1227,6 +1278,9 @@ public:
   void mark_columns_needed_for_delete(void);
   void mark_columns_needed_for_insert(void);
   void mark_columns_per_binlog_row_image(void);
+  void mark_generated_columns(bool is_update);
+  bool is_field_used_by_generated_columns(uint field_index);
+  void mark_gcol_in_maps(Field *field);
   inline void column_bitmaps_set(MY_BITMAP *read_set_arg,
                                  MY_BITMAP *write_set_arg)
   {
@@ -1253,6 +1307,12 @@ public:
   /** Should this instance of the table be reopened? */
   inline bool needs_reopen()
   { return !db_stat || m_needs_reopen; }
+  /// @returns first non-hidden column
+  Field **visible_field_ptr() const
+  { return field + hidden_field_count; }
+  /// @returns count of visible fields
+  uint visible_field_count() const
+  { return s->fields - hidden_field_count; }
   bool alloc_keys(uint key_count);
   bool add_tmp_key(Field_map *key_parts, char *key_name);
   void use_index(int key_to_save);
@@ -1274,6 +1334,19 @@ public:
     }
   }
 
+  /**
+    Check whether the given index has a virtual generated columns.
+
+    @param index_no        the given index to check
+
+    @returns true if if index is defined over at least one virtual generated
+    column
+  */
+  inline bool index_contains_some_virtual_gcol(uint index_no)
+  {
+    DBUG_ASSERT(index_no < s->keys);
+    return key_info[index_no].flags & HA_VIRTUAL_GEN_KEY;
+  }
   bool update_const_key_parts(Item *conds);
 
   bool check_read_removal(uint index);
@@ -1304,6 +1377,17 @@ public:
   {
     created= false;
   }
+  /// Set table as nullable, ie it is inner wrt some outer join
+  void set_nullable() { nullable= TRUE; }
+
+  /// Return whether table is nullable
+  bool is_nullable() const { return nullable; }
+
+  /// @return true if table contains one or more generated columns
+  bool has_gcol() const { return vfield; }
+
+  /// @return true if table contains one or more virtual generated columns
+  bool has_virtual_gcol() const;
 
   /**
     Initialize the optimizer cost model.
@@ -1414,11 +1498,13 @@ typedef struct st_schema_table
 #define JOIN_TYPE_LEFT	1
 #define JOIN_TYPE_RIGHT	2
 
-enum enum_derived_type {
+/**
+  Strategy for how to process a view or derived table (merge or materialization)
+*/
+enum enum_view_algorithm {
   VIEW_ALGORITHM_UNDEFINED = 0,
-  VIEW_ALGORITHM_TMPTABLE,
-  VIEW_ALGORITHM_MERGE,
-  DERIVED_ALGORITHM_TMPTABLE
+  VIEW_ALGORITHM_TEMPTABLE = 1,
+  VIEW_ALGORITHM_MERGE     = 2
 };
 
 #define VIEW_SUID_INVOKER               0
@@ -1438,12 +1524,17 @@ enum enum_derived_type {
 /** The threshold size a blob field buffer before it is freed */
 #define MAX_TDC_BLOB_SIZE 65536
 
-class select_union;
-class Temp_table_param;
-
+/**
+  Struct that describes an expression selected from a derived table or view.
+*/
 struct Field_translator
 {
+  /**
+    Points to an item that represents the expression.
+    If the item is determined to be unused, the pointer is set to NULL.
+  */
   Item *item;
+  /// Name of selected expression
   const char *name;
 };
 
@@ -1478,6 +1569,31 @@ public:
   const char *db_name();
   GRANT_INFO *grant();
 };
+
+
+/*
+  This structure holds the specifications relating to
+  ALTER user ... PASSWORD EXPIRE ...
+*/
+typedef struct st_lex_alter {
+  bool update_password_expired_column;
+  bool use_default_password_lifetime;
+  uint16 expire_after_days;
+  bool update_account_locked_column;
+  bool account_locked;
+} LEX_ALTER;
+
+typedef struct	st_lex_user {
+  LEX_CSTRING user;
+  LEX_CSTRING host;
+  LEX_CSTRING plugin;
+  LEX_CSTRING auth;
+  bool uses_identified_by_clause;
+  bool uses_identified_with_clause;
+  bool uses_authentication_string_clause;
+  bool uses_identified_by_password_clause;
+  LEX_ALTER alter_status;
+} LEX_USER;
 
 
 /**
@@ -1517,9 +1633,6 @@ public:
   Field_map used_fields;
 };
 
-class Index_hint;
-class Item_exists_subselect;
-
 
 /*
   Table reference in the FROM clause.
@@ -1540,7 +1653,7 @@ class Item_exists_subselect;
   2) view (TABLE_LIST::view != NULL)
      - merge    (TABLE_LIST::effective_algorithm == VIEW_ALGORITHM_MERGE)
            also (TABLE_LIST::field_translation != NULL)
-     - tmptable (TABLE_LIST::effective_algorithm == VIEW_ALGORITHM_TMPTABLE)
+     - temptable(TABLE_LIST::effective_algorithm == VIEW_ALGORITHM_TEMPTABLE)
            also (TABLE_LIST::field_translation == NULL)
   3) nested table reference (TABLE_LIST::nested_join != NULL)
      - table sequence - e.g. (t1, t2, t3)
@@ -1555,8 +1668,6 @@ class Item_exists_subselect;
        ;
 */
 
-struct Name_resolution_context;
-struct LEX;
 struct TABLE_LIST
 {
   TABLE_LIST() {}                          /* Remove gcc warning */
@@ -1585,6 +1696,8 @@ struct TABLE_LIST
                      mdl_type_for_dml(lock_type),
                      MDL_TRANSACTION);
     callback_func= 0;
+    opt_hints_table= NULL;
+    opt_hints_qb= NULL;
   }
 
   /// Create a TABLE_LIST object representing a nested join
@@ -1616,6 +1729,404 @@ struct TABLE_LIST
   }
   Item **join_cond_optim_ref() { return &m_join_cond_optim; }
 
+  /// Get the semi-join condition for a semi-join nest, NULL otherwise
+  Item *sj_cond() const { return m_sj_cond; }
+
+  /// Set the semi-join condition for a semi-join nest
+  void set_sj_cond(Item *cond)
+  {
+    DBUG_ASSERT(m_sj_cond == NULL);
+    m_sj_cond= cond;
+  }
+
+  /// Merge tables from a query block into a nested join structure
+  bool merge_underlying_tables(class st_select_lex *select);
+
+  /// Reset table
+  void reset();
+
+  void calc_md5(char *buffer);
+
+  /// Evaluate the check option of a view
+  int view_check_option(THD *thd) const;
+
+  /// Cleanup field translations for a view
+  void cleanup_items();
+
+  /**
+    Check whether the table is a placeholder, ie a derived table, a view or
+    a schema table.
+    A table is also considered to be a placeholder if it does not have a
+    TABLE object for some other reason.
+  */
+  bool is_placeholder() const
+  {
+    return is_view_or_derived() || schema_table || !table;
+  }
+
+  /// Produce a textual identification of this object
+  void print(THD *thd, String *str, enum_query_type query_type) const;
+
+  /// Check which single table inside a view that matches a table map
+  bool check_single_table(TABLE_LIST **table_ref, table_map map);
+
+  /// Allocate a buffer for inserted column values
+  bool set_insert_values(MEM_ROOT *mem_root);
+
+  TABLE_LIST *first_leaf_for_name_resolution();
+  TABLE_LIST *last_leaf_for_name_resolution();
+  bool is_leaf_for_name_resolution() const;
+
+  /// Return the outermost view this table belongs to, or itself
+  inline const TABLE_LIST *top_table() const
+    { return belong_to_view ? belong_to_view : this; }
+
+  inline TABLE_LIST *top_table() 
+  {
+    return
+      const_cast<TABLE_LIST*>(const_cast<const TABLE_LIST*>(this)->top_table());
+  }
+
+  /// Prepare check option for a view
+  bool prepare_check_option(THD *thd, bool is_cascaded= false);
+
+  /// Merge WHERE condition of view or derived table into outer query
+  bool merge_where(THD *thd);
+
+  /// Prepare replace filter for a view (used for REPLACE command)
+  bool prepare_replace_filter(THD *thd);
+
+  /// Return true if this represents a named view
+  bool is_view() const
+  {
+    return view != NULL;
+  }
+
+  /// Return true if this represents a derived table (an unnamed view)
+  bool is_derived() const
+  {
+    return derived != NULL && view == NULL;
+  }
+
+  /// Return true if this represents a named view or a derived table
+  bool is_view_or_derived() const
+  {
+    return derived != NULL;
+  }
+
+  /// Return true if view or derived table and can be merged
+  bool is_mergeable() const;
+
+  /**
+    @returns true if materializable table contains one or zero rows.
+
+    Returning true implies that the table is materialized during optimization,
+    so it need not be optimized during execution.
+  */
+  bool materializable_is_const() const;
+
+  /// Return true if this is a derived table or view that is merged
+  bool is_merged() const
+  {
+    return effective_algorithm == VIEW_ALGORITHM_MERGE;
+  }
+
+  /// Set table to be merged
+  void set_merged()
+  {
+    DBUG_ASSERT(effective_algorithm == VIEW_ALGORITHM_UNDEFINED);
+    effective_algorithm= VIEW_ALGORITHM_MERGE;
+  }
+
+  /// Return true if this is a materializable derived table/view
+  bool uses_materialization() const
+  {
+    return effective_algorithm == VIEW_ALGORITHM_TEMPTABLE;
+  }
+
+  /// Set table to be materialized
+  void set_uses_materialization()
+  {
+    // @todo We should do this only once, but currently we cannot:
+    //DBUG_ASSERT(effective_algorithm == VIEW_ALGORITHM_UNDEFINED);
+    DBUG_ASSERT(effective_algorithm != VIEW_ALGORITHM_MERGE);
+    effective_algorithm= VIEW_ALGORITHM_TEMPTABLE;
+  }
+
+  /// Return true if table is updatable
+  bool is_updatable() const { return m_updatable; }
+
+  /// Set table as updatable. (per default, a table is non-updatable)
+  void set_updatable() { m_updatable= true; }
+
+  /// Return true if table is insertable-into
+  bool is_insertable() const { return m_insertable; }
+
+  /// Set table as insertable-into. (per default, a table is not insertable)
+  void set_insertable() { m_insertable= true; }
+
+  /**
+    Return true if this is a view or derived table that is defined over
+    more than one base table, and false otherwise.
+  */
+  bool is_multiple_tables() const
+  {
+    if (is_view_or_derived())
+    {
+      DBUG_ASSERT(is_merged());         // Cannot be a materialized view
+      return leaf_tables_count() > 1;
+    }
+    else
+    {
+      DBUG_ASSERT(nested_join == NULL); // Must be a base table
+      return false;
+    }
+  }
+
+  /// Return no. of base tables a merged view or derived table is defined over.
+  uint leaf_tables_count() const;
+
+  /// Return first leaf table of a base table or a view/derived table
+  TABLE_LIST *first_leaf_table()
+  {
+    TABLE_LIST *tr= this;
+    while (tr->merge_underlying_list)
+      tr= tr->merge_underlying_list;
+    return tr;
+  }
+  /**
+    Set the LEX object of a view (will also define this as a view).
+    @note: The value 1 is used to indicate a view but without a valid
+           query object. Use only if the LEX object is not going to
+           be used in later processing.
+  */
+  void set_view_query(LEX *lex)
+  {
+    view= lex;
+  }
+
+  /// Return the valid LEX object for a view.
+  LEX *view_query() const
+  {
+    DBUG_ASSERT(view != NULL && view != (LEX *)1);
+    return view;
+  }
+
+  /**
+    Set the query expression of a derived table or view.
+    (Will also define this as a derived table, unless it is a named view.)
+  */
+  void set_derived_unit(st_select_lex_unit *query_expr)
+  {
+    derived= query_expr;
+  }
+
+  /// Return the query expression of a derived table or view.
+  st_select_lex_unit *derived_unit() const
+  {
+    DBUG_ASSERT(derived);
+    return derived;
+  }
+
+  /// Set temporary name from underlying temporary table:
+  void set_name_temporary()
+  {
+    DBUG_ASSERT(is_view_or_derived() && uses_materialization());
+    table_name= table->s->table_name.str;
+    table_name_length= table->s->table_name.length;
+    db= (char *)"";
+    db_length= 0;
+  }
+
+  /// Reset original name for temporary table.
+  void reset_name_temporary()
+  {
+    DBUG_ASSERT(is_view_or_derived() && uses_materialization());
+    DBUG_ASSERT(db != view_db.str && table_name != view_name.str);
+    if (is_view())
+    {
+      db= view_db.str;
+      db_length= view_db.length;
+    }
+    table_name= view_name.str;
+    table_name_length= view_name.length;
+  }
+
+  /// Resolve a derived table or view reference
+  bool resolve_derived(THD *thd, bool apply_semijoin);
+
+  /// Optimize the query expression representing a derived table/view 
+  bool optimize_derived(THD *thd);
+
+  /// Create result table for a materialized derived table/view
+  bool create_derived(THD *thd);
+
+  /// Materialize derived table
+  bool materialize_derived(THD *thd);
+
+  /// Clean up the query expression for a materialized derived table
+  bool cleanup_derived();
+
+  /// Set wanted privilege for subsequent column privilege checking
+  void set_want_privilege(ulong want_privilege);
+
+  /// Prepare security context for a view
+  bool prepare_security(THD *thd);
+
+#ifndef NO_EMBEDDED_ACCESS_CHECKS
+  Security_context *find_view_security_context(THD *thd);
+  bool prepare_view_securety_context(THD *thd);
+#endif
+
+  /// Cleanup for re-execution in a prepared statement or a stored procedure.
+  void reinit_before_use(THD *thd);
+
+  /**
+    Compiles the tagged hints list and fills up TABLE::keys_in_use_for_query,
+    TABLE::keys_in_use_for_group_by, TABLE::keys_in_use_for_order_by,
+    TABLE::force_index and TABLE::covering_keys.
+  */
+  bool process_index_hints(TABLE *table);
+
+  /**
+    Compare the version of metadata from the previous execution
+    (if any) with values obtained from the current table
+    definition cache element.
+
+    @sa check_and_update_table_version()
+  */
+  bool is_table_ref_id_equal(TABLE_SHARE *s) const
+  {
+    return (m_table_ref_type == s->get_table_ref_type() &&
+            m_table_ref_version == s->get_table_ref_version());
+  }
+
+  /**
+    Record the value of metadata version of the corresponding
+    table definition cache element in this parse tree node.
+
+    @sa check_and_update_table_version()
+  */
+  void set_table_ref_id(TABLE_SHARE *s)
+  { set_table_ref_id(s->get_table_ref_type(), s->get_table_ref_version()); }
+
+  void set_table_ref_id(enum_table_ref_type table_ref_type_arg,
+                        ulonglong table_ref_version_arg)
+  {
+    m_table_ref_type= table_ref_type_arg;
+    m_table_ref_version= table_ref_version_arg;
+  }
+
+  /// returns query block id for derived table, and zero if not derived.
+  uint query_block_id() const;
+
+  /**
+     @brief Returns the name of the database that the referenced table belongs
+     to.
+  */
+  const char *get_db_name() const { return view != NULL ? view_db.str : db; }
+
+  /**
+     @brief Returns the name of the table that this TABLE_LIST represents.
+
+     @details The unqualified table name or view name for a table or view,
+     respectively.
+   */
+  const char *get_table_name() const
+  {
+    return view != NULL ? view_name.str : table_name;
+  }
+  int fetch_number_of_rows();
+  bool update_derived_keys(Field*, Item**, uint);
+  bool generate_keys();
+
+  /// Setup a derived table to use materialization
+  bool setup_materialized_derived(THD *thd);
+
+  bool create_field_translation(THD *thd);
+
+  /**
+    @brief Returns the outer join nest that this TABLE_LIST belongs to, if any.
+
+    @details There are two kinds of join nests, outer-join nests and semi-join 
+    nests.  This function returns non-NULL in the following cases:
+      @li 1. If this table/nest is embedded in a nest and this nest IS NOT a 
+             semi-join nest.  (In other words, it is an outer-join nest.)
+      @li 2. If this table/nest is embedded in a nest and this nest IS a 
+             semi-join nest, but this semi-join nest is embedded in another 
+             nest. (This other nest will be an outer-join nest, since all inner 
+             joined nested semi-join nests have been merged in 
+             @c simplify_joins() ).
+    Note: This function assumes that @c simplify_joins() has been performed.
+    Before that, join nests will be present for all types of join.
+
+    @return outer join nest, or NULL if none.
+  */
+
+  TABLE_LIST *outer_join_nest() const
+  {
+    if (!embedding)
+      return NULL;
+    if (embedding->sj_cond())
+      return embedding->embedding;
+    return embedding;
+  }
+  /**
+    Return true if this table is an inner table of some outer join.
+
+    Examine all the embedding join nests of the table.
+    @note This function works also before redundant join nests have been
+          eliminated.
+
+    @return true if table is an inner table of some outer join, false otherwise.
+  */
+
+  bool is_inner_table_of_outer_join() const
+  {
+    if (outer_join)
+      return true;
+    for (TABLE_LIST *emb= embedding; emb; emb= emb->embedding)
+    {
+      if (emb->outer_join)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+    Return the base table entry of an updatable table.
+    In DELETE and UPDATE, a view used as a target table must be mergeable,
+    updatable and defined over a single table.
+  */
+  TABLE_LIST *updatable_base_table()
+  {
+    TABLE_LIST *tbl= this;
+    DBUG_ASSERT(tbl->is_updatable() && !tbl->is_multiple_tables());
+    while (tbl->is_view_or_derived())
+    {
+      tbl= tbl->merge_underlying_list;
+      DBUG_ASSERT(tbl->is_updatable() && !tbl->is_multiple_tables());
+    }
+    return tbl;
+  }
+
+
+  /**
+    Set granted privileges for a table.
+
+    Can be used when generating temporary tables that are also used in
+    resolver process, such as when generating a UNION table
+
+    @param privilege   Privileges granted for this table.
+  */
+  void set_privileges(ulong privilege)
+  {
+#ifndef NO_EMBEDDED_ACCESS_CHECKS
+    grant.privilege|= privilege;
+    if (table)
+      table->grant.privilege|= privilege;
+#endif
+  }
   /*
     List of tables local to a subquery or the top-level SELECT (used by
     SQL_I_List). Considers views as leaves (unlike 'next_leaf' below).
@@ -1626,15 +2137,18 @@ struct TABLE_LIST
   /* link in a global list of all queries tables */
   TABLE_LIST *next_global, **prev_global;
   const char *db, *table_name, *alias;
+  /*
+    Target tablespace name: When creating or altering tables, this
+    member points to the tablespace_name in the HA_CREATE_INFO struct.
+  */
+  LEX_CSTRING target_tablespace_name;
   char *schema_table_name;
   char *option;                /* Used by cache index  */
-  /**
-     Context which should be used to resolve identifiers contained in the ON
-     condition of the embedding join nest.
-     @todo When name resolution contexts are created after parsing, we should
-     be able to store this in the embedding join nest instead.
-  */
-  Name_resolution_context *context_of_embedding;
+
+  /** Table level optimizer hints for this table.  */
+  Opt_hints_table *opt_hints_table;
+  /* Hints for query block of this table. */
+  Opt_hints_qb *opt_hints_qb;
 
 private:
   /**
@@ -1651,8 +2165,8 @@ private:
      once for all executions of a prepared statement).
   */
   Item		*m_join_cond;
+  Item          *m_sj_cond;               ///< Synthesized semijoin condition
 public:
-  Item          *sj_on_expr;            /* Synthesized semijoin condition */
   /*
     (Valid only for semi-join nests) Bitmap of tables that are within the
     semi-join (this is different from bitmap of all nest's children because
@@ -1697,10 +2211,10 @@ public:
   TABLE        *table;                          /* opened table */
   Table_id table_id; /* table id (from binlog) for opened table */
   /*
-    select_result for derived table to pass it from table creation to table
+    Query_result for derived table to pass it from table creation to table
     filling procedure
   */
-  select_union  *derived_result;
+  Query_result_union  *derived_result;
   /*
     Reference from aux_tables to local list entry of main select of
     multi-delete statement:
@@ -1709,28 +2223,19 @@ public:
     can see this lists can't be merged)
   */
   TABLE_LIST	*correspondent_table;
+private:
   /**
-     @brief Normally, this field is non-null for anonymous derived tables only.
-
-     @details This field is set to non-null for 
-     
-     - Anonymous derived tables, In this case it points to the SELECT_LEX_UNIT
-     representing the derived table. E.g. for a query
+     This field is set to non-null for derived tables and views. It points
+     to the SELECT_LEX_UNIT representing the derived table/view.
+     E.g. for a query
      
      @verbatim SELECT * FROM (SELECT a FROM t1) b @endverbatim
      
-     For the @c TABLE_LIST representing the derived table @c b, @c derived
-     points to the SELECT_LEX_UNIT representing the result of the query within
-     parenteses.
-     
-     - Views. This is set for views with @verbatim ALGORITHM = TEMPTABLE
-     @endverbatim by mysql_make_view().
-     
      @note Inside views, a subquery in the @c FROM clause is not allowed.
-     @note Do not use this field to separate views/base tables/anonymous
-     derived tables. Use TABLE_LIST::is_anonymous_derived_table().
   */
   st_select_lex_unit *derived;		/* SELECT_LEX_UNIT of derived table */
+
+public:
   ST_SCHEMA_TABLE *schema_table;        /* Information_schema table */
   st_select_lex	*schema_select_lex;
   /*
@@ -1741,9 +2246,15 @@ public:
   Temp_table_param *schema_table_param;
   /* link to select_lex where this table was used */
   st_select_lex	*select_lex;
+
+private:
   LEX *view;                    /* link on VIEW lex for merging */
-  Field_translator *field_translation;	/* array of VIEW fields */
-  /* pointer to element after last one in translation table above */
+
+public:
+  /// Array of selected expressions from a derived table or view.
+  Field_translator *field_translation;
+
+  /// pointer to element after last one in translation table above
   Field_translator *field_translation_end;
   /*
     List (based on next_local) of underlying tables of this view. I.e. it
@@ -1779,46 +2290,44 @@ public:
   /*
     List of all base tables local to a subquery including all view
     tables. Unlike 'next_local', this in this list views are *not*
-    leaves. Created in setup_tables() -> make_leaves_list().
+    leaves. Created in setup_tables() -> make_leaf_tables().
   */
   bool allowed_show;
-  TABLE_LIST	*next_leaf;
-  Item          *where;                 /* VIEW WHERE clause condition */
-  Item          *check_option;          /* WITH CHECK OPTION condition */
-  LEX_STRING	select_stmt;		/* text of (CREATE/SELECT) statement */
-  LEX_STRING	md5;			/* md5 of query text */
-  LEX_STRING	source;			/* source of CREATE VIEW */
-  LEX_CSTRING	view_db;		/* saved view database */
-  LEX_CSTRING	view_name;		/* saved view name */
-  LEX_STRING	timestamp;		/* GMT time stamp of last operation */
-  st_lex_user   definer;                /* definer of view */
-  ulonglong	file_version;		/* version of file's field set */
-  ulonglong     updatable_view;         /* VIEW can be updated */
+  TABLE_LIST    *next_leaf;
+  Item          *derived_where_cond;    ///< WHERE condition from derived table
+  Item          *check_option;          ///< WITH CHECK OPTION condition
+  Item          *replace_filter;        ///< Filter for REPLACE command
+  LEX_STRING    select_stmt;            ///< text of (CREATE/SELECT) statement
+  LEX_STRING    md5;                    ///< md5 of query text
+  LEX_STRING    source;                 ///< source of CREATE VIEW
+  LEX_CSTRING   view_db;                ///< saved view database
+  LEX_CSTRING   view_name;              ///< saved view name
+  LEX_STRING    timestamp;              ///< GMT time stamp of last operation
+  st_lex_user   definer;                ///< definer of view
+  ulonglong     file_version;           ///< version of file's field set
+  /**
+    @note: This field is currently not reliable when read from dictionary:
+    If an underlying view is changed, updatable_view is not changed,
+    due to lack of dependency checking in dictionary implementation.
+    Prefer to use is_updatable() during preparation and optimization.
+  */
+  ulonglong     updatable_view;         ///< VIEW can be updated
   /** 
       @brief The declared algorithm, if this is a view.
       @details One of
       - VIEW_ALGORITHM_UNDEFINED
-      - VIEW_ALGORITHM_TMPTABLE
+      - VIEW_ALGORITHM_TEMPTABLE
       - VIEW_ALGORITHM_MERGE
       @to do Replace with an enum 
   */
-  ulonglong	algorithm;
-  ulonglong     view_suid;              /* view is suid (TRUE dy default) */
-  ulonglong     with_check;             /* WITH CHECK OPTION */
-  /*
-    effective value of WITH CHECK OPTION (differ for temporary table
-    algorithm)
-  */
-  uint8         effective_with_check;
-  /** 
-      @brief The view algorithm that is actually used, if this is a view.
-      @details One of
-      - VIEW_ALGORITHM_UNDEFINED
-      - VIEW_ALGORITHM_TMPTABLE
-      - VIEW_ALGORITHM_MERGE
-      @to do Replace with an enum 
-  */
-  enum_derived_type effective_algorithm;
+  ulonglong     algorithm;
+  ulonglong     view_suid;              ///< view is suid (TRUE by default)
+  ulonglong     with_check;             ///< WITH CHECK OPTION
+
+private:
+  /// The view algorithm that is actually used, if this is a view.
+  enum_view_algorithm effective_algorithm;
+public:
   GRANT_INFO	grant;
   /* data need by some engines in query cache*/
   ulonglong     engine_data;
@@ -1829,7 +2338,10 @@ public:
   uint		shared;			/* Used in multi-upd */
   size_t        db_length;
   size_t        table_name_length;
-  bool          updatable;		/* VIEW/TABLE can be updated now */
+private:
+  bool          m_updatable;		/* VIEW/TABLE can be updated */
+  bool          m_insertable;           /* VIEW/TABLE can be inserted into */
+public:
   bool		straight;		/* optimize with prev table */
   bool          updating;               /* for replicate-do/ignore table */
   bool		force_index;		/* prefer index over table scan */
@@ -1849,11 +2361,10 @@ public:
   enum enum_open_type open_type;
   /* TRUE if this merged view contain auto_increment field */
   bool          contain_auto_increment;
-  bool          multitable_view;        /* TRUE iff this is multitable view */
-  /* view where processed */
-  bool          where_processed;
-  /* TRUE <=> VIEW CHECK OPTION expression has been processed */
+  /// TRUE <=> VIEW CHECK OPTION condition is processed (also for prep. stmts)
   bool          check_option_processed;
+  /// TRUE <=> Filter condition is processed
+  bool          replace_filter_processed;
   /* FRMTYPE_ERROR if any type is acceptable */
   enum frm_type_enum required_type;
   char		timestamp_buffer[20];	/* buffer for timestamp (19+1) */
@@ -1933,10 +2444,8 @@ public:
   /// if true, EXPLAIN can't explain view due to insufficient rights.
   bool view_no_explain;
 
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   /* List to carry partition names from PARTITION (...) clause in statement */
   List<String> *partition_names;
-#endif /* WITH_PARTITION_STORAGE_ENGINE */
 
   /// Set table number
   void set_tableno(uint tableno)
@@ -1978,206 +2487,13 @@ public:
   bool derived_keys_ready;
   // End of group for optimization
 
-  void calc_md5(char *buffer);
-  void set_underlying_merge();
-  int view_check_option(THD *thd) const;
-  bool setup_underlying(THD *thd);
-  void cleanup_items();
-  bool placeholder()
-  {
-    return derived || view || schema_table || !table;
-  }
-  void print(THD *thd, String *str, enum_query_type query_type);
-  bool check_single_table(TABLE_LIST **table, table_map map,
-                          TABLE_LIST *view);
-  bool set_insert_values(MEM_ROOT *mem_root);
-  void hide_view_error(THD *thd);
-  TABLE_LIST *first_leaf_for_name_resolution();
-  TABLE_LIST *last_leaf_for_name_resolution();
-  bool is_leaf_for_name_resolution();
-  inline const TABLE_LIST *top_table() const
-    { return belong_to_view ? belong_to_view : this; }
-
-  inline TABLE_LIST *top_table()
-  {
-    return
-      const_cast<TABLE_LIST*>(const_cast<const TABLE_LIST*>(this)->top_table());
-  }
-
-  inline bool prepare_check_option(THD *thd)
-  {
-    bool res= FALSE;
-    if (effective_with_check)
-      res= prep_check_option(thd, effective_with_check);
-    return res;
-  }
-  inline bool prepare_where(THD *thd, Item **conds,
-                            bool no_where_clause)
-  {
-    if (effective_algorithm == VIEW_ALGORITHM_MERGE)
-      return prep_where(thd, conds, no_where_clause);
-    return FALSE;
-  }
-  /**
-    @returns
-      TRUE  this is a materializable derived table/view.
-      FALSE otherwise.
-  */
-  inline bool uses_materialization() const
-  {
-    return (effective_algorithm == VIEW_ALGORITHM_TMPTABLE ||
-            effective_algorithm == DERIVED_ALGORITHM_TMPTABLE);
-  }
-  inline bool is_view_or_derived() const
-  {
-    return (effective_algorithm != VIEW_ALGORITHM_UNDEFINED);
-  }
-  /**
-    @returns true if materializable table contains one or zero rows.
-
-    Returning true implies that the table is materialized during optimization,
-    so it need not be optimized during execution.
-  */
-  bool materializable_is_const() const;
-
-  void register_want_access(ulong want_access);
-  bool prepare_security(THD *thd);
-#ifndef NO_EMBEDDED_ACCESS_CHECKS
-  Security_context *find_view_security_context(THD *thd);
-  bool prepare_view_securety_context(THD *thd);
-#endif
-  /*
-    Cleanup for re-execution in a prepared statement or a stored
-    procedure.
-  */
-  void reinit_before_use(THD *thd);
-  Item_subselect *containing_subselect();
-
-  /* 
-    Compiles the tagged hints list and fills up TABLE::keys_in_use_for_query,
-    TABLE::keys_in_use_for_group_by, TABLE::keys_in_use_for_order_by,
-    TABLE::force_index and TABLE::covering_keys.
-  */
-  bool process_index_hints(TABLE *table);
-
-  /**
-    Compare the version of metadata from the previous execution
-    (if any) with values obtained from the current table
-    definition cache element.
-
-    @sa check_and_update_table_version()
-  */
-  inline
-  bool is_table_ref_id_equal(TABLE_SHARE *s) const
-  {
-    return (m_table_ref_type == s->get_table_ref_type() &&
-            m_table_ref_version == s->get_table_ref_version());
-  }
-
-  /**
-    Record the value of metadata version of the corresponding
-    table definition cache element in this parse tree node.
-
-    @sa check_and_update_table_version()
-  */
-  inline
-  void set_table_ref_id(TABLE_SHARE *s)
-  { set_table_ref_id(s->get_table_ref_type(), s->get_table_ref_version()); }
-
-  inline
-  void set_table_ref_id(enum_table_ref_type table_ref_type_arg,
-                        ulonglong table_ref_version_arg)
-  {
-    m_table_ref_type= table_ref_type_arg;
-    m_table_ref_version= table_ref_version_arg;
-  }
-
-  /**
-     @brief True if this TABLE_LIST represents an anonymous derived table,
-     i.e.  the result of a subquery.
-  */
-  bool is_anonymous_derived_table() const { return derived && !view; }
-
-  /// returns query block id for derived table, and zero if not derived.
-  uint query_block_id() const;
-
-  /**
-     @brief Returns the name of the database that the referenced table belongs
-     to.
-  */
-  const char *get_db_name() const { return view != NULL ? view_db.str : db; }
-
-  /**
-     @brief Returns the name of the table that this TABLE_LIST represents.
-
-     @details The unqualified table name or view name for a table or view,
-     respectively.
-   */
-  const char *get_table_name() const
-  {
-    return view != NULL ? view_name.str : table_name;
-  }
-  int fetch_number_of_rows();
-  bool update_derived_keys(Field*, Item**, uint);
-  bool generate_keys();
-  bool handle_derived(LEX *lex, bool (*processor)(THD*, LEX*, TABLE_LIST*));
-  st_select_lex_unit *get_unit() const;
-
-  /**
-    @brief Returns the outer join nest that this TABLE_LIST belongs to, if any.
-
-    @details There are two kinds of join nests, outer-join nests and semi-join 
-    nests.  This function returns non-NULL in the following cases:
-      @li 1. If this table/nest is embedded in a nest and this nest IS NOT a 
-             semi-join nest.  (In other words, it is an outer-join nest.)
-      @li 2. If this table/nest is embedded in a nest and this nest IS a 
-             semi-join nest, but this semi-join nest is embedded in another 
-             nest. (This other nest will be an outer-join nest, since all inner 
-             joined nested semi-join nests have been merged in 
-             @c simplify_joins() ).
-    Note: This function assumes that @c simplify_joins() has been performed.
-    Before that, join nests will be present for all types of join.
-
-    @return outer join nest, or NULL if none.
-   */
-  TABLE_LIST *outer_join_nest() const
-  {
-    if (!embedding)
-      return NULL;
-    if (embedding->sj_on_expr)
-      return embedding->embedding;
-    return embedding;
-  }
-  /**
-    Return the base table entry of an updatable view (or table).
-    In DELETE, UPDATE and LOAD, a view used as a target table must be mergeable,
-    updatable and defined over a single table.
-  */
-  TABLE_LIST *updatable_base_table()
-  {
-    TABLE_LIST *tbl= this;
-    DBUG_ASSERT(tbl->updatable && !tbl->multitable_view);
-    while (tbl->view)
-    {
-      tbl= tbl->merge_underlying_list;
-      DBUG_ASSERT(tbl->updatable && !tbl->multitable_view);
-    }
-    return tbl;
-  }
-
 private:
-  bool prep_check_option(THD *thd, uint8 check_opt_type);
-  bool prep_where(THD *thd, Item **conds, bool no_where_clause);
   /** See comments for set_metadata_id() */
   enum enum_table_ref_type m_table_ref_type;
   /** See comments for TABLE_SHARE::get_table_ref_version() */
   ulonglong m_table_ref_version;
 };
 
-
-struct st_position;
-  
-class Item;
 
 /*
   Iterator over the fields of a generic table reference.
@@ -2217,7 +2533,9 @@ public:
 };
 
 
-/* Iterator over the fields of a merge view. */
+/**
+  Iterator over the fields of a merged derived table or view.
+*/
 
 class Field_iterator_view: public Field_iterator
 {
@@ -2345,6 +2663,10 @@ typedef struct st_nested_join
    */
   plan_idx first_nested;
   /**
+    Set to true when natural join or using information has been processed.
+  */
+  bool natural_join_processed;
+  /**
     Number of tables and outer join nests administered by this nested join
     object for the sake of cost analysis. Includes direct member tables as
     well as tables included through semi-join nests, but notice that semi-join
@@ -2377,6 +2699,10 @@ typedef struct st_nested_join
     Query block id if this struct is generated from a subquery transform.
   */
   uint query_block_id;
+
+  /// Bitmap of which strategies are enabled for this semi-join nest
+  uint sj_enabled_strategies;
+
   /*
     Lists of trivially-correlated expressions from the outer and inner tables
     of the semi-join, respectively.
@@ -2384,14 +2710,6 @@ typedef struct st_nested_join
   List<Item>        sj_outer_exprs, sj_inner_exprs;
   Semijoin_mat_optimize sjm;
 } NESTED_JOIN;
-
-
-typedef struct st_changed_table_list
-{
-  struct	st_changed_table_list *next;
-  char		*key;
-  uint32        key_length;
-} CHANGED_TABLE_LIST;
 
 
 typedef struct st_open_table_list{
@@ -2480,6 +2798,44 @@ void init_tmp_table_share(THD *thd, TABLE_SHARE *share, const char *key,
                           size_t key_length,
                           const char *table_name, const char *path);
 void free_table_share(TABLE_SHARE *share);
+
+
+/**
+  Get the tablespace name for a table.
+
+  This function will open the .FRM file for the given TABLE_LIST element
+  and get the tablespace name, if present. For NDB tables with version
+  before 50120, the function will ask the SE for the tablespace name,
+  because for these tables, the tablespace name is not stored in the.FRM
+  file, but only within the SE itself.
+
+  @note The function does *not* consider errors. If the file is not present,
+        this does not raise an error. The reason is that this function will
+        be used for tables that may not exist, e.g. in the context of
+        'DROP TABLE IF EXISTS', which does not care whether the table
+        exists or not. If an error occurs, the function will return NULL.
+
+  @note The return value is a char pointer to the tablespace name. The
+        string is allocated in the memory root of the thd, and will be
+        freed implicitly.
+
+  @note When the tablespace name is written, there is no distinction between
+        a tablespace name which is empty, and the NULL string pointer. Thus,
+        when reading the name, we will always return a string of length 0 or
+        more, unless there is an error, in which case we will return NULL.
+
+  @note If the tablespace name is invalid, the name will be ignored, and the
+        function will return NULL.
+
+  @param thd    Thread context
+  @param table  Table for which to get the tablespace name
+
+  @return Pointer to string holding a valid tablespace name. If an error
+          occurs, the function returns NULL.
+ */
+
+const char *get_tablespace_name(THD *thd, const TABLE_LIST *table);
+
 int open_table_def(THD *thd, TABLE_SHARE *share, uint db_flags);
 void open_table_error(TABLE_SHARE *share, int error, int db_errno, int errarg);
 void update_create_info_from_table(HA_CREATE_INFO *info, TABLE *form);
@@ -2497,7 +2853,6 @@ int read_string(File file, uchar* *to, size_t length);
 void free_blobs(TABLE *table);
 void free_field_buffers_larger_than(TABLE *table, uint32 size);
 int set_zone(int nr,int min_zone,int max_zone);
-ulong get_form_pos(File file, uchar *head, TYPELIB *save_names);
 ulong make_new_entry(File file,uchar *fileinfo,TYPELIB *formnames,
 		     const char *newname);
 ulong next_io_size(ulong pos);
@@ -2535,6 +2890,19 @@ inline bool is_infoschema_db(const char *name)
                         INFORMATION_SCHEMA_NAME.str, name);
 }
 
+inline bool is_perfschema_db(const char *name, size_t len)
+{
+  return (PERFORMANCE_SCHEMA_DB_NAME.length == len &&
+          !my_strcasecmp(system_charset_info,
+                         PERFORMANCE_SCHEMA_DB_NAME.str, name));
+}
+
+inline bool is_perfschema_db(const char *name)
+{
+  return !my_strcasecmp(system_charset_info,
+                        PERFORMANCE_SCHEMA_DB_NAME.str, name);
+}
+
 TYPELIB *typelib(MEM_ROOT *mem_root, List<String> &strings);
 
 /**
@@ -2554,6 +2922,11 @@ inline void mark_as_null_row(TABLE *table)
 }
 
 bool is_simple_order(ORDER *order);
+
+void repoint_field_to_record(TABLE *table, uchar *old_rec, uchar *new_rec);
+bool update_generated_write_fields(TABLE *table);
+bool update_generated_read_fields(uchar *buf, TABLE *table,
+                                  uint active_index= MAX_KEY);
 
 #endif /* MYSQL_CLIENT */
 

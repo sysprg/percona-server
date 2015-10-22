@@ -19,7 +19,6 @@
 #include <mysql/plugin.h>
 #include <mysql/plugin_audit.h>
 #include <my_list.h>
-#include <my_pthread.h>
 #include <typelib.h>
 #include <limits.h>
 #include <string.h>
@@ -70,7 +69,7 @@ static ulong sm_ctl= CTL_OFF;
 static
 MYSQL_THDVAR_ULONGLONG(thd_data,
   PLUGIN_VAR_READONLY | PLUGIN_VAR_NOSYSVAR | PLUGIN_VAR_NOCMDOPT,
-  "scalability metrics data", NULL, NULL, 0, 0, ULONGLONG_MAX, 0);
+  "scalability metrics data", NULL, NULL, 0, 0, ULLONG_MAX, 0);
 
 
 static MYSQL_SYSVAR_ENUM(
@@ -432,12 +431,17 @@ static struct st_mysql_audit scalability_metrics_descriptor=
 
 static struct st_mysql_show_var simple_status[]=
 {
-  { "scalability_metrics_elapsedtime", (char *) &sm_elapsedtime, SHOW_FUNC },
-  { "scalability_metrics_queries", (char *) &sm_queries, SHOW_FUNC },
-  { "scalability_metrics_concurrency", (char *) &concurrency, SHOW_LONGLONG },
-  { "scalability_metrics_totaltime", (char *) &sm_totaltime, SHOW_FUNC },
-  { "scalability_metrics_busytime", (char *) &busytime, SHOW_LONGLONG },
-  { 0, 0, 0}
+  { "scalability_metrics_elapsedtime", (char *) &sm_elapsedtime, SHOW_FUNC,
+    SHOW_SCOPE_GLOBAL },
+  { "scalability_metrics_queries", (char *) &sm_queries, SHOW_FUNC,
+    SHOW_SCOPE_GLOBAL },
+  { "scalability_metrics_concurrency", (char *) &concurrency, SHOW_LONGLONG,
+    SHOW_SCOPE_GLOBAL },
+  { "scalability_metrics_totaltime", (char *) &sm_totaltime, SHOW_FUNC,
+    SHOW_SCOPE_GLOBAL },
+  { "scalability_metrics_busytime", (char *) &busytime, SHOW_LONGLONG,
+    SHOW_SCOPE_GLOBAL },
+  {NullS, NullS, SHOW_LONG, SHOW_SCOPE_GLOBAL}
 };
 
 

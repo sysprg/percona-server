@@ -1,7 +1,7 @@
 #ifndef ITEM_FUNC_INCLUDED
 #define ITEM_FUNC_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,26 +16,22 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
+#include "my_global.h"
+#include "item.h"       // Item_result_field
+#include "my_decimal.h" // string2my_decimal
+#include "set_var.h"    // enum_var_type
+#include "sql_udf.h"    // udf_handler
 
 /* Function items used by mysql */
 
-#ifndef MYSQL_SERVER
-
 class PT_item_list;
 
-#else
-
-#ifdef HAVE_IEEEFP_H
-extern "C"				/* Bug in BSDI include file */
-{
-#include <ieeefp.h>
-}
-#endif
+#ifdef MYSQL_SERVER
 
 extern void reject_geometry_args(uint arg_count, Item **args,
                                  Item_result_field *me);
 
-#endif /* !MYSQL_SERVER */
+#endif /* MYSQL_SERVER */
 
 class Item_func :public Item_result_field
 {
@@ -56,6 +52,8 @@ protected:
 public:
   uint arg_count;
   //bool const_item_cache;
+  // When updating Functype with new spatial functions,
+  // is_spatial_operator() should also be updated.
   enum Functype { UNKNOWN_FUNC,EQ_FUNC,EQUAL_FUNC,NE_FUNC,LT_FUNC,LE_FUNC,
 		  GE_FUNC,GT_FUNC,FT_FUNC,
 		  LIKE_FUNC,ISNULL_FUNC,ISNOTNULL_FUNC,
@@ -64,13 +62,14 @@ public:
 		  INTERVAL_FUNC, ISNOTNULLTEST_FUNC,
 		  SP_EQUALS_FUNC, SP_DISJOINT_FUNC,SP_INTERSECTS_FUNC,
 		  SP_TOUCHES_FUNC,SP_CROSSES_FUNC,SP_WITHIN_FUNC,
-		  SP_CONTAINS_FUNC,SP_OVERLAPS_FUNC,
+		  SP_CONTAINS_FUNC,SP_COVEREDBY_FUNC,SP_COVERS_FUNC,
+                  SP_OVERLAPS_FUNC,
 		  SP_STARTPOINT,SP_ENDPOINT,SP_EXTERIORRING,
 		  SP_POINTN,SP_GEOMETRYN,SP_INTERIORRINGN,
                   NOT_FUNC, NOT_ALL_FUNC,
                   NOW_FUNC, TRIG_COND_FUNC,
                   SUSERVAR_FUNC, GUSERVAR_FUNC, COLLATE_FUNC,
-                  EXTRACT_FUNC, CHAR_TYPECAST_FUNC, FUNC_SP, UDF_FUNC,
+                  EXTRACT_FUNC, TYPECAST_FUNC, FUNC_SP, UDF_FUNC,
                   NEG_FUNC, GSYSVAR_FUNC };
   enum optimize_type { OPTIMIZE_NONE,OPTIMIZE_KEY,OPTIMIZE_OP, OPTIMIZE_NULL,
                        OPTIMIZE_EQUAL };
@@ -118,68 +117,72 @@ public:
   }
 
   Item_func(Item *a,Item *b,Item *c):
-    allowed_arg_cols(1)
+    allowed_arg_cols(1), arg_count(3)
   {
-    arg_count= 0;
     if ((args= (Item**) sql_alloc(sizeof(Item*)*3)))
     {
-      arg_count= 3;
       args[0]= a; args[1]= b; args[2]= c;
       with_sum_func= a->with_sum_func || b->with_sum_func || c->with_sum_func;
     }
+    else
+      arg_count= 0; // OOM
   }
 
   Item_func(const POS &pos, Item *a,Item *b,Item *c): super(pos),
-    allowed_arg_cols(1)
+    allowed_arg_cols(1), arg_count(3)
   {
-    arg_count= 0;
     if ((args= (Item**) sql_alloc(sizeof(Item*)*3)))
     {
-      arg_count= 3;
       args[0]= a; args[1]= b; args[2]= c;
     }
+    else
+      arg_count= 0; // OOM
   }
 
   Item_func(Item *a,Item *b,Item *c,Item *d):
-    allowed_arg_cols(1)
+    allowed_arg_cols(1), arg_count(4)
   {
-    arg_count= 0;
     if ((args= (Item**) sql_alloc(sizeof(Item*)*4)))
     {
-      arg_count= 4;
       args[0]= a; args[1]= b; args[2]= c; args[3]= d;
       with_sum_func= a->with_sum_func || b->with_sum_func ||
 	c->with_sum_func || d->with_sum_func;
     }
+    else
+      arg_count= 0; // OOM
   }
   Item_func(const POS &pos, Item *a,Item *b,Item *c,Item *d): super(pos),
-    allowed_arg_cols(1)
+    allowed_arg_cols(1), arg_count(4)
   {
-    arg_count= 0;
     if ((args= (Item**) sql_alloc(sizeof(Item*)*4)))
     {
-      arg_count= 4;
       args[0]= a; args[1]= b; args[2]= c; args[3]= d;
     }
+    else
+      arg_count= 0; // OOM
   }
 
   Item_func(Item *a,Item *b,Item *c,Item *d,Item* e):
-    allowed_arg_cols(1)
+    allowed_arg_cols(1), arg_count(5)
   {
-    arg_count= 5;
     if ((args= (Item**) sql_alloc(sizeof(Item*)*5)))
     {
       args[0]= a; args[1]= b; args[2]= c; args[3]= d; args[4]= e;
       with_sum_func= a->with_sum_func || b->with_sum_func ||
 	c->with_sum_func || d->with_sum_func || e->with_sum_func ;
     }
+    else
+      arg_count= 0; // OOM
   }
   Item_func(const POS &pos, Item *a, Item *b, Item *c, Item *d, Item* e)
-    : super(pos), allowed_arg_cols(1)
+    : super(pos), allowed_arg_cols(1), arg_count(5)
   {
-    arg_count= 5;
     if ((args= (Item**) sql_alloc(sizeof(Item*)*5)))
+    {
       args[0]= a; args[1]= b; args[2]= c; args[3]= d; args[4]= e;
+    }
+    else
+      arg_count= 0; // OOM
   }
 
   Item_func(List<Item> &list);
@@ -255,6 +258,24 @@ public:
   Item *get_tmp_table_item(THD *thd);
 
   my_decimal *val_decimal(my_decimal *);
+
+  /**
+    Same as save_in_field except that special logic is added
+    to handle JSON values. If the target field has JSON type,
+    then do NOT first serialize the JSON value into a string form.
+
+    A better solution might be to put this logic into
+    Item_func::save_in_field() or even Item::save_in_field().
+    But that would mean providing val_json() overrides for
+    more Item subclasses. And that feels like pulling on a
+    ball of yarn late in the release cycle for 5.7. FIXME.
+
+    @param[out] field  The field to set the value to.
+    @retval 0         On success.
+    @retval > 0       On error.
+  */
+  virtual type_conversion_status save_possibly_as_json(Field *field,
+                                                       bool no_conversions);
 
   bool agg_arg_charsets(DTCollation &c, Item **items, uint nitems,
                         uint flags, int item_sep)
@@ -353,7 +374,7 @@ public:
   {
     if ((unsigned_flag && !val_unsigned && value < 0) ||
         (!unsigned_flag && val_unsigned &&
-         (ulonglong) value > (ulonglong) LONGLONG_MAX))
+         (ulonglong) value > (ulonglong) LLONG_MAX))
       return raise_integer_overflow();
     return value;
   }
@@ -432,6 +453,7 @@ public:
   {
     return functype() == *(Functype *) arg;
   }
+  virtual Item *gc_subst_transformer(uchar *arg);
 
 protected:
   /**
@@ -691,6 +713,12 @@ public:
   Item_int_func(const POS &pos, Item *a,Item *b,Item *c) :Item_func(pos, a,b,c)
   { collation.set_numeric(); fix_char_length(21); }
 
+  Item_int_func(Item *a, Item *b, Item *c, Item *d): Item_func(a,b,c,d)
+  { collation.set_numeric(); fix_char_length(21); }
+  Item_int_func(const POS &pos, Item *a, Item *b, Item *c, Item *d)
+    :Item_func(pos,a,b,c,d)
+  { collation.set_numeric(); fix_char_length(21); }
+
   Item_int_func(List<Item> &list) :Item_func(list)
   { collation.set_numeric(); fix_char_length(21); }
   Item_int_func(const POS &pos, PT_item_list *opt_list)
@@ -729,6 +757,7 @@ public:
   void fix_length_and_dec();
   bool fix_fields(THD *thd, Item **ref);
   longlong val_int() { DBUG_ASSERT(fixed == 1); return value; }
+  bool check_gcol_func_processor(uchar *int_arg) { return true;}
 };
 
 
@@ -745,6 +774,7 @@ public:
   void fix_length_and_dec();
   virtual void print(String *str, enum_query_type query_type);
   uint decimal_precision() const { return args[0]->decimal_precision(); }
+  enum Functype functype() const { return TYPECAST_FUNC; }
 };
 
 
@@ -758,6 +788,7 @@ public:
   const char *func_name() const { return "cast_as_unsigned"; }
   longlong val_int();
   virtual void print(String *str, enum_query_type query_type);
+  enum Functype functype() const { return TYPECAST_FUNC; }
 };
 
 
@@ -789,6 +820,7 @@ public:
   enum_field_types field_type() const { return MYSQL_TYPE_NEWDECIMAL; }
   void fix_length_and_dec() {};
   const char *func_name() const { return "decimal_typecast"; }
+  enum Functype functype() const { return TYPECAST_FUNC; }
   virtual void print(String *str, enum_query_type query_type);
 };
 
@@ -802,6 +834,7 @@ public:
 
   void result_precision();
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -847,6 +880,7 @@ public:
   my_decimal *decimal_op(my_decimal *);
   void result_precision();
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -881,6 +915,7 @@ public:
   }
 
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -897,6 +932,7 @@ public:
   void result_precision();
   void fix_length_and_dec();
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -915,6 +951,7 @@ public:
   void fix_num_length_and_dec();
   uint decimal_precision() const { return args[0]->decimal_precision(); }
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -928,6 +965,7 @@ public:
   const char *func_name() const { return "abs"; }
   void fix_length_and_dec();
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -1180,6 +1218,7 @@ public:
   double real_op();
   my_decimal *decimal_op(my_decimal *);
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 
@@ -1193,6 +1232,7 @@ public:
   double real_op();
   my_decimal *decimal_op(my_decimal *);
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg) { return false;}
 };
 
 /* This handles round and truncate */
@@ -1281,7 +1321,6 @@ class Item_func_min_max :public Item_func
   bool compare_as_dates;
   /* An item used for issuing warnings while string to DATETIME conversion. */
   Item *datetime_item;
-  THD *thd;
 protected:
   enum_field_types cached_field_type;
   uint cmp_datetimes(longlong *value);
@@ -1360,6 +1399,7 @@ public:
   longlong val_int();
   String *val_str(String *str);
   my_decimal *val_decimal(my_decimal *dec);
+  bool val_json(Json_wrapper *result);
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzydate)
   {
     return (null_value= args[0]->get_date(ltime, fuzzydate));
@@ -1454,7 +1494,6 @@ public:
 
 class Item_func_validate_password_strength :public Item_int_func
 {
-  String value;
 public:
   Item_func_validate_password_strength(const POS &pos, Item *a)
     :Item_int_func(pos, a)
@@ -1611,6 +1650,8 @@ public:
     if (arg_count)
       max_length= args[0]->max_length;
   }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -1627,6 +1668,8 @@ public:
   const char *func_name() const { return "benchmark"; }
   void fix_length_and_dec() { max_length=1; maybe_null= true; }
   virtual void print(String *str, enum_query_type query_type);
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -1883,6 +1926,9 @@ class Item_func_get_lock :public Item_int_func
   longlong val_int();
   const char *func_name() const { return "get_lock"; }
   void fix_length_and_dec() { max_length=1; maybe_null=1;}
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
+  virtual uint decimal_precision() const { return max_length; }
 };
 
 class Item_func_release_lock :public Item_int_func
@@ -1897,6 +1943,9 @@ public:
   longlong val_int();
   const char *func_name() const { return "release_lock"; }
   void fix_length_and_dec() { max_length=1; maybe_null=1;}
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
+  virtual uint decimal_precision() const { return max_length; }
 };
 
 class Item_func_release_all_locks :public Item_int_func
@@ -1910,6 +1959,8 @@ public:
   longlong val_int();
   const char *func_name() const { return "release_all_locks"; }
   void fix_length_and_dec() { unsigned_flag= TRUE; }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 /* replication functions */
@@ -1925,11 +1976,16 @@ public:
   Item_master_pos_wait(const POS &pos, Item *a, Item *b, Item *c)
     :Item_int_func(pos, a, b, c)
   {}
+  Item_master_pos_wait(const POS &pos, Item *a, Item *b, Item *c, Item *d)
+    :Item_int_func(pos, a, b, c, d)
+  {}
 
   virtual bool itemize(Parse_context *pc, Item **res);
   longlong val_int();
   const char *func_name() const { return "master_pos_wait"; }
   void fix_length_and_dec() { max_length=21; maybe_null=1;}
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 /**
@@ -1964,6 +2020,9 @@ public:
   Item_master_gtid_set_wait(const POS &pos, Item *a, Item *b)
     :Item_int_func(pos, a, b)
   {}
+  Item_master_gtid_set_wait(const POS &pos, Item *a, Item *b, Item *c)
+    :Item_int_func(pos, a, b, c)
+  {}
 
   virtual bool itemize(Parse_context *pc, Item **res);
   longlong val_int();
@@ -1982,6 +2041,7 @@ public:
   longlong val_int();
   const char *func_name() const { return "gtid_subset"; }
   void fix_length_and_dec() { max_length= 21; maybe_null= 0; }
+  bool is_bool_func() { return true; }
 };
 
 
@@ -2010,6 +2070,7 @@ public:
   {
     return get_time_from_non_temporal(ltime);
   }
+  bool check_gcol_func_processor(uchar *int_arg) { return true;}
 };
 
 
@@ -2110,7 +2171,6 @@ public:
   void save_org_in_field(Field *field)
   { save_in_field(field, true, false); }
 
-  bool register_field_in_read_map(uchar *arg);
   bool set_entry(THD *thd, bool create_if_not_exists);
   void cleanup();
 };
@@ -2251,8 +2311,6 @@ public:
 };
 
 
-/* for fulltext search */
-#include <ft_global.h>
 class JOIN;
 
 class Item_func_match :public Item_real_func
@@ -2286,7 +2344,8 @@ public:
   */
   Item_func_match(const POS &pos, PT_item_list *a, Item *against_arg, uint b):
     Item_real_func(pos, a), against(against_arg), key(0), flags(b),
-    join_key(false), ft_handler(NULL), table_ref(NULL),
+    join_key(false),
+    ft_handler(NULL), table_ref(NULL),
     master(NULL), concat_ws(NULL), hints(NULL), simple_expression(false)
   {}
   
@@ -2319,7 +2378,10 @@ public:
   virtual void print(String *str, enum_query_type query_type);
 
   bool fix_index();
-  void init_search();
+  bool init_search(THD *thd);
+  bool check_gcol_func_processor(uchar *int_arg)
+  // TODO: consider adding in support for the MATCH-based generated columns
+  { return true; }
 
   /**
      Get number of matching rows from FT handler.
@@ -2504,17 +2566,17 @@ private:
      @retval true if BOOLEAN search on non-indexed columns is supported
      @retval false otherwise
    */
-  bool allows_search_on_non_indexed_columns(const TABLE_LIST *tr)
+  bool allows_search_on_non_indexed_columns(const TABLE *tr)
   {
     // Only Boolean search may support non_indexed columns
     if (!(flags & FT_BOOL))
       return false;
 
-    DBUG_ASSERT(tr && tr->table->file);
+    DBUG_ASSERT(tr && tr->file);
 
     // Assume that if extended fulltext API is not supported,
     // non-indexed columns are allowed.  This will be true for MyISAM.
-    if ((tr->table->file->ha_table_flags() & HA_CAN_FULLTEXT_EXT) == 0)
+    if ((tr->file->ha_table_flags() & HA_CAN_FULLTEXT_EXT) == 0)
       return true;
 
     return false;
@@ -2543,6 +2605,8 @@ public:
   longlong val_int();
   const char *func_name() const { return "is_free_lock"; }
   void fix_length_and_dec() { max_length= 1; maybe_null= TRUE;}
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 class Item_func_is_used_lock :public Item_int_func
@@ -2557,6 +2621,8 @@ public:
   longlong val_int();
   const char *func_name() const { return "is_used_lock"; }
   void fix_length_and_dec() { unsigned_flag= TRUE; maybe_null= TRUE; }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 /* For type casts */
@@ -2565,7 +2631,7 @@ enum Cast_target
 {
   ITEM_CAST_BINARY, ITEM_CAST_SIGNED_INT, ITEM_CAST_UNSIGNED_INT,
   ITEM_CAST_DATE, ITEM_CAST_TIME, ITEM_CAST_DATETIME, ITEM_CAST_CHAR,
-  ITEM_CAST_DECIMAL
+  ITEM_CAST_DECIMAL, ITEM_CAST_JSON
 };
 
 
@@ -2581,6 +2647,8 @@ public:
   longlong val_int();
   const char *func_name() const { return "row_count"; }
   void fix_length_and_dec() { decimals= 0; maybe_null=0; }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -2695,6 +2763,10 @@ public:
     return str;
   }
 
+  bool val_json(Json_wrapper *result);
+
+  type_conversion_status save_in_field(Field *field, bool no_conversions);
+
   virtual bool change_context_processor(uchar *cntx)
   {
     context= reinterpret_cast<Name_resolution_context *>(cntx);
@@ -2727,6 +2799,8 @@ public:
   longlong val_int();
   const char *func_name() const { return "found_rows"; }
   void fix_length_and_dec() { decimals= 0; maybe_null=0; }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -2744,6 +2818,8 @@ public:
   void fix_length_and_dec()
   { max_length= 21; unsigned_flag=1; }
   bool check_partition_func_processor(uchar *int_arg) {return false;}
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -2770,6 +2846,7 @@ extern enum_field_types agg_field_type(Item **items, uint nitems);
 double my_double_round(double value, longlong dec, bool dec_unsigned,
                        bool truncate);
 bool eval_const_cond(Item *cond);
+Item_field *get_gc_for_expr(Item_func **func, Field *fld, Item_result type);
 
 extern bool volatile  mqh_used;
 

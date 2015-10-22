@@ -1,4 +1,4 @@
-/* Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,7 +14,8 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "rpl_slave_commit_order_manager.h"
-#include "sql_parse.h"
+
+#include "rpl_rli_pdb.h"     // Slave_worker
 
 Commit_order_manager::Commit_order_manager(uint32 worker_numbers)
   : m_rollback_trx(false), m_workers(worker_numbers), queue_head(QUEUE_EOF),
@@ -30,7 +31,7 @@ Commit_order_manager::Commit_order_manager(uint32 worker_numbers)
 
 void Commit_order_manager::register_trx(Slave_worker *worker)
 {
-  DBUG_ENTER("Commit_order_manager::register_thread");
+  DBUG_ENTER("Commit_order_manager::register_trx");
 
   mysql_mutex_lock(&m_mutex);
 
@@ -50,7 +51,7 @@ void Commit_order_manager::register_trx(Slave_worker *worker)
 bool Commit_order_manager::wait_for_its_turn(Slave_worker *worker,
                                                   bool all)
 {
-  DBUG_ENTER("Commit_order_manager::wait_for_older_threads");
+  DBUG_ENTER("Commit_order_manager::wait_for_its_turn");
 
   /*
     When prior transaction fail, current trx should stop and wait for signal
@@ -71,14 +72,29 @@ bool Commit_order_manager::wait_for_its_turn(Slave_worker *worker,
                     &old_stage);
 
     while (queue_front() != worker->id)
+    {
+      if (unlikely(worker->found_order_commit_deadlock()))
+      {
+        mysql_mutex_unlock(&m_mutex);
+        thd->EXIT_COND(&old_stage);
+        DBUG_RETURN(true);
+      }
       mysql_cond_wait(cond, &m_mutex);
+    }
 
+    mysql_mutex_unlock(&m_mutex);
     thd->EXIT_COND(&old_stage);
 
     m_workers[worker->id].status= OCS_SIGNAL;
 
     if (m_rollback_trx)
+    {
       unregister_trx(worker);
+
+      DBUG_PRINT("info", ("thd has seen an error signal from old thread"));
+      thd->get_stmt_da()->set_overwrite_status(true);
+      my_error(ER_SLAVE_WORKER_STOPPED_PREVIOUS_THD_ERROR, MYF(0));
+    }
   }
 
   DBUG_RETURN(m_rollback_trx);
@@ -86,7 +102,7 @@ bool Commit_order_manager::wait_for_its_turn(Slave_worker *worker,
 
 void Commit_order_manager::unregister_trx(Slave_worker *worker)
 {
-  DBUG_ENTER("Commit_order_manager::signal_newer_threads");
+  DBUG_ENTER("Commit_order_manager::unregister_trx");
 
   if (m_workers[worker->id].status == OCS_SIGNAL)
   {
@@ -111,13 +127,23 @@ void Commit_order_manager::unregister_trx(Slave_worker *worker)
 
 void Commit_order_manager::report_rollback(Slave_worker *worker)
 {
-  DBUG_ENTER("Commit_order_manager::rollback_trx");
+  DBUG_ENTER("Commit_order_manager::report_rollback");
 
   (void) wait_for_its_turn(worker, true);
   /* No worker can set m_rollback_trx unless it is its turn to commit */
   m_rollback_trx= true;
   unregister_trx(worker);
 
+  DBUG_VOID_RETURN;
+}
+
+void Commit_order_manager::report_deadlock(Slave_worker *worker)
+{
+  DBUG_ENTER("Commit_order_manager::report_deadlock");
+  mysql_mutex_lock(&m_mutex);
+  worker->report_order_commit_deadlock();
+  mysql_cond_signal(&m_workers[worker->id].cond);
+  mysql_mutex_unlock(&m_mutex);
   DBUG_VOID_RETURN;
 }
 

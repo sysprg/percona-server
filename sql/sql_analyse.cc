@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,15 +23,12 @@
 **	 - type set is out of optimization yet
 */
 
-#define MYSQL_LEX 1
-
-#include "sql_priv.h"
-#include "procedure.h"
 #include "sql_analyse.h"
-#include "sql_class.h"
-#include <m_ctype.h>
-#include "sql_yacc.h"
 
+#include "procedure.h"       // Item_proc
+#include "sql_yacc.h"        // DECIMAL_NUM
+
+#include <algorithm>
 using std::min;
 using std::max;
 
@@ -73,7 +70,7 @@ int compare_decimal2(int* len, const char *s, const char *t)
   @retval true          Failure (OOM)
 */
 bool
-select_analyse::init(List<Item> &field_list)
+Query_result_analyse::init(List<Item> &field_list)
 {
   DBUG_ENTER("proc_analyse_init");
 
@@ -243,7 +240,7 @@ bool get_ev_num_info(EV_NUM_INFO *ev_info, NUM_INFO *info, const char *num)
 
 void free_string(String *s)
 {
-  s->free();
+  s->mem_free();
 }
 
 
@@ -606,7 +603,7 @@ void field_ulonglong::add()
 } // field_ulonglong::add
 
 
-bool select_analyse::send_data(List<Item> & /* field_list */)
+bool Query_result_analyse::send_data(List<Item> & /* field_list */)
 {
   field_info **f = f_info;
 
@@ -620,7 +617,7 @@ bool select_analyse::send_data(List<Item> & /* field_list */)
 }
 
 
-bool select_analyse::send_eof()
+bool Query_result_analyse::send_eof()
 {
   field_info **f = f_info;
   char buff[MAX_FIELD_WIDTH];
@@ -746,7 +743,7 @@ ok:
 error:
   abort_result_set();
   return true;
-} // select_analyse::send_eof
+} // Query_result_analyse::send_eof
 
 
 void field_str::get_opt_type(String *answer, ha_rows total_rows)
@@ -978,7 +975,7 @@ String *field_decimal::avg(String *s, ha_rows rows)
 {
   if (!(rows - nulls))
   {
-    s->set_real((double) 0.0, 1,my_thd_charset);
+    s->set_real(0.0, 1,my_thd_charset);
     return s;
   }
   my_decimal num, avg_val, rounded_avg;
@@ -999,7 +996,7 @@ String *field_decimal::std(String *s, ha_rows rows)
 {
   if (!(rows - nulls))
   {
-    s->set_real((double) 0.0, 1,my_thd_charset);
+    s->set_real(0.0, 1,my_thd_charset);
     return s;
   }
   my_decimal num, tmp, sum2, sum2d;
@@ -1012,7 +1009,7 @@ String *field_decimal::std(String *s, ha_rows rows)
   my_decimal_sub(E_DEC_FATAL_ERROR, &sum2, sum_sqr+cur_sum, &tmp);
   my_decimal_div(E_DEC_FATAL_ERROR, &tmp, &sum2, &num, prec_increment);
   my_decimal2double(E_DEC_FATAL_ERROR, &tmp, &std_sqr);
-  s->set_real(((double) std_sqr <= 0.0 ? 0.0 : sqrt(std_sqr)),
+  s->set_real((std_sqr <= 0.0 ? 0.0 : sqrt(std_sqr)),
          min(item->decimals + prec_increment, NOT_FIXED_DEC), my_thd_charset);
 
   return s;
@@ -1116,7 +1113,7 @@ int collect_ulonglong(ulonglong *element,
 /**
   Create items for substituted output columns (both metadata and data)
 */
-bool select_analyse::change_columns()
+bool Query_result_analyse::change_columns()
 {
   func_items[0] = new Item_proc_string("Field_name", 255);
   func_items[1] = new Item_proc_string("Min_value", 255);
@@ -1140,10 +1137,10 @@ bool select_analyse::change_columns()
     result_fields.push_back(func_items[i]);
   }
   return false;
-} // select_analyse::change_columns
+} // Query_result_analyse::change_columns
 
 
-void select_analyse::cleanup()
+void Query_result_analyse::cleanup()
 {
   if (f_info)
   {
@@ -1156,14 +1153,15 @@ void select_analyse::cleanup()
 }
 
 
-bool select_analyse::send_result_set_metadata(List<Item> &fields, uint flag)
+bool Query_result_analyse::send_result_set_metadata(List<Item> &fields,
+                                                    uint flag)
 {
   return (init(fields) || change_columns() ||
 	  result->send_result_set_metadata(result_fields, flag));
 }
 
 
-void select_analyse::abort_result_set()
+void Query_result_analyse::abort_result_set()
 {
   cleanup();
   return result->abort_result_set();
@@ -1242,7 +1240,7 @@ bool append_escaped(String *to_str, String *from_str)
 {
   char *from, *end, c;
 
-  if (to_str->realloc(to_str->length() + from_str->length()))
+  if (to_str->mem_realloc(to_str->length() + from_str->length()))
     return 1;
 
   from= (char*) from_str->ptr();

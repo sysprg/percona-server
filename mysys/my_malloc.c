@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,8 +14,10 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "mysys_err.h"
 #include <m_string.h>
+#include "my_thread_local.h"
 
 #ifdef HAVE_PSI_MEMORY_INTERFACE
 #define USE_MALLOC_WRAPPER
@@ -30,9 +32,10 @@ struct my_memory_header
   PSI_memory_key m_key;
   uint m_magic;
   size_t m_size;
+  PSI_thread *m_owner;
 };
 typedef struct my_memory_header my_memory_header;
-#define HEADER_SIZE 16
+#define HEADER_SIZE 32
 
 #define MAGIC 1234
 
@@ -54,7 +57,7 @@ void * my_malloc(PSI_memory_key key, size_t size, myf flags)
     void *user_ptr;
     mh->m_magic= MAGIC;
     mh->m_size= size;
-    mh->m_key= PSI_MEMORY_CALL(memory_alloc)(key, size);
+    mh->m_key= PSI_MEMORY_CALL(memory_alloc)(key, size, & mh->m_owner);
     user_ptr= HEADER_TO_USER(mh);
     MEM_MALLOCLIKE_BLOCK(user_ptr, size, 0, (flags & MY_ZEROFILL));
     return user_ptr;
@@ -102,6 +105,18 @@ my_realloc(PSI_memory_key key, void *ptr, size_t size, myf flags)
   return NULL;
 }
 
+void my_claim(void *ptr)
+{
+  my_memory_header *mh;
+
+  if (ptr == NULL)
+    return;
+
+  mh= USER_TO_HEADER(ptr);
+  DBUG_ASSERT(mh->m_magic == MAGIC);
+  mh->m_key= PSI_MEMORY_CALL(memory_claim)(mh->m_key, mh->m_size, & mh->m_owner);
+}
+
 void my_free(void *ptr)
 {
   my_memory_header *mh;
@@ -111,7 +126,7 @@ void my_free(void *ptr)
 
   mh= USER_TO_HEADER(ptr);
   DBUG_ASSERT(mh->m_magic == MAGIC);
-  PSI_MEMORY_CALL(memory_free)(mh->m_key, mh->m_size);
+  PSI_MEMORY_CALL(memory_free)(mh->m_key, mh->m_size, mh->m_owner);
   /* Catch double free */
   mh->m_magic= 0xDEAD;
   MEM_FREELIKE_BLOCK(ptr, 0);
@@ -132,6 +147,11 @@ void *my_realloc(PSI_memory_key key __attribute__((unused)),
                  void *ptr, size_t size, myf flags)
 {
   return my_raw_realloc(ptr, size, flags);
+}
+
+void my_claim(void *ptr __attribute__((unused)))
+{
+  /* Empty */
 }
 
 void my_free(void *ptr)
@@ -159,10 +179,17 @@ static void *my_raw_malloc(size_t size, myf my_flags)
   if (!size)
     size=1;
 
+#if defined(MY_MSCRT_DEBUG)
+  if (my_flags & MY_ZEROFILL)
+    point= _calloc_dbg(size, 1, _CLIENT_BLOCK, __FILE__, __LINE__);
+  else
+    point= _malloc_dbg(size, _CLIENT_BLOCK, __FILE__, __LINE__);
+#else
   if (my_flags & MY_ZEROFILL)
     point= calloc(size, 1);
   else
     point= malloc(size);
+#endif
 
   DBUG_EXECUTE_IF("simulate_out_of_memory",
                   {
@@ -181,8 +208,7 @@ static void *my_raw_malloc(size_t size, myf my_flags)
     if (my_flags & MY_FAE)
       error_handler_hook=fatal_error_handler_hook;
     if (my_flags & (MY_FAE+MY_WME))
-      my_error(EE_OUTOFMEMORY, MYF(ME_BELL + ME_WAITTANG +
-                                   ME_NOREFRESH + ME_FATALERROR),size);
+      my_error(EE_OUTOFMEMORY, MYF(ME_ERRORLOG + ME_FATALERROR),size);
     DBUG_EXECUTE_IF("simulate_out_of_memory",
                     DBUG_SET("-d,simulate_out_of_memory"););
     if (my_flags & MY_FAE)
@@ -221,7 +247,11 @@ static void *my_raw_realloc(void *oldpoint, size_t size, myf my_flags)
                   goto end;);
   if (!oldpoint && (my_flags & MY_ALLOW_ZERO_PTR))
     DBUG_RETURN(my_raw_malloc(size, my_flags));
+#if defined(MY_MSCRT_DEBUG)
+  point= _realloc_dbg(oldpoint, size, _CLIENT_BLOCK, __FILE__, __LINE__);
+#else
   point= realloc(oldpoint, size);
+#endif
 #ifndef DBUG_OFF
 end:
 #endif
@@ -233,7 +263,7 @@ end:
       my_free(oldpoint);
     my_errno=errno;
     if (my_flags & (MY_FAE+MY_WME))
-      my_error(EE_OUTOFMEMORY, MYF(ME_BELL+ ME_WAITTANG + ME_FATALERROR),
+      my_error(EE_OUTOFMEMORY, MYF(ME_FATALERROR),
                size);
     DBUG_EXECUTE_IF("simulate_out_of_memory",
                     DBUG_SET("-d,simulate_out_of_memory"););
@@ -254,7 +284,11 @@ static void my_raw_free(void *ptr)
 {
   DBUG_ENTER("my_free");
   DBUG_PRINT("my",("ptr: %p", ptr));
+#if defined(MY_MSCRT_DEBUG)
+  _free_dbg(ptr, _CLIENT_BLOCK);
+#else
   free(ptr);
+#endif
   DBUG_VOID_RETURN;
 }
 

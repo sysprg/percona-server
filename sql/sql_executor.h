@@ -1,7 +1,8 @@
 #ifndef SQL_EXECUTOR_INCLUDED
 #define SQL_EXECUTOR_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights
+ * reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,8 +19,8 @@
 
 /** @file Classes for query execution */
 
-#include "records.h"                          /* READ_RECORD */
-#include "sql_opt_exec_shared.h"
+#include "records.h"               // READ_RECORD
+#include "sql_opt_exec_shared.h"   // QEP_shared_owner
 
 class JOIN;
 class JOIN_TAB;
@@ -212,7 +213,7 @@ public:
   /**
     Internal state cleanup.
   */
-  virtual void free() {};
+  virtual void mem_free() {};
 };
 
 
@@ -263,6 +264,7 @@ private:
   /** Write function that would be used for saving records in tmp table. */
   Next_select_func write_func;
   enum_nested_loop_state put_record(bool end_of_records);
+  __attribute__((warn_unused_result))
   bool prepare_tmp_table();
 };
 
@@ -281,7 +283,9 @@ evaluate_join_record(JOIN *join, QEP_TAB *qep_tab, int error);
 
 
 
-void copy_fields(Temp_table_param *param);
+__attribute__((warn_unused_result))
+bool copy_fields(Temp_table_param *param, const THD *thd);
+
 bool copy_funcs(Func_ptr_array*, const THD *thd);
 bool cp_buffer_from_ref(THD *thd, TABLE *table, TABLE_REF *ref);
 
@@ -289,8 +293,8 @@ bool cp_buffer_from_ref(THD *thd, TABLE *table, TABLE_REF *ref);
 int report_handler_error(TABLE *table, int error);
 
 int safe_index_read(QEP_TAB *tab);
-SORT_FIELD * make_unireg_sortorder(ORDER *order, uint *length,
-                                  SORT_FIELD *sortorder);
+st_sort_field * make_unireg_sortorder(ORDER *order, uint *length,
+                                      st_sort_field *sortorder);
 
 int join_read_const_table(JOIN_TAB *tab, POSITION *pos);
 void join_read_key_unlock_row(st_join_table *tab);
@@ -324,7 +328,7 @@ bool setup_copy_fields(THD *thd, Temp_table_param *param,
 		  Ref_ptr_array ref_pointer_array,
 		  List<Item> &res_selected_fields, List<Item> &res_all_fields,
 		  uint elements, List<Item> &all_fields);
-bool check_unique_constraint(TABLE *table, int hidden_field_count);
+bool check_unique_constraint(TABLE *table);
 ulonglong unique_hash(Field *field, ulonglong *hash);
 
 class Opt_trace_object;
@@ -467,8 +471,12 @@ public:
   }
 
   void pick_table_access_method(const JOIN_TAB *join_tab);
+  void set_pushed_table_access_method(void);
   void push_index_cond(const JOIN_TAB *join_tab,
                        uint keyno, Opt_trace_object *trace_obj);
+
+  /// @return the index used for a table in a QEP
+  uint effective_index() const;
 
   bool pfs_batch_update(JOIN *join);
 
@@ -512,8 +520,24 @@ public:
     record combination
   */
   bool found_match;
-  bool found;         /**< true after all matches or null complement*/
-  bool not_null_compl;/**< true before null complement is added    */
+
+  /**
+    Used to decide whether an inner table of an outer join should produce NULL
+    values. If it is true after a call to evaluate_join_record(), the join
+    condition has been satisfied for at least one row from the inner
+    table. This member is not really manipulated by this class, see sub_select
+    for details on its use.
+  */
+  bool found;
+
+  /**
+    This member is true as long as we are evaluating rows from the inner
+    tables of an outer join. If none of these rows satisfy the join condition,
+    we generated NULL-complemented rows and set this member to false. In the
+    meantime, the value may be read by triggered conditions, see
+    Item_func_trig_cond::val_int().
+  */
+  bool not_null_compl;
 
   plan_idx first_unmatched; /**< used for optimization purposes only   */
 

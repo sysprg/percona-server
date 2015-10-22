@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,21 +19,23 @@
 #include "my_global.h"
 #include "my_dbug.h"                   // DBUG_ENTER
 #include "my_sys.h"                    // strmake_root
-#ifdef MYSQL_SERVER
-#include "unireg.h"                    // REQUIRED: for other includes
-#endif
 #include "xa.h"                        // XID_STATE
-#include "table.h"                     // CHANGED_TABLE_LIST
 #include "my_alloc.h"                  // MEM_ROOT
 #include "thr_malloc.h"                // init_sql_alloc
 #include "sql_cache.h"                 // query_cache
 #include "mdl.h"                       // MDL_savepoint
+#include "handler.h"                   // handlerton
+#include "rpl_transaction_ctx.h"       // Rpl_transaction_ctx
+#include "rpl_transaction_write_set_ctx.h" // Transaction_write_set_ctx
 
 class THD;
 
-class Ha_trx_info;
-
-#define FLAGSTR(V,F) ((V)&(F)?#F" ":"")
+typedef struct st_changed_table_list
+{
+  struct	st_changed_table_list *next;
+  char		*key;
+  uint32        key_length;
+} CHANGED_TABLE_LIST;
 
 
 /**
@@ -339,9 +341,37 @@ public:
     bool ready_preempt;             // internal in MYSQL_BIN_LOG::ordered_commit
 #endif
   } m_flags;
+  /* Binlog-specific logical timestamps. */
+  /*
+    Store for the transaction's commit parent sequence_number.
+    The value specifies this transaction dependency with a "parent"
+    transaction.
+    The member is assigned, when the transaction is about to commit
+    in binlog to a value of the last committed transaction's sequence_number.
+    This and last_committed as numbers are kept ever incremented
+    regardless of binary logs being rotated or when transaction
+    is logged in multiple pieces.
+    However the logger to the binary log may convert them
+    according to its specification.
+  */
+  int64 last_committed;
+  /*
+    The transaction's private logical timestamp assigned at the
+    transaction prepare phase. The timestamp enumerates transactions
+    in the binary log. The value is gained through incrementing (stepping) a
+    global clock.
+    Eventually the value is considered to increase max_committed_transaction
+    system clock when the transaction has committed.
+  */
+  int64 sequence_number;
+
+  void store_commit_parent(int64 last_arg)
+  {
+    last_committed= last_arg;
+  }
 
   Transaction_ctx();
-  ~Transaction_ctx()
+  virtual ~Transaction_ctx()
   {
     free_root(&m_mem_root, MYF(0));
   }
@@ -352,6 +382,8 @@ public:
     m_changed_tables= NULL;
     m_savepoints= NULL;
     m_xid_state.cleanup();
+    m_rpl_transaction_ctx.cleanup();
+    m_transaction_write_set_ctx.clear_write_set();
     free_root(&m_mem_root,MYF(MY_KEEP_PREALLOC));
     DBUG_VOID_RETURN;
   }
@@ -391,6 +423,11 @@ public:
   void* allocate_memory(unsigned int size)
   {
     return alloc_root(&m_mem_root, size);
+  }
+
+  void claim_memory_ownership()
+  {
+    claim_root(&m_mem_root);
   }
 
   void free_memory(myf root_alloc_flags)
@@ -545,6 +582,31 @@ private:
     else
       return true;
   }
+
+public:
+  Rpl_transaction_ctx *get_rpl_transaction_ctx()
+  {
+    return &m_rpl_transaction_ctx;
+  }
+
+  const Rpl_transaction_ctx *get_rpl_transaction_ctx() const
+  {
+    return &m_rpl_transaction_ctx;
+  }
+
+  Rpl_transaction_write_set_ctx *get_transaction_write_set_ctx()
+  {
+    return &m_transaction_write_set_ctx;
+  }
+
+  const Rpl_transaction_write_set_ctx *get_transaction_write_set_ctx() const
+  {
+    return &m_transaction_write_set_ctx;
+  }
+
+private:
+  Rpl_transaction_ctx m_rpl_transaction_ctx;
+  Rpl_transaction_write_set_ctx m_transaction_write_set_ctx;
 };
 
 #endif

@@ -2,7 +2,7 @@
 #define HANDLER_INCLUDED
 
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or
    modify it under the terms of the GNU General Public License
@@ -21,24 +21,34 @@
 
 /* Definitions for parameters to do with handler-routines */
 
-#include "my_pthread.h"
-#include <algorithm>
-#include "sql_const.h"
-#include "mysqld.h"                             /* server_id */
-#include "sql_plugin.h"        /* plugin_ref, st_plugin_int, plugin */
-#include "thr_lock.h"          /* thr_lock_type, THR_LOCK_DATA */
-#include "sql_cache.h"
-#include "structs.h"                            /* SHOW_COMP_OPTION */
+#include "my_global.h"
+#include "ft_global.h"         // ft_hints
+#include "thr_lock.h"          // thr_lock_type
+#include "discrete_interval.h" // Discrete_interval
+#include "key.h"               // KEY
+#include "mysqld.h"            // lower_case_table_names
+#include "sql_const.h"         // SHOW_COMP_OPTION
+#include "sql_list.h"          // SQL_I_List
+#include "sql_plugin_ref.h"    // plugin_ref
 
-#include <my_global.h>
-#include <my_compare.h>
-#include <ft_global.h>
-#include <keycache.h>
+#include "mysql/psi/psi.h"
+
+#include <algorithm>
+#include <string>
 
 class Alter_info;
+class SE_cost_constants;     // see opt_costconstants.h
+class String;
+struct TABLE_LIST;
+typedef struct st_hash HASH;
+typedef struct st_key_cache KEY_CACHE;
 typedef struct xid_t XID;
+class partition_info;
+class Partition_handler;
+typedef my_bool (*qc_engine_callback)(THD *thd, char *table_key,
+                                      uint key_length,
+                                      ulonglong *engine_data);
 
-class SE_cost_constants;                        // see opt_costconstants.h
 
 // the following is for checking tables
 
@@ -139,16 +149,16 @@ enum enum_alter_inplace_result {
 #define HA_NO_VARCHAR	       (1 << 27)
 #define HA_CAN_BIT_FIELD       (1 << 28) /* supports bit fields */
 #define HA_ANY_INDEX_MAY_BE_UNIQUE (1 << 30)
-#define HA_NO_COPY_ON_ALTER    (LL(1) << 31)
-#define HA_HAS_RECORDS	       (LL(1) << 32) /* records() gives exact count*/
+#define HA_NO_COPY_ON_ALTER    (1LL << 31)
+#define HA_HAS_RECORDS	       (1LL << 32) /* records() gives exact count*/
 /* Has it's own method of binlog logging */
-#define HA_HAS_OWN_BINLOGGING  (LL(1) << 33)
+#define HA_HAS_OWN_BINLOGGING  (1LL << 33)
 /*
   Engine is capable of row-format and statement-format logging,
   respectively
 */
-#define HA_BINLOG_ROW_CAPABLE  (LL(1) << 34)
-#define HA_BINLOG_STMT_CAPABLE (LL(1) << 35)
+#define HA_BINLOG_ROW_CAPABLE  (1LL << 34)
+#define HA_BINLOG_STMT_CAPABLE (1LL << 35)
 /*
     When a multiple key conflict happens in a REPLACE command mysql
     expects the conflicts to be reported in the ascending order of
@@ -171,13 +181,13 @@ enum enum_alter_inplace_result {
     This flag helps the underlying SE to inform the server that the keys are not
     ordered.
 */
-#define HA_DUPLICATE_KEY_NOT_IN_ORDER    (LL(1) << 36)
+#define HA_DUPLICATE_KEY_NOT_IN_ORDER    (1LL << 36)
 /*
   Engine supports REPAIR TABLE. Used by CHECK TABLE FOR UPGRADE if an
   incompatible table is detected. If this flag is set, CHECK TABLE FOR UPGRADE
   will report ER_TABLE_NEEDS_UPGRADE, otherwise ER_TABLE_NEED_REBUILD.
 */
-#define HA_CAN_REPAIR                    (LL(1) << 37)
+#define HA_CAN_REPAIR                    (1LL << 37)
 
 /*
   Set of all binlog flags. Currently only contain the capabilities
@@ -217,12 +227,12 @@ enum enum_alter_inplace_result {
   @note This optimization in combination with batching may be used to
         remove even more roundtrips.
 */
-#define HA_READ_BEFORE_WRITE_REMOVAL  (LL(1) << 38)
+#define HA_READ_BEFORE_WRITE_REMOVAL  (1LL << 38)
 
 /*
   Engine supports extended fulltext API
  */
-#define HA_CAN_FULLTEXT_EXT              (LL(1) << 39)
+#define HA_CAN_FULLTEXT_EXT              (1LL << 39)
 
 /*
   Storage engine doesn't synchronize result set with expected table contents.
@@ -230,24 +240,24 @@ enum enum_alter_inplace_result {
   the table when deciding whether to do a full table scan, index scan or hash
   scan while applying a row event.
  */
-#define HA_READ_OUT_OF_SYNC              (LL(1) << 40)
+#define HA_READ_OUT_OF_SYNC              (1LL << 40)
 
 /*
   Storage engine supports table export using the
   FLUSH TABLE <table_list> FOR EXPORT statement.
  */
-#define HA_CAN_EXPORT                 (LL(1) << 41)
+#define HA_CAN_EXPORT                 (1LL << 41)
 
 /*
   The handler don't want accesses to this table to 
   be const-table optimized
 */
-#define HA_BLOCK_CONST_TABLE          (LL(1) << 42)
+#define HA_BLOCK_CONST_TABLE          (1LL << 42)
 
 /*
   Handler supports FULLTEXT hints
 */
-#define HA_CAN_FULLTEXT_HINTS         (LL(1) << 43)
+#define HA_CAN_FULLTEXT_HINTS         (1LL << 43)
 
 /**
   Storage engine doesn't support LOCK TABLE ... READ LOCAL locks
@@ -255,7 +265,7 @@ enum enum_alter_inplace_result {
   them to LOCK TABLE ... READ locks, for example, because it doesn't
   use THR_LOCK locks at all.
 */
-#define HA_NO_READ_LOCAL_LOCK         (LL(1) << 44)
+#define HA_NO_READ_LOCAL_LOCK         (1LL << 44)
 
 /**
   A storage engine is compatible with the attachable transaction requirements
@@ -268,8 +278,17 @@ enum enum_alter_inplace_result {
     - or SE completely ignores THD::ha_data and close_connection like MyISAM
       does.
 */
-#define HA_ATTACHABLE_TRX_COMPATIBLE  (LL(1) << 45)
+#define HA_ATTACHABLE_TRX_COMPATIBLE  (1LL << 45)
 
+/**
+  Handler supports Generated Columns
+*/
+#define HA_GENERATED_COLUMNS            (1LL << 46)
+
+/**
+  Supports index on virtual generated column
+*/
+#define HA_CAN_INDEX_VIRTUAL_GENERATED_COLUMN (1LL << 47)
 
 /* bits in index_flags(index_number) for what you can do with index */
 #define HA_READ_NEXT            1       /* TODO really use this flag */
@@ -285,39 +304,6 @@ enum enum_alter_inplace_result {
 #define HA_KEY_SCAN_NOT_ROR     128 
 #define HA_DO_INDEX_COND_PUSHDOWN  256 /* Supports Index Condition Pushdown */
 #define HA_CLUSTERED_INDEX      512     /* Data is clustered on this key */
-
-
-
-/**
-  bits in alter_table_flags:
-
-  HA_PARTITION_FUNCTION_SUPPORTED indicates that the function is
-  supported at all.
-  HA_FAST_CHANGE_PARTITION means that optimised variants of the changes
-  exists but they are not necessarily done online.
-
-  HA_ONLINE_DOUBLE_WRITE means that the handler supports writing to both
-  the new partition and to the old partitions when updating through the
-  old partitioning schema while performing a change of the partitioning.
-  This means that we can support updating of the table while performing
-  the copy phase of the change. For no lock at all also a double write
-  from new to old must exist and this is not required when this flag is
-  set.
-  This is actually removed even before it was introduced the first time.
-  The new idea is that handlers will handle the lock level already in
-  store_lock for ALTER TABLE partitions.
-
-  HA_PARTITION_ONE_PHASE is a flag that can be set by handlers that take
-  care of changing the partitions online and in one phase. Thus all phases
-  needed to handle the change are implemented inside the storage engine.
-  The storage engine must also support auto-discovery since the frm file
-  is changed as part of the change and this change must be controlled by
-  the storage engine. A typical engine to support this is NDB (through
-  WL #2498).
-*/
-#define HA_PARTITION_FUNCTION_SUPPORTED         (1L << 0)
-#define HA_FAST_CHANGE_PARTITION                (1L << 1)
-#define HA_PARTITION_ONE_PHASE                  (1L << 2)
 
 /* operations for disable/enable indexes */
 #define HA_KEY_SWITCH_NONUNIQ      0
@@ -349,7 +335,7 @@ enum enum_alter_inplace_result {
 #define HA_OPEN_KEYFILE		1
 #define HA_OPEN_RNDFILE		2
 #define HA_GET_INDEX		4
-#define HA_GET_INFO		8	/* do a ha_info() after open */
+#define HA_GET_INFO		8	/* do a handler::info() after open */
 #define HA_READ_ONLY		16	/* File opened as readonly */
 /* Try readonly if can't open with read and write */
 #define HA_TRY_READ_ONLY	32
@@ -394,6 +380,8 @@ static const uint MYSQL_START_TRANS_OPT_WITH_CONS_SNAPSHOT = 1;
 static const uint MYSQL_START_TRANS_OPT_READ_ONLY          = 2;
 // READ WRITE option
 static const uint MYSQL_START_TRANS_OPT_READ_WRITE         = 4;
+// HIGH PRIORITY option
+static const uint MYSQL_START_TRANS_OPT_HIGH_PRIORITY      = 8;
 
 enum legacy_db_type
 {
@@ -504,6 +492,13 @@ given at all. */
 */
 #define HA_CREATE_USED_STATS_SAMPLE_PAGES (1L << 24)
 
+/**
+   This is set whenever a 'TABLESPACE=...' phrase is used on CREATE TABLE
+*/
+#define HA_CREATE_USED_TABLESPACE       (1L << 25)
+
+/** COMPRESS="zlib|lz4|none" used during table create. */
+#define HA_CREATE_USED_COMPRESS         (1L << 26)
 
 /*
   This is master database for most of system tables. However there
@@ -582,11 +577,22 @@ class st_alter_tablespace : public Sql_alloc
   ulonglong initial_size;
   ulonglong autoextend_size;
   ulonglong max_size;
+  ulonglong file_block_size;
   uint nodegroup_id;
   handlerton *storage_engine;
   bool wait_until_completed;
   const char *ts_comment;
   enum tablespace_access_mode ts_access_mode;
+  bool is_tablespace_command()
+  {
+    return ts_cmd_type == CREATE_TABLESPACE      ||
+            ts_cmd_type == ALTER_TABLESPACE       ||
+            ts_cmd_type == DROP_TABLESPACE        ||
+            ts_cmd_type == CHANGE_FILE_TABLESPACE ||
+            ts_cmd_type == ALTER_ACCESS_MODE_TABLESPACE;
+  }
+
+  /** Default constructor */
   st_alter_tablespace()
   {
     tablespace_name= NULL;
@@ -595,13 +601,14 @@ class st_alter_tablespace : public Sql_alloc
     data_file_name= NULL;
     undo_file_name= NULL;
     redo_file_name= NULL;
-    extent_size= 1024*1024;        //Default 1 MByte
-    undo_buffer_size= 8*1024*1024; //Default 8 MByte
-    redo_buffer_size= 8*1024*1024; //Default 8 MByte
-    initial_size= 128*1024*1024;   //Default 128 MByte
-    autoextend_size= 0;            //No autoextension as default
-    max_size= 0;                   //Max size == initial size => no extension
+    extent_size= 1024*1024;        // Default 1 MByte
+    undo_buffer_size= 8*1024*1024; // Default 8 MByte
+    redo_buffer_size= 8*1024*1024; // Default 8 MByte
+    initial_size= 128*1024*1024;   // Default 128 MByte
+    autoextend_size= 0;            // No autoextension as default
+    max_size= 0;                   // Max size == initial size => no extension
     storage_engine= NULL;
+    file_block_size= 0;            // 0=default or must be a valid Page Size
     nodegroup_id= UNDEF_NODEGROUP;
     wait_until_completed= TRUE;
     ts_comment= NULL;
@@ -670,72 +677,6 @@ typedef bool (stat_print_fn)(THD *thd, const char *type, size_t type_len,
                              const char *status, size_t status_len);
 enum ha_stat_type { HA_ENGINE_STATUS, HA_ENGINE_LOGS, HA_ENGINE_MUTEX };
 extern st_plugin_int *hton2plugin[MAX_HA];
-
-/* Transaction log maintains type definitions */
-enum log_status
-{
-  HA_LOG_STATUS_FREE= 0,      /* log is free and can be deleted */
-  HA_LOG_STATUS_INUSE= 1,     /* log can't be deleted because it is in use */
-  HA_LOG_STATUS_NOSUCHLOG= 2  /* no such log (can't be returned by
-                                the log iterator status) */
-};
-/*
-  Function for signaling that the log file changed its state from
-  LOG_STATUS_INUSE to LOG_STATUS_FREE
-
-  Now it do nothing, will be implemented as part of new transaction
-  log management for engines.
-  TODO: implement the function.
-*/
-void signal_log_not_needed(struct handlerton, char *log_file);
-/*
-  Data of transaction log iterator.
-*/
-struct handler_log_file_data {
-  LEX_STRING filename;
-  enum log_status status;
-};
-
-
-enum handler_iterator_type
-{
-  /* request of transaction log iterator */
-  HA_TRANSACTLOG_ITERATOR= 1
-};
-enum handler_create_iterator_result
-{
-  HA_ITERATOR_OK,          /* iterator created */
-  HA_ITERATOR_UNSUPPORTED, /* such type of iterator is not supported */
-  HA_ITERATOR_ERROR        /* error during iterator creation */
-};
-
-/*
-  Iterator structure. Can be used by handler/handlerton for different purposes.
-
-  Iterator should be created in the way to point "before" the first object
-  it iterate, so next() call move it to the first object or return !=0 if
-  there is nothing to iterate through.
-*/
-struct handler_iterator {
-  /*
-    Moves iterator to next record and return 0 or return !=0
-    if there is no records.
-    iterator_object will be filled by this function if next() returns 0.
-    Content of the iterator_object depend on iterator type.
-  */
-  int (*next)(struct handler_iterator *, void *iterator_object);
-  /*
-    Free resources allocated by iterator, after this call iterator
-    is not usable.
-  */
-  void (*destroy)(struct handler_iterator *);
-  /*
-    Pointer to buffer for the iterator to use.
-    Should be allocated by function which created the iterator and
-    destroied by freed by above "destroy" call
-  */
-  void *buffer;
-};
 
 class handler;
 /*
@@ -828,10 +769,43 @@ struct handlerton
    int (*panic)(handlerton *hton, enum ha_panic_function flag);
    int (*start_consistent_snapshot)(handlerton *hton, THD *thd);
    int (*clone_consistent_snapshot)(handlerton *hton, THD *thd, THD *from_thd);
-   bool (*flush_logs)(handlerton *hton);
+   /**
+     Flush the log(s) of storage engine(s).
+
+     @param hton Handlerton of storage engine.
+     @param binlog_group_flush true if we got invoked by binlog group
+     commit during flush stage, false in other cases.
+     @retval false Succeed
+     @retval true Error
+   */
+   bool (*flush_logs)(handlerton *hton, bool binlog_group_flush);
    bool (*show_status)(handlerton *hton, THD *thd, stat_print_fn *print, enum ha_stat_type stat);
+   /*
+     The flag values are defined in sql_partition.h.
+     If this function is set, then it implies that the handler supports
+     partitioned tables.
+     If this function exists, then handler::get_partition_handler must also be
+     implemented.
+   */
    uint (*partition_flags)();
-   uint (*alter_table_flags)(uint flags);
+
+
+  /**
+    Get the tablespace name from the SE for the given schema and table.
+
+    @param       thd              Thread context.
+    @param       db_name          Name of the relevant schema.
+    @param       table_name       Name of the relevant table.
+    @param [out] tablespace_name  Name of the tablespace containing the table.
+
+    @return Operation status.
+      @retval == 0  Success.
+      @retval != 0  Error (handler error code returned).
+   */
+
+  int (*get_tablespace)(THD* thd, LEX_CSTRING db_name, LEX_CSTRING table_name,
+                        LEX_CSTRING *tablespace_name);
+
    int (*alter_tablespace)(handlerton *hton, THD *thd, st_alter_tablespace *ts_info);
    int (*fill_is_table)(handlerton *hton, THD *thd, TABLE_LIST *tables, 
                         class Item *cond, 
@@ -853,22 +827,6 @@ struct handlerton
                             const char *db, const char *table_name);
    int (*release_temporary_latches)(handlerton *hton, THD *thd);
 
-   /*
-     Get log status.
-     If log_status is null then the handler do not support transaction
-     log information (i.e. log iterator can't be created).
-     (see example of implementation in handler.cc, TRANS_LOG_MGM_EXAMPLE_CODE)
-
-   */
-   enum log_status (*get_log_status)(handlerton *hton, char *log);
-
-   /*
-     Iterators creator.
-     Presence of the pointer should be checked before using
-   */
-   enum handler_create_iterator_result
-     (*create_iterator)(handlerton *hton, enum handler_iterator_type type,
-                        struct handler_iterator *fill_this_in);
    int (*discover)(handlerton *hton, THD* thd, const char *db, 
                    const char *name,
                    uchar **frmblob, 
@@ -941,6 +899,22 @@ struct handlerton
 
   SE_cost_constants *(*get_cost_constants)(uint storage_category);
 
+  /**
+    @param[in,out]  thd          pointer to THD
+    @param[in]      new_trx_arg  pointer to replacement transaction
+    @param[out]     ptr_trx_arg  double pointer to being replaced transaction
+
+    Associated with THD engine's native transaction is replaced
+    with @c new_trx_arg. The old value is returned through a buffer if non-null
+    pointer is provided with @c ptr_trx_arg.
+    The method is adapted by XA start and XA prepare handlers to
+    handle XA transaction that is logged as two parts by slave applier.
+
+    This interface concerns engines that are aware of XA transaction.
+  */
+  void (*replace_native_transaction_in_thd)(THD *thd, void *new_trx_arg,
+                                            void **ptr_trx_arg);
+
    uint32 license; /* Flag for Engine License */
    void *data; /* Location for engines to keep personal structures */
 };
@@ -994,10 +968,12 @@ struct handlerton
   Engine supports secondary clustered keys.
 */
 #define HTON_SUPPORTS_CLUSTERED_KEYS (1 << 12)
+// Engine support foreign key constraint.
+
+#define HTON_SUPPORTS_FOREIGN_KEYS   (1 << 13)
 
 enum enum_tx_isolation { ISO_READ_UNCOMMITTED, ISO_READ_COMMITTED,
 			 ISO_REPEATABLE_READ, ISO_SERIALIZABLE};
-
 
 typedef struct {
   ulonglong data_file_length;
@@ -1012,13 +988,24 @@ typedef struct {
   ulonglong check_sum;
 } PARTITION_STATS;
 
+typedef struct st_table_stats {
+  char table[NAME_LEN * 2 + 2];  // [db] + '.' + [table] + '\0'
+  size_t table_len;
+  ulonglong rows_read, rows_changed;
+  ulonglong rows_changed_x_indexes;
+  /* Stores enum db_type, but forward declarations cannot be done */
+  int engine_type;
+} TABLE_STATS;
+
+typedef struct st_index_stats {
+  char index[NAME_LEN * 3 + 3];  // [db] + '.' + [table] + '.' + [index] + '\0'
+  size_t index_len;
+  ulonglong rows_read;
+} INDEX_STATS;
+
 #define UNDEF_NODEGROUP 65535
 class Item;
 struct st_table_log_memory_entry;
-
-class partition_info;
-
-struct st_partition_iter;
 
 enum enum_ha_unused { HA_CHOICE_UNDEF, HA_CHOICE_NO, HA_CHOICE_YES };
 
@@ -1032,6 +1019,16 @@ typedef struct st_ha_create_information
   LEX_STRING connect_string;
   const char *password, *tablespace;
   LEX_STRING comment;
+
+  /**
+  Algorithm (and possible options) to be used for InnoDB's transparent
+  page compression. If this attribute is set then it is hint to the
+  storage engine to try and compress the data using the specified algorithm
+  where possible. Note: this value is interpreted by the storage engine only.
+  and ignored by the Server layer. */
+
+  LEX_STRING compress;
+
   const char *data_file_name, *index_file_name;
   const char *alias;
   ulonglong max_rows,min_rows;
@@ -1052,7 +1049,7 @@ typedef struct st_ha_create_information
     For ALTER TABLE defaults to ROW_TYPE_NOT_USED (means "keep the current").
 
     Can be changed either explicitly by the parser.
-    If nothing speficied inherits the value of the original table (if present).
+    If nothing specified inherits the value of the original table (if present).
   */
   enum row_type row_type;
   uint null_bits;                       /* NULL bits at start of record */
@@ -1134,37 +1131,37 @@ public:
      attribute has really changed we might choose to set flag
      pessimistically, for example, relying on parser output only.
   */
-  typedef ulong HA_ALTER_FLAGS;
+  typedef ulonglong HA_ALTER_FLAGS;
 
   // Add non-unique, non-primary index
-  static const HA_ALTER_FLAGS ADD_INDEX                  = 1L << 0;
+  static const HA_ALTER_FLAGS ADD_INDEX                  = 1ULL << 0;
 
   // Drop non-unique, non-primary index
-  static const HA_ALTER_FLAGS DROP_INDEX                 = 1L << 1;
+  static const HA_ALTER_FLAGS DROP_INDEX                 = 1ULL << 1;
 
   // Add unique, non-primary index
-  static const HA_ALTER_FLAGS ADD_UNIQUE_INDEX           = 1L << 2;
+  static const HA_ALTER_FLAGS ADD_UNIQUE_INDEX           = 1ULL << 2;
 
   // Drop unique, non-primary index
-  static const HA_ALTER_FLAGS DROP_UNIQUE_INDEX          = 1L << 3;
+  static const HA_ALTER_FLAGS DROP_UNIQUE_INDEX          = 1ULL << 3;
 
   // Add primary index
-  static const HA_ALTER_FLAGS ADD_PK_INDEX               = 1L << 4;
+  static const HA_ALTER_FLAGS ADD_PK_INDEX               = 1ULL << 4;
 
   // Drop primary index
-  static const HA_ALTER_FLAGS DROP_PK_INDEX              = 1L << 5;
+  static const HA_ALTER_FLAGS DROP_PK_INDEX              = 1ULL << 5;
 
   // Add column
-  static const HA_ALTER_FLAGS ADD_COLUMN                 = 1L << 6;
+  static const HA_ALTER_FLAGS ADD_COLUMN                 = 1ULL << 6;
 
   // Drop column
-  static const HA_ALTER_FLAGS DROP_COLUMN                = 1L << 7;
+  static const HA_ALTER_FLAGS DROP_COLUMN                = 1ULL << 7;
 
   // Rename column
-  static const HA_ALTER_FLAGS ALTER_COLUMN_NAME          = 1L << 8;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_NAME          = 1ULL << 8;
 
   // Change column datatype
-  static const HA_ALTER_FLAGS ALTER_COLUMN_TYPE          = 1L << 9;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_TYPE          = 1ULL << 9;
 
   /**
     Change column datatype in such way that new type has compatible
@@ -1172,61 +1169,61 @@ public:
     possible to perform change by only updating data dictionary
     without changing table rows.
   */
-  static const HA_ALTER_FLAGS ALTER_COLUMN_EQUAL_PACK_LENGTH = 1L << 10;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_EQUAL_PACK_LENGTH = 1ULL << 10;
 
   // Reorder column
-  static const HA_ALTER_FLAGS ALTER_COLUMN_ORDER         = 1L << 11;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_ORDER         = 1ULL << 11;
 
   // Change column from NOT NULL to NULL
-  static const HA_ALTER_FLAGS ALTER_COLUMN_NULLABLE      = 1L << 12;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_NULLABLE      = 1ULL << 12;
 
   // Change column from NULL to NOT NULL
-  static const HA_ALTER_FLAGS ALTER_COLUMN_NOT_NULLABLE  = 1L << 13;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_NOT_NULLABLE  = 1ULL << 13;
 
   // Set or remove default column value
-  static const HA_ALTER_FLAGS ALTER_COLUMN_DEFAULT       = 1L << 14;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_DEFAULT       = 1ULL << 14;
 
   // Add foreign key
-  static const HA_ALTER_FLAGS ADD_FOREIGN_KEY            = 1L << 15;
+  static const HA_ALTER_FLAGS ADD_FOREIGN_KEY            = 1ULL << 15;
 
   // Drop foreign key
-  static const HA_ALTER_FLAGS DROP_FOREIGN_KEY           = 1L << 16;
+  static const HA_ALTER_FLAGS DROP_FOREIGN_KEY           = 1ULL << 16;
 
   // table_options changed, see HA_CREATE_INFO::used_fields for details.
-  static const HA_ALTER_FLAGS CHANGE_CREATE_OPTION       = 1L << 17;
+  static const HA_ALTER_FLAGS CHANGE_CREATE_OPTION       = 1ULL << 17;
 
   // Table is renamed
-  static const HA_ALTER_FLAGS ALTER_RENAME               = 1L << 18;
+  static const HA_ALTER_FLAGS ALTER_RENAME               = 1ULL << 18;
 
   // Change the storage type of column 
-  static const HA_ALTER_FLAGS ALTER_COLUMN_STORAGE_TYPE = 1L << 19;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_STORAGE_TYPE = 1ULL << 19;
 
   // Change the column format of column
-  static const HA_ALTER_FLAGS ALTER_COLUMN_COLUMN_FORMAT = 1L << 20;
+  static const HA_ALTER_FLAGS ALTER_COLUMN_COLUMN_FORMAT = 1ULL << 20;
 
   // Add partition
-  static const HA_ALTER_FLAGS ADD_PARTITION              = 1L << 21;
+  static const HA_ALTER_FLAGS ADD_PARTITION              = 1ULL << 21;
 
   // Drop partition
-  static const HA_ALTER_FLAGS DROP_PARTITION             = 1L << 22;
+  static const HA_ALTER_FLAGS DROP_PARTITION             = 1ULL << 22;
 
   // Changing partition options
-  static const HA_ALTER_FLAGS ALTER_PARTITION            = 1L << 23;
+  static const HA_ALTER_FLAGS ALTER_PARTITION            = 1ULL << 23;
 
   // Coalesce partition
-  static const HA_ALTER_FLAGS COALESCE_PARTITION         = 1L << 24;
+  static const HA_ALTER_FLAGS COALESCE_PARTITION         = 1ULL << 24;
 
   // Reorganize partition ... into
-  static const HA_ALTER_FLAGS REORGANIZE_PARTITION       = 1L << 25;
+  static const HA_ALTER_FLAGS REORGANIZE_PARTITION       = 1ULL << 25;
 
   // Reorganize partition
-  static const HA_ALTER_FLAGS ALTER_TABLE_REORG          = 1L << 26;
+  static const HA_ALTER_FLAGS ALTER_TABLE_REORG          = 1ULL << 26;
 
   // Remove partitioning
-  static const HA_ALTER_FLAGS ALTER_REMOVE_PARTITIONING  = 1L << 27;
+  static const HA_ALTER_FLAGS ALTER_REMOVE_PARTITIONING  = 1ULL << 27;
 
   // Partition operation with ALL keyword
-  static const HA_ALTER_FLAGS ALTER_ALL_PARTITION        = 1L << 28;
+  static const HA_ALTER_FLAGS ALTER_ALL_PARTITION        = 1ULL << 28;
 
   /**
     Rename index. Note that we set this flag only if there are no other
@@ -1234,16 +1231,22 @@ public:
     detect renaming of indexes which is done by dropping index and then
     re-creating index with identical definition under different name.
   */
-  static const HA_ALTER_FLAGS RENAME_INDEX               = 1L << 29;
+  static const HA_ALTER_FLAGS RENAME_INDEX               = 1ULL << 29;
 
   /**
     Recreate the table for ALTER TABLE FORCE, ALTER TABLE ENGINE
     and OPTIMIZE TABLE operations.
   */
-  static const HA_ALTER_FLAGS RECREATE_TABLE             = 1L << 30;
+  static const HA_ALTER_FLAGS RECREATE_TABLE             = 1ULL << 30;
 
   // Add spatial index
-  static const HA_ALTER_FLAGS ADD_SPATIAL_INDEX          = 1L << 31;
+  static const HA_ALTER_FLAGS ADD_SPATIAL_INDEX          = 1ULL << 31;
+
+  // Alter generated column
+  static const HA_ALTER_FLAGS HA_ALTER_STORED_GCOL       = 1ULL << 32;
+
+  // Alter index comment
+  static const HA_ALTER_FLAGS ALTER_INDEX_COMMENT        = 1ULL << 33;
 
   /**
     Create options (like MAX_ROWS) for the new version of table.
@@ -1831,7 +1834,7 @@ public:
   ha_rows records;
   ha_rows deleted;			/* Deleted records */
   ulong mean_rec_length;		/* physical reclength */
-  ulong create_time;			/* When table was created */
+  time_t create_time;			/* When table was created */
   ulong check_time;
   ulong update_time;
   uint block_size;			/* index block size */
@@ -1839,17 +1842,39 @@ public:
   /*
     number of buffer bytes that native mrr implementation needs,
   */
-  uint mrr_length_per_rec; 
+  uint mrr_length_per_rec;
+
+  /**
+    Estimate for how much of the table that is availabe in a memory
+    buffer. Valid range is [0..1]. If it has the special value
+    IN_MEMORY_ESTIMATE_UNKNOWN (defined in structs.h), it means that
+    the storage engine has not supplied any value for it.
+  */
+  double table_in_mem_estimate;
 
   ha_statistics():
     data_file_length(0), max_data_file_length(0),
     index_file_length(0), delete_length(0), auto_increment_value(0),
     records(0), deleted(0), mean_rec_length(0), create_time(0),
-    check_time(0), update_time(0), block_size(0)
+    check_time(0), update_time(0), block_size(0),
+    table_in_mem_estimate(IN_MEMORY_ESTIMATE_UNKNOWN)
   {}
 };
 
-uint calculate_key_len(TABLE *, uint, const uchar *, key_part_map);
+/**
+  Calculates length of key.
+
+  Given a key index and a map of key parts return length of buffer used by key
+  parts.
+
+  @param  table        Table containing the key
+  @param  key          Key index
+  @param  keypart_map  which key parts that is used
+
+  @return Length of used key parts.
+*/
+uint calculate_key_len(TABLE *table, uint key,
+                       key_part_map keypart_map);
 /*
   bitmap with first N+1 bits set
   (keypart_map for a key prefix of [0..N] keyparts)
@@ -2023,6 +2048,7 @@ public:
 
 class handler :public Sql_alloc
 {
+  friend class Partition_handler;
 public:
   typedef ulonglong Table_flags;
 protected:
@@ -2138,8 +2164,6 @@ public:
   PSI_table *m_psi;
 
 private:
-#ifdef HAVE_PSI_TABLE_INTERFACE
-
   /** Internal state of the batch instrumentation. */
   enum batch_mode_t
   {
@@ -2150,7 +2174,6 @@ private:
     /** Batch mode used, after first table io. */
     PSI_BATCH_MODE_STARTED
   };
-
   /**
     Batch mode state.
     @sa start_psi_batch_mode.
@@ -2175,7 +2198,6 @@ private:
     @sa end_psi_batch_mode.
   */
   PSI_table_locker_state m_psi_locker_state;
-#endif
 
 public:
   virtual void unbind_psi();
@@ -2225,11 +2247,9 @@ public:
     next_insert_id(0), insert_id_for_cur_row(0),
     auto_inc_intervals_count(0),
     m_psi(NULL),
-#ifdef HAVE_PSI_TABLE_INTERFACE
     m_psi_batch_mode(PSI_BATCH_MODE_NONE),
     m_psi_numrows(0),
     m_psi_locker(NULL),
-#endif
     m_lock_type(F_UNLCK), ha_share(NULL)
     {
       DBUG_PRINT("info",
@@ -2240,13 +2260,12 @@ public:
   virtual ~handler(void)
   {
     DBUG_ASSERT(m_psi == NULL);
-#ifdef HAVE_PSI_TABLE_INTERFACE
     DBUG_ASSERT(m_psi_batch_mode == PSI_BATCH_MODE_NONE);
     DBUG_ASSERT(m_psi_locker == NULL);
-#endif
     DBUG_ASSERT(m_lock_type == F_UNLCK);
     DBUG_ASSERT(inited == NONE);
   }
+  /* TODO: reorganize the methods and have proper public/protected/private qualifiers!!! */
   virtual handler *clone(const char *name, MEM_ROOT *mem_root);
   /** This is called after create to allow us to set up cached variables */
   void init()
@@ -2276,9 +2295,6 @@ public:
   int ha_index_first(uchar * buf);
   int ha_index_last(uchar * buf);
   int ha_index_next_same(uchar *buf, const uchar *key, uint keylen);
-  int ha_index_read(uchar *buf, const uchar *key, uint key_len,
-                    enum ha_rkey_function find_flag);
-  int ha_index_read_last(uchar *buf, const uchar *key, uint key_len);
   int ha_reset();
   /* this is necessary in many places, e.g. in HANDLER command */
   int ha_index_or_rnd_end()
@@ -2312,7 +2328,6 @@ public:
                          uint *dup_key_found);
   int ha_delete_all_rows();
   int ha_truncate();
-  int ha_reset_auto_increment(ulonglong value);
   int ha_optimize(THD* thd, HA_CHECK_OPT* check_opt);
   int ha_analyze(THD* thd, HA_CHECK_OPT* check_opt);
   bool ha_check_and_repair(THD *thd);
@@ -2327,15 +2342,6 @@ public:
 
   int ha_create_handler_files(const char *name, const char *old_name,
                               int action_flag, HA_CREATE_INFO *info);
-
-  int ha_change_partitions(HA_CREATE_INFO *create_info,
-                           const char *path,
-                           ulonglong * const copied,
-                           ulonglong * const deleted,
-                           const uchar *pack_frm_data,
-                           size_t pack_frm_len);
-  int ha_drop_partitions(const char *path);
-  int ha_rename_partitions(const char *path);
 
   void adjust_next_insert_id_after_explicit_value(ulonglong nr);
   int update_auto_increment();
@@ -2463,6 +2469,48 @@ public:
   */
   virtual longlong get_memory_buffer_size() const { return -1; }
 
+  /**
+    Return an estimate of how much of the table that is currently stored
+    in main memory.
+
+    This estimate should be the fraction of the table that currently
+    is available in a main memory buffer. The estimate should be in the
+    range from 0.0 (nothing in memory) to 1.0 (entire table in memory).
+
+    @return The fraction of the table in main memory buffer
+  */
+
+  double table_in_memory_estimate() const;
+
+  /**
+    Return an estimate of how much of the index that is currently stored
+    in main memory.
+
+    This estimate should be the fraction of the index that currently
+    is available in a main memory buffer. The estimate should be in the
+    range from 0.0 (nothing in memory) to 1.0 (entire index in memory).
+
+    @param keyno the index to get an estimate for
+
+    @return The fraction of the index in main memory buffer
+  */
+
+  double index_in_memory_estimate(uint keyno) const;
+
+private:
+  /**
+    Make a guestimate for how much of a table or index is in a memory
+    buffer in the case where the storage engine has not provided any
+    estimate for this.
+
+    @param table_index_size size of the table or index
+
+    @return The fraction of the table or index in main memory buffer
+  */
+
+  double estimate_in_memory_buffer(ulonglong table_index_size) const;
+
+public:
   virtual ha_rows multi_range_read_info_const(uint keyno, RANGE_SEQ_IF *seq,
                                               void *seq_init_param, 
                                               uint n_ranges, uint *bufsz,
@@ -2652,7 +2700,7 @@ protected:
                              key_part_map keypart_map,
                              enum ha_rkey_function find_flag)
   {
-    uint key_len= calculate_key_len(table, active_index, key, keypart_map);
+    uint key_len= calculate_key_len(table, active_index, keypart_map);
     return  index_read(buf, key, key_len, find_flag);
   }
   /**
@@ -2688,7 +2736,7 @@ protected:
   virtual int index_read_last_map(uchar * buf, const uchar * key,
                                   key_part_map keypart_map)
   {
-    uint key_len= calculate_key_len(table, active_index, key, keypart_map);
+    uint key_len= calculate_key_len(table, active_index, keypart_map);
     return index_read_last(buf, key, key_len);
   }
 public:
@@ -2714,7 +2762,7 @@ public:
   */
   int prepare_index_key_scan_map(const uchar *key, key_part_map keypart_map)
   {
-    uint key_len= calculate_key_len(table, active_index, key, keypart_map);
+    uint key_len= calculate_key_len(table, *key, keypart_map);
     return prepare_index_key_scan(key, key_len);
   }
 
@@ -2775,14 +2823,6 @@ public:
       return ha_rnd_pos(record, ref);
     }
   virtual int read_first_row(uchar *buf, uint primary_key);
-  /**
-    The following function is only needed for tables that may be temporary
-    tables during joins.
-  */
-  virtual int restart_rnd_next(uchar *buf, uchar *pos)
-    { return HA_ERR_WRONG_COMMAND; }
-  virtual int rnd_same(uchar *buf, uint inx)
-    { return HA_ERR_WRONG_COMMAND; }
   virtual ha_rows records_in_range(uint inx, key_range *min_key, key_range *max_key)
     { return (ha_rows) 10; }
   /*
@@ -2793,8 +2833,6 @@ public:
   */
   virtual void position(const uchar *record)=0;
   virtual int info(uint)=0; // see my_base.h for full description
-  virtual void get_dynamic_partition_info(PARTITION_STATS *stat_info,
-                                          uint part_id);
   virtual uint32 calculate_key_hash_value(Field **field_array)
   { DBUG_ASSERT(0); return 0; }
   virtual int extra(enum ha_extra_function operation)
@@ -2944,27 +2982,6 @@ public:
   */
   virtual const char **bas_ext() const =0;
 
-  virtual int get_default_no_partitions(HA_CREATE_INFO *info) { return 1;}
-  virtual void set_auto_partitions(partition_info *part_info) { return; }
-
-  /**
-    Get number of partitions for table in SE
-
-    @param name normalized path(same as open) to the table
-
-    @param[out] no_parts Number of partitions
-
-    @retval false for success
-    @retval true for failure, for example table didn't exist in engine
-  */
-  virtual bool get_no_parts(const char *name,
-                            uint *no_parts)
-  {
-    *no_parts= 0;
-    return 0;
-  }
-  virtual void set_part_info(partition_info *part_info, bool early) {return;}
-
   virtual ulong index_flags(uint idx, uint part, bool all_parts) const =0;
 
   uint max_record_length() const
@@ -2996,7 +3013,7 @@ public:
   virtual uint min_record_length(uint options) const { return 1; }
 
   virtual bool low_byte_first() const { return 1; }
-  virtual uint checksum() const { return 0; }
+  virtual ha_checksum checksum() const { return 0; }
   virtual bool is_crashed() const  { return 0; }
   virtual bool auto_repair() const { return 0; }
 
@@ -3075,12 +3092,15 @@ public:
   }
 
 
- /*
-   @retval TRUE   Primary key (if there is one) is clustered
-                  key covering all fields
-   @retval FALSE  otherwise
+ /**
+   Check if the primary key is clustered or not.
+
+   @retval true  Primary key (if there is one) is a clustered
+                 key covering all fields
+   @retval false otherwise
  */
- virtual bool primary_key_is_clustered() { return FALSE; }
+
+ virtual bool primary_key_is_clustered() const { return false; }
  virtual int cmp_ref(const uchar *ref1, const uchar *ref2)
  {
    return memcmp(ref1, ref2, ref_length);
@@ -3457,17 +3477,10 @@ public:
     but we don't have a primary key
   */
   virtual void use_hidden_primary_key();
-  virtual uint alter_table_flags(uint flags)
-  {
-    if (ht->alter_table_flags)
-      return ht->alter_table_flags(flags);
-    return 0;
-  }
 
 protected:
   /* Service methods for use by storage engines. */
   void ha_statistic_increment(ulonglong SSV::*offset) const;
-  void **ha_data(THD *) const;
   THD *ha_thd(void) const;
 
   /**
@@ -3492,7 +3505,7 @@ protected:
   virtual int delete_table(const char *name);
 private:
   /* Private helpers */
-  inline void mark_trx_read_write();
+  void mark_trx_read_write();
   /*
     Low-level primitives for storage engines.  These should be
     overridden by the storage engine class. To call these methods, use
@@ -3512,6 +3525,27 @@ private:
   */
   virtual int rnd_init(bool scan)= 0;
   virtual int rnd_end() { return 0; }
+  /**
+    Write a row.
+
+    write_row() inserts a row. buf is a byte array of data, normally
+    record[0].
+
+    You can use the field information to extract the data from the native byte
+    array type.
+
+    Example of this would be:
+    for (Field **field=table->field ; *field ; field++)
+    {
+      ...
+    }
+
+    @param buf  Buffer to write from.
+
+    @return Operation status.
+      @retval    0  Success.
+      @retval != 0  Error code.
+  */
   virtual int write_row(uchar *buf __attribute__((unused)))
   {
     return HA_ERR_WRONG_COMMAND;
@@ -3645,13 +3679,6 @@ public:
   */
   virtual int truncate()
   { return HA_ERR_WRONG_COMMAND; }
-  /**
-    Reset the auto-increment counter to the given value, i.e. the next row
-    inserted will get the given value. HA_ERR_WRONG_COMMAND is returned by
-    storage engines that don't support this operation.
-  */
-  virtual int reset_auto_increment(ulonglong value)
-  { return HA_ERR_WRONG_COMMAND; }
   virtual int optimize(THD* thd, HA_CHECK_OPT* check_opt)
   { return HA_ADMIN_NOT_IMPLEMENTED; }
   virtual int analyze(THD* thd, HA_CHECK_OPT* check_opt)
@@ -3668,17 +3695,6 @@ public:
                                    int action_flag, HA_CREATE_INFO *info)
   { return FALSE; }
 
-  virtual int change_partitions(HA_CREATE_INFO *create_info,
-                                const char *path,
-                                ulonglong * const copied,
-                                ulonglong * const deleted,
-                                const uchar *pack_frm_data,
-                                size_t pack_frm_len)
-  { return HA_ERR_WRONG_COMMAND; }
-  virtual int drop_partitions(const char *path)
-  { return HA_ERR_WRONG_COMMAND; }
-  virtual int rename_partitions(const char *path)
-  { return HA_ERR_WRONG_COMMAND; }
   virtual bool set_ha_share_ref(Handler_share **arg_ha_share)
   {
     DBUG_ASSERT(!ha_share);
@@ -3711,6 +3727,32 @@ public:
   virtual void rpl_after_delete_rows() { }
   virtual void rpl_before_update_rows() { }
   virtual void rpl_after_update_rows() { }
+
+  /**
+    Callback function that will be called by my_prepare_gcolumn_template
+    once the table has been opened.
+  */
+  typedef void (*my_gcolumn_template_callback_t)(const TABLE*, void*);
+  static bool my_prepare_gcolumn_template(THD *thd,
+                                          const char *db_name,
+                                          const char *table_name,
+                                          my_gcolumn_template_callback_t myc,
+                                          void *ib_table);
+  static bool my_eval_gcolumn_expr(THD *thd,
+                                   bool open_in_engine,
+                                   const char *db_name,
+                                   const char *table_name,
+                                   ulonglong fields,
+                                   uchar *record);
+  static bool my_eval_gcolumn_expr(THD *thd,
+                                   const char *db_name,
+                                   const char *table_name,
+                                   ulonglong fields,
+                                   uchar *record);
+
+  /* This must be implemented if the handlerton's partition_flags() is set. */
+  virtual Partition_handler *get_partition_handler()
+  { return NULL; }
 
 protected:
   Handler_share *get_ha_share_ptr();
@@ -3836,6 +3878,16 @@ extern ulong total_ha, total_ha_2pc;
 handlerton *ha_default_handlerton(THD *thd);
 handlerton *ha_default_temp_handlerton(THD *thd);
 handlerton *ha_enforce_handlerton(THD *thd);
+/**
+  Resolve handlerton plugin by name, without checking for "DEFAULT" or
+  HTON_NOT_USER_SELECTABLE.
+
+  @param thd  Thread context.
+  @param name Plugin name.
+
+  @return plugin or NULL if not found.
+*/
+plugin_ref ha_resolve_by_name_raw(THD *thd, const LEX_CSTRING &name);
 plugin_ref ha_resolve_by_name(THD *thd, const LEX_STRING *name,
                               bool is_temp_table);
 plugin_ref ha_lock_engine(THD *thd, const handlerton *hton);
@@ -3851,10 +3903,7 @@ static inline enum legacy_db_type ha_legacy_type(const handlerton *db_type)
   return (db_type == NULL) ? DB_TYPE_UNKNOWN : db_type->db_type;
 }
 
-static inline const char *ha_resolve_storage_engine_name(const handlerton *db_type)
-{
-  return db_type == NULL ? "UNKNOWN" : hton2plugin[db_type->slot]->name.str;
-}
+const char *ha_resolve_storage_engine_name(const handlerton *db_type);
 
 static inline bool ha_check_storage_engine_flag(const handlerton *db_type, uint32 flag)
 {
@@ -3867,10 +3916,15 @@ static inline bool ha_storage_engine_is_enabled(const handlerton *db_type)
          (db_type->state == SHOW_OPTION_YES) : FALSE;
 }
 
+static inline bool is_ha_partition_handlerton(const handlerton *db_type)
+{
+  return (db_type->db_type == DB_TYPE_PARTITION_DB);
+}
+
 /* basic stuff */
 int ha_init_errors(void);
 int ha_init(void);
-int ha_end(void);
+void ha_end();
 int ha_initialize_handlerton(st_plugin_int *plugin);
 int ha_finalize_handlerton(st_plugin_int *plugin);
 
@@ -3878,7 +3932,16 @@ TYPELIB* ha_known_exts();
 int ha_panic(enum ha_panic_function flag);
 void ha_close_connection(THD* thd);
 void ha_kill_connection(THD *thd);
-bool ha_flush_logs(handlerton *db_type);
+/**
+  Flush the log(s) of storage engine(s).
+
+  @param hton Handlerton of storage engine.
+  @param binlog_group_flush true if we got invoked by binlog group
+  commit during flush stage, false in other cases.
+  @retval false Succeed
+  @retval true Error
+*/
+bool ha_flush_logs(handlerton *db_type, bool binlog_group_flush= false);
 void ha_drop_database(char* path);
 int ha_create_table(THD *thd, const char *path,
                     const char *db, const char *table_name,
@@ -3907,7 +3970,6 @@ bool ha_check_if_supported_system_table(handlerton *hton, const char* db,
 /* key cache */
 extern "C" int ha_init_key_cache(const char *name, KEY_CACHE *key_cache);
 int ha_resize_key_cache(KEY_CACHE *key_cache);
-int ha_change_key_cache_param(KEY_CACHE *key_cache);
 int ha_change_key_cache(KEY_CACHE *old_key_cache, KEY_CACHE *new_key_cache);
 
 /* report to InnoDB that control passes to the client */
@@ -3926,14 +3988,14 @@ int ha_prepare(THD *thd);
   @note
     there are three modes of operation:
     - automatic recover after a crash
-    in this case commit_list != 0, tc_heuristic_recover==0
+    in this case commit_list != 0, tc_heuristic_recover==TC_HEURISTIC_NOT_USED
     all xids from commit_list are committed, others are rolled back
     - manual (heuristic) recover
-    in this case commit_list==0, tc_heuristic_recover != 0
+    in this case commit_list==0, tc_heuristic_recover != TC_HEURISTIC_NOT_USED
     DBA has explicitly specified that all prepared transactions should
     be committed (or rolled back).
     - no recovery (MySQL did not detect a crash)
-    in this case commit_list==0, tc_heuristic_recover == 0
+    in this case commit_list==0, tc_heuristic_recover == TC_HEURISTIC_NOT_USED
     there should be no prepared transactions in this case.
 */
 
@@ -4003,4 +4065,6 @@ inline const char *table_case_name(HA_CREATE_INFO *info, const char *name)
 void print_keydup_error(TABLE *table, KEY *key, const char *msg, myf errflag);
 void print_keydup_error(TABLE *table, KEY *key, myf errflag);
 
+void ha_set_normalized_disabled_se_str(const std::string &disabled_se_str);
+bool ha_is_storage_engine_disabled(handlerton *se_engine);
 #endif /* HANDLER_INCLUDED */

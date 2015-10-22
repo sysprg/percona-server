@@ -1,4 +1,4 @@
-/* Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,15 +14,12 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #ifdef HAVE_REPLICATION
-#include <my_global.h>
-#include "sql_priv.h"
-#include <my_dir.h>
-#include "unireg.h"                             // REQUIRED by other includes
 #include "rpl_mi.h"
-#include "rpl_slave.h"                          // SLAVE_MAX_HEARTBEAT_PERIOD
 
-using std::min;
-using std::max;
+#include "dynamic_ids.h"        // Server_ids
+#include "log.h"                // sql_print_error
+#include "rpl_slave.h"          // master_retry_count
+
 
 enum {
   LINES_IN_MASTER_INFO_WITH_SSL= 14,
@@ -54,8 +51,11 @@ enum {
   /* line for auto_position */
   LINE_FOR_AUTO_POSITION= 23,
 
+  /* line for channel */
+  LINE_FOR_CHANNEL= 24,
+
   /* Number of lines currently used when saving master info file */
-  LINES_IN_MASTER_INFO= LINE_FOR_AUTO_POSITION
+  LINES_IN_MASTER_INFO= LINE_FOR_CHANNEL
 };
 
 /*
@@ -87,7 +87,8 @@ const char *info_mi_fields []=
   "retry_count",
   "ssl_crl",
   "ssl_crlpath",
-  "auto_position"
+  "auto_position",
+  "channel_name"
 };
 
 Master_info::Master_info(
@@ -101,7 +102,7 @@ Master_info::Master_info(
                          PSI_mutex_key *param_key_info_stop_cond,
                          PSI_mutex_key *param_key_info_sleep_cond,
 #endif
-                         uint param_id
+                         uint param_id, const char *param_channel
                         )
    :Rpl_info("I/O"
 #ifdef HAVE_PSI_INTERFACE
@@ -110,15 +111,15 @@ Master_info::Master_info(
              param_key_info_data_cond, param_key_info_start_cond,
              param_key_info_stop_cond, param_key_info_sleep_cond
 #endif
-             ,param_id
+             ,param_id, param_channel
             ),
    start_user_configured(false),
    ssl(0), ssl_verify_server_cert(0),
    port(MYSQL_PORT), connect_retry(DEFAULT_CONNECT_RETRY),
    clock_diff_with_master(0), heartbeat_period(0),
    received_heartbeats(0), last_heartbeat(0), master_id(0),
-   checksum_alg_before_fd(BINLOG_CHECKSUM_ALG_UNDEF),
-   retry_count(master_retry_count), master_gtid_mode(0),
+   checksum_alg_before_fd(binary_log::BINLOG_CHECKSUM_ALG_UNDEF),
+   retry_count(master_retry_count),
    mi_description_event(NULL),
    auto_position(false)
 {
@@ -131,6 +132,12 @@ Master_info::Master_info(
   start_plugin_auth[0]= 0; start_plugin_dir[0]= 0;
   start_user[0]= 0;
   ignore_server_ids= new Server_ids;
+
+  /*channel is set in base class, rpl_info.cc*/
+  my_snprintf(for_channel_str, sizeof(for_channel_str)-1,
+             " for channel '%s'", channel);
+  my_snprintf(for_channel_uppercase_str, sizeof(for_channel_uppercase_str)-1,
+             " FOR CHANNEL '%s'", channel);
 }
 
 Master_info::~Master_info()
@@ -156,32 +163,6 @@ bool Master_info::shall_ignore_server_id(ulong s_id)
 {
   return std::binary_search(ignore_server_ids->dynamic_ids.begin(),
                             ignore_server_ids->dynamic_ids.end(), s_id);
-}
-
-/**
-   Initialize master log position and reset master info.
-   -- Used by RESET SLAVE and RESET SLAVE ALL commands.
-
-   @param all Reset master info if true,
-              otherwise, just initialize master log position.
-*/
-void Master_info::clear_in_memory_info(bool all)
-{
-  init_master_log_pos();
-  if (all)
-  {
-    start_user_configured= false; ssl= 0; port= MYSQL_PORT;
-    connect_retry= DEFAULT_CONNECT_RETRY; clock_diff_with_master= 0;
-    heartbeat_period= 0; received_heartbeats= 0; last_heartbeat= 0;
-    master_id= 0; checksum_alg_before_fd= BINLOG_CHECKSUM_ALG_UNDEF;
-    retry_count= master_retry_count; master_gtid_mode= 0;
-    auto_position= false; host[0]= 0; user[0]= 0;
-    password[0]= 0; bind_addr[0]= 0; start_password[0]= 0; ssl_ca[0]= 0;
-    ssl_capath[0]= 0; ssl_cert[0]= 0; ssl_cipher[0]= 0; ssl_key[0]= 0;
-    ssl_crl[0]= 0; ssl_crlpath[0]= 0; master_uuid[0]= 0;
-    start_plugin_auth[0]= 0; start_plugin_dir[0]= 0; start_user[0]= 0;
-    ignore_server_ids->dynamic_ids.clear();
-  }
 }
 
 void Master_info::init_master_log_pos()
@@ -319,6 +300,12 @@ size_t Master_info::get_number_info_mi_fields()
   return sizeof(info_mi_fields)/sizeof(info_mi_fields[0]); 
 }
 
+uint Master_info::get_channel_field_num()
+{
+  uint channel_field= LINE_FOR_CHANNEL;
+  return channel_field;
+}
+
 bool Master_info::read_info(Rpl_info_handler *from)
 {
   int lines= 0;
@@ -400,7 +387,7 @@ bool Master_info::read_info(Rpl_info_handler *from)
   */
   if (lines >= LINE_FOR_MASTER_SSL_VERIFY_SERVER_CERT)
   { 
-    if (from->get_info(&temp_ssl_verify_server_cert, (int) 0))
+    if (from->get_info(&temp_ssl_verify_server_cert, 0))
       DBUG_RETURN(true);
   }
 
@@ -458,22 +445,19 @@ bool Master_info::read_info(Rpl_info_handler *from)
 
   if (lines >= LINE_FOR_AUTO_POSITION)
   {
-    if (from->get_info(&temp_auto_position, (int) 0))
+    if (from->get_info(&temp_auto_position, 0))
       DBUG_RETURN(true);
   }
 
+  if (lines >= LINE_FOR_CHANNEL)
+  {
+    if (from->get_info(channel, sizeof(channel), (char*)0))
+      DBUG_RETURN(true);
+  }
   ssl= (my_bool) MY_TEST(temp_ssl);
   ssl_verify_server_cert= (my_bool) MY_TEST(temp_ssl_verify_server_cert);
   master_log_pos= (my_off_t) temp_master_log_pos;
   auto_position= MY_TEST(temp_auto_position);
-
-  if (auto_position != 0 && gtid_mode != 3)
-  {
-    auto_position = 0;
-    sql_print_warning("MASTER_AUTO_POSITION in the master info file was 1 but "
-                      "server is started with @@GLOBAL.GTID_MODE = OFF. Forcing "
-                      "MASTER_AUTO_POSITION to 0.");
-  }
 
 #ifndef HAVE_OPENSSL
   if (ssl)
@@ -484,6 +468,18 @@ bool Master_info::read_info(Rpl_info_handler *from)
 
   DBUG_RETURN(false);
 }
+
+
+bool Master_info::set_info_search_keys(Rpl_info_handler *to)
+{
+  DBUG_ENTER("Master_info::set_info_search_keys");
+
+  if (to->set_info(LINE_FOR_CHANNEL-1, channel))
+    DBUG_RETURN(TRUE);
+
+  DBUG_RETURN(FALSE);
+}
+
 
 bool Master_info::write_info(Rpl_info_handler *to)
 {
@@ -519,7 +515,8 @@ bool Master_info::write_info(Rpl_info_handler *to)
       to->set_info(retry_count) ||
       to->set_info(ssl_crl) ||
       to->set_info(ssl_crlpath) ||
-      to->set_info((int) auto_position))
+      to->set_info((int) auto_position) ||
+      to->set_info(channel))
     DBUG_RETURN(TRUE);
 
   DBUG_RETURN(FALSE);

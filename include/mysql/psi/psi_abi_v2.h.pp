@@ -2,6 +2,7 @@
 #include "psi_base.h"
 #include "psi_memory.h"
 #include "psi_base.h"
+struct PSI_thread;
 typedef unsigned int PSI_memory_key;
 struct PSI_memory_info_v2
 {
@@ -14,6 +15,7 @@ typedef struct MDL_key MDL_key;
 typedef int opaque_mdl_type;
 typedef int opaque_mdl_duration;
 typedef int opaque_mdl_status;
+typedef int opaque_vio_type;
 struct TABLE_SHARE;
 struct sql_digest_storage;
   struct opaque_THD
@@ -61,6 +63,27 @@ struct PSI_stage_progress
   ulonglong m_work_estimated;
 };
 typedef struct PSI_stage_progress PSI_stage_progress;
+enum PSI_table_io_operation
+{
+  PSI_TABLE_FETCH_ROW= 0,
+  PSI_TABLE_WRITE_ROW= 1,
+  PSI_TABLE_UPDATE_ROW= 2,
+  PSI_TABLE_DELETE_ROW= 3
+};
+typedef enum PSI_table_io_operation PSI_table_io_operation;
+struct PSI_table_locker_state
+{
+  uint m_flags;
+  enum PSI_table_io_operation m_io_operation;
+  struct PSI_table *m_table;
+  struct PSI_table_share *m_table_share;
+  struct PSI_thread *m_thread;
+  ulonglong m_timer_start;
+  ulonglong (*m_timer)(void);
+  void *m_wait;
+  uint m_index;
+};
+typedef struct PSI_table_locker_state PSI_table_locker_state;
 struct PSI_bootstrap
 {
   void* (*get_interface)(int version);
@@ -125,14 +148,6 @@ enum PSI_file_operation
   PSI_FILE_SYNC= 16
 };
 typedef enum PSI_file_operation PSI_file_operation;
-enum PSI_table_io_operation
-{
-  PSI_TABLE_FETCH_ROW= 0,
-  PSI_TABLE_WRITE_ROW= 1,
-  PSI_TABLE_UPDATE_ROW= 2,
-  PSI_TABLE_DELETE_ROW= 3
-};
-typedef enum PSI_table_io_operation PSI_table_io_operation;
 enum PSI_table_lock_operation
 {
   PSI_TABLE_LOCK= 0,
@@ -228,10 +243,6 @@ struct PSI_file_locker_state_v2
 {
   int placeholder;
 };
-struct PSI_table_locker_state_v2
-{
-  int placeholder;
-};
 struct PSI_statement_locker_state_v2
 {
   int placeholder;
@@ -263,7 +274,6 @@ typedef struct PSI_mutex_locker_state_v2 PSI_mutex_locker_state;
 typedef struct PSI_rwlock_locker_state_v2 PSI_rwlock_locker_state;
 typedef struct PSI_cond_locker_state_v2 PSI_cond_locker_state;
 typedef struct PSI_file_locker_state_v2 PSI_file_locker_state;
-typedef struct PSI_table_locker_state_v2 PSI_table_locker_state;
 typedef struct PSI_statement_locker_state_v2 PSI_statement_locker_state;
 typedef struct PSI_transaction_locker_state_v2 PSI_transaction_locker_state;
 typedef struct PSI_socket_locker_state_v2 PSI_socket_locker_state;

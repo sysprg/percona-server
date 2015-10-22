@@ -435,7 +435,16 @@ create database mysqltest;
 create table mysqltest.t1 (a int, b int, primary key (a));
 create table mysqltest.t2 (a int, b int, primary key (a));
 create table mysqltest.t3 (a int, b int, primary key (a));
+set @orig_sql_mode= @@sql_mode;
+set sql_mode= (select replace(@@sql_mode,'NO_AUTO_CREATE_USER',''));
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 grant select on mysqltest.* to mysqltest_1@localhost;
+Warnings:
+Warning	1287	Using GRANT for creating new user is deprecated and will be removed in future release. Create new user with CREATE USER statement.
+set sql_mode= @orig_sql_mode;
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 grant update on mysqltest.t1 to mysqltest_1@localhost;
 update t1, t2 set t1.b=1 where t1.a=t2.a;
 update t1, t2 set t1.b=(select t3.b from t3 where t1.a=t3.a) where t1.a=t2.a;
@@ -669,6 +678,8 @@ DROP TABLE t1;
 # Bug#54543: update ignore with incorrect subquery leads to assertion
 # failure: inited==INDEX
 #
+set @optimizer_switch_saved=@@optimizer_switch;
+set optimizer_switch='derived_merge=off';
 SET SESSION sql_safe_updates = 0;
 CREATE TABLE t1 ( a INT );
 INSERT INTO t1 VALUES (1), (2);
@@ -685,9 +696,12 @@ Warning	1242	Subquery returns more than 1 row
 Warning	1242	Subquery returns more than 1 row
 DROP TABLE t1, t2, t3;
 SET SESSION sql_safe_updates = DEFAULT;
+set @@optimizer_switch=@optimizer_switch_saved;
 #
 # Bug#52157 various crashes and assertions with multi-table update, stored function
 #
+set @optimizer_switch_saved=@@optimizer_switch;
+set optimizer_switch='derived_merge=off';
 CREATE FUNCTION f1 () RETURNS BLOB RETURN 1;
 CREATE TABLE t1 (f1 DATE);
 INSERT INTO t1 VALUES('2001-01-01');
@@ -696,6 +710,7 @@ Warnings:
 Warning	1292	Truncated incorrect datetime value: '1'
 DROP FUNCTION f1;
 DROP TABLE t1;
+set @@optimizer_switch=@optimizer_switch_saved;
 #
 # BUG#57373: Multi update+InnoDB reports ER_KEY_NOT_FOUND if a
 #            table is updated twice
@@ -791,7 +806,7 @@ DROP TABLE t1;
 #
 CREATE TABLE table_11757486 (field1 tinyint) ENGINE=MYISAM;
 INSERT INTO table_11757486 VALUES (0),(0);
-SET SESSION SQL_MODE='STRICT_ALL_TABLES';
+SET SESSION SQL_MODE=default;
 UPDATE IGNORE (SELECT 128 as col1) x, table_11757486 SET field1=x.col1;
 Warnings:
 Warning	1264	Out of range value for column 'field1' at row 1
@@ -799,6 +814,8 @@ Warning	1264	Out of range value for column 'field1' at row 2
 UPDATE (SELECT 128 as col1) x, table_11757486 SET field1=x.col1;
 ERROR 22003: Out of range value for column 'field1' at row 1
 SET SESSION SQL_MODE='';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 UPDATE IGNORE (SELECT 128 as col1) x, table_11757486 SET field1=x.col1;
 Warnings:
 Warning	1264	Out of range value for column 'field1' at row 1
@@ -815,3 +832,62 @@ UPDATE v SET a=1 LIMIT 3;
 Got one of the listed errors
 DROP TABLE t1;
 DROP VIEW v;
+#
+# WL#5275: Multi-table update, view with subquery in CHECK OPTION
+#
+CREATE TABLE t1 (f1 INTEGER PRIMARY KEY) ENGINE=InnoDB;
+CREATE TABLE t2 (f1 INTEGER PRIMARY KEY, f2 INTEGER) ENGINE=InnoDB;
+CREATE TABLE t3 (f1 INTEGER) ENGINE=INNODB;
+INSERT INTO t1 VALUES (1), (2);
+INSERT INTO t2 VALUES (1, 1), (2, 2);
+INSERT INTO t3 VALUES (1), (2);
+CREATE VIEW v2 AS 
+SELECT * FROM t2 WHERE f2 IN (SELECT f1 FROM t3)
+WITH CHECK OPTION;
+SELECT * FROM t1 JOIN v2 ON t1.f1=v2.f1;
+f1	f1	f2
+1	1	1
+2	2	2
+UPDATE t1 JOIN v2 ON t1.f1=v2.f1
+SET f2 = f2 + 1
+WHERE t1.f1=1;
+UPDATE t1 JOIN v2 ON t1.f1=v2.f1
+SET f2 = f2 + 1
+WHERE t1.f1=2;
+ERROR HY000: CHECK OPTION failed 'test.v2'
+SELECT * FROM t1 JOIN v2 ON t1.f1=v2.f1;
+f1	f1	f2
+1	1	2
+2	2	2
+DROP VIEW v2;
+DROP TABLE t1, t2, t3;
+#
+# Bug 18449085: WRONG VALUE AFTER MULTI UPDATE
+#
+CREATE TABLE t1 (c1 INTEGER, c2 INTEGER, KEY(c1));
+CREATE TABLE t2 (c1 INTEGER, c2 INTEGER);
+CREATE TABLE t3 (c1 INTEGER, c2 INTEGER);
+INSERT INTO t1 VALUES(1,1),(2,2),(3,3),(4,4),(5,5);
+INSERT INTO t2 VALUES(11,1),(12,1),(13,1),(14,2),(15,6);
+INSERT INTO t3 VALUES(21,11),(22,11),(23,13),(24,14),(25,15);
+ANALYZE TABLE t1, t2, t3;
+Table	Op	Msg_type	Msg_text
+test.t1	analyze	status	OK
+test.t2	analyze	status	OK
+test.t3	analyze	status	OK
+UPDATE t2 straight_join t3 straight_join t1 SET t1.c2 = 30, t2.c2 = 40, t3.c2=50
+WHERE t1.c1=t2.c2 AND t2.c1=t3.c2;
+EXPLAIN UPDATE t2 straight_join t3 straight_join t1 SET t1.c2 = 30, t2.c2 = 40, t3.c2=50
+WHERE t1.c1=t2.c2 AND t2.c1=t3.c2;
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	UPDATE	t2	NULL	ALL	NULL	NULL	NULL	NULL	5	100.00	Using where
+1	UPDATE	t3	NULL	ALL	NULL	NULL	NULL	NULL	5	20.00	Using where
+1	UPDATE	t1	NULL	ref	c1	c1	5	test.t2.c2	1	100.00	NULL
+SELECT * FROM t3 ORDER BY c1;
+c1	c2
+21	50
+22	50
+23	50
+24	50
+25	15
+DROP TABLE t1, t2, t3;

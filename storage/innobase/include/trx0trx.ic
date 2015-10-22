@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -58,14 +58,13 @@ trx_state_eq(
 	case TRX_STATE_NOT_STARTED:
 	case TRX_STATE_FORCED_ROLLBACK:
 
-		/* These states is not allowed for running transactions. */
+		/* These states are not allowed for running transactions. */
 		ut_a(state == TRX_STATE_NOT_STARTED
 		     || state == TRX_STATE_FORCED_ROLLBACK);
 
 		ut_ad(!trx->in_rw_trx_list);
 
-		return(state == TRX_STATE_NOT_STARTED
-		       || state == TRX_STATE_FORCED_ROLLBACK);
+		return(true);
 	}
 	ut_error;
 #endif /* UNIV_DEBUG */
@@ -204,17 +203,14 @@ ok:
 	trx->dict_operation = op;
 }
 
-/********************************************************************//**
-In XtraDB it is impossible for a transaction to own a search latch outside of
-InnoDB code, so there is nothing to release on demand.  We keep this function to
-simplify maintenance.*/
+/**
+Releases the search latch if trx has reserved it.
+@param[in,out] trx		Transaction that may own the AHI latch */
 UNIV_INLINE
 void
-trx_search_latch_release_if_reserved(
-/*=================================*/
-	trx_t*	   trx __attribute__((unused))) /*!< in: transaction */
+trx_search_latch_release_if_reserved(trx_t* trx)
 {
-	ut_ad(!trx->has_search_latch);
+	ut_a(!trx->has_search_latch);
 }
 
 /********************************************************************//**
@@ -334,14 +330,65 @@ trx_get_read_view(
 }
 
 /**
-Check if transaction is started.
-@param[in] trx		Transaction whose state we need to check
-@reutrn true if transaction is in state started */
+@param[in] trx		Transaction to check
+@return true if the transaction is a high priority transaction.*/
 UNIV_INLINE
 bool
-trx_is_started(
-	const trx_t*	trx)
+trx_is_high_priority(const trx_t* trx)
 {
-	return(trx->state != TRX_STATE_NOT_STARTED
-	       && trx->state != TRX_STATE_FORCED_ROLLBACK);
+	if (trx->mysql_thd == NULL) {
+		return(false);
+	}
+
+	return(thd_trx_priority(trx->mysql_thd) > 0);
+}
+
+/**
+@param[in] requestor	Transaction requesting the lock
+@param[in] holder	Transaction holding the lock
+@return the transaction that will be rolled back, null don't care */
+UNIV_INLINE
+const trx_t*
+trx_arbitrate(const trx_t* requestor, const trx_t* holder)
+{
+	ut_ad(!trx_is_autocommit_non_locking(holder));
+	ut_ad(!trx_is_autocommit_non_locking(requestor));
+
+	/* Note: Background stats collection transactions also acquire
+	locks on user tables. They don't have an associated MySQL session
+	instance. */
+
+	if (requestor->mysql_thd == NULL) {
+
+		ut_ad(!trx_is_high_priority(requestor));
+
+		if (trx_is_high_priority(holder)) {
+			return(requestor);
+		} else {
+			return(NULL);
+		}
+
+	} else if (holder->mysql_thd == NULL) {
+
+		ut_ad(!trx_is_high_priority(holder));
+
+		if (trx_is_high_priority(requestor)) {
+			return(holder);
+		}
+
+		return(NULL);
+	}
+
+	const THD*	victim = thd_trx_arbitrate(
+		requestor->mysql_thd, holder->mysql_thd);
+
+	ut_ad(victim == NULL
+	      || victim == requestor->mysql_thd
+	      || victim == holder->mysql_thd);
+
+	if (victim != NULL) {
+		return(victim == requestor->mysql_thd ? requestor : holder);
+	}
+
+	return(NULL);
 }

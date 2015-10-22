@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,6 +23,9 @@
 #include "mysqld.h"                     // key_socket_tcpip
 #include "log.h"                        // sql_print_error
 #include "sql_class.h"                  // THD
+
+#include <pfs_idle_provider.h>
+#include <mysql/psi/mysql_idle.h>
 
 #include <algorithm>
 #include <signal.h>
@@ -118,10 +121,12 @@ static void init_net_server_extension(THD *thd)
   thd->m_net_server_extension.m_user_data= thd;
   thd->m_net_server_extension.m_before_header= net_before_header_psi;
   thd->m_net_server_extension.m_after_header= net_after_header_psi;
+
   /* Activate this private extension for the mysqld server. */
-  thd->net.extension= & thd->m_net_server_extension;
+  thd->get_protocol_classic()->get_net()->extension=
+    &thd->m_net_server_extension;
 #else
-  thd->net.extension= NULL;
+  thd->get_protocol_classic()->get_net()->extension= NULL;
 #endif
 }
 
@@ -162,7 +167,7 @@ public:
     if (thd != NULL)
     {
       init_net_server_extension(thd);
-      thd->security_ctx->set_host(my_localhost);
+      thd->security_context()->set_host_ptr(my_localhost, strlen(my_localhost));
     }
     return thd;
   }
@@ -940,6 +945,17 @@ Channel_info* Mysqld_socket_listener::listen_for_connection_event()
     return NULL;
   }
 
+#ifdef __APPLE__
+  if (mysql_socket_getfd(connect_sock) >= FD_SETSIZE)
+  {
+    sql_print_warning("File Descriptor %d exceedeed FD_SETSIZE=%d",
+                      mysql_socket_getfd(connect_sock), FD_SETSIZE);
+    connection_errors_internal++;
+    (void) mysql_socket_close(connect_sock);
+    return NULL;
+  }
+#endif
+
 #ifdef HAVE_LIBWRAP
   if (!is_unix_socket)
   {
@@ -1012,6 +1028,5 @@ void Mysqld_socket_listener::close_listener()
   }
 #endif
 
-  if (!m_socket_map.empty())
-    m_socket_map.clear();
+  m_socket_map.clear();
 }

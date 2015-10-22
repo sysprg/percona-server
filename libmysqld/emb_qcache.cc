@@ -1,4 +1,5 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights
+ * reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,7 +14,6 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "sql_priv.h"
 #include "my_global.h"                          // HAVE_*
 
 #include <mysql.h>
@@ -315,7 +315,7 @@ uint emb_count_querycache_size(THD *thd)
       result+= field->def_length;
   }
   
-  if (thd->protocol == &thd->protocol_binary)
+  if (thd->get_protocol()->type() == Protocol::PROTOCOL_BINARY)
   {
     result+= (uint) (4*n_rows);
     for (; cur_row; cur_row=cur_row->next)
@@ -377,8 +377,8 @@ void emb_store_querycache_result(Querycache_stream *dst, THD *thd)
     dst->store_str(field->catalog, field->catalog_length);
     dst->store_safe_str(field->def, field->def_length);
   }
-  
-  if (thd->protocol == &thd->protocol_binary)
+
+  if (thd->get_protocol()->type() == Protocol::PROTOCOL_BINARY)
   {
     for (; cur_row; cur_row=cur_row->next)
       dst->store_str((char *) cur_row->data, cur_row->length);
@@ -446,7 +446,8 @@ int emb_load_querycache_result(THD *thd, Querycache_stream *src)
   data->rows= rows;
   if (!rows)
     goto return_ok;
-  if (thd->protocol == &thd->protocol_binary)
+
+  if (thd->get_protocol()->type() == Protocol::PROTOCOL_BINARY)
   {
     uint length;
     row= (MYSQL_ROWS *)alloc_root(&data->alloc,

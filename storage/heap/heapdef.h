@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
 /* This file is included in all heap-files */
 
 #include <my_base.h>			/* This includes global */
-#include <my_pthread.h>
+#include <my_thread.h>
 #include "heap.h"			/* Structs & some defines */
 #include "my_tree.h"
 #include "m_string.h"
@@ -143,7 +143,6 @@ extern PSI_memory_key hp_key_memory_HP_KEYDEF;
 extern PSI_memory_key hp_key_memory_HP_COLUMNDEF;
 
 #ifdef HAVE_PSI_INTERFACE
-extern PSI_mutex_key hp_key_mutex_HP_SHARE_intern_lock;
 
 void init_heap_psi_keys();
 #endif /* HAVE_PSI_INTERFACE */

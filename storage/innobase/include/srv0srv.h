@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All rights reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All rights reserved.
 Copyright (c) 2008, 2009, Google Inc.
 Copyright (c) 2009, Percona Inc.
 
@@ -41,10 +41,14 @@ Created 10/10/1995 Heikki Tuuri
 #ifndef srv0srv_h
 #define srv0srv_h
 
+#include "my_global.h"
+
+#include "mysql/psi/mysql_stage.h"
+#include "mysql/psi/psi.h"
+
 #include "univ.i"
 #ifndef UNIV_HOTBACKUP
 #include "log0log.h"
-#include "sync0mutex.h"
 #include "os0event.h"
 #include "que0types.h"
 #include "trx0types.h"
@@ -215,10 +219,8 @@ dictionary tables are in the system tablespace 0 */
 extern my_bool	srv_file_per_table;
 /** Sleep delay for threads waiting to enter InnoDB. In micro-seconds. */
 extern	ulong	srv_thread_sleep_delay;
-#if defined(HAVE_ATOMIC_BUILTINS)
 /** Maximum sleep delay (in micro-seconds), value of 0 disables it.*/
 extern	ulong	srv_adaptive_max_sleep_delay;
-#endif /* HAVE_ATOMIC_BUILTINS */
 
 /** The file format to use on new *.ibd files. */
 extern ulint	srv_file_format;
@@ -240,9 +242,6 @@ OS (provided we compiled Innobase with it in), otherwise we will
 use simulated aio we build below with threads.
 Currently we support native aio on windows and linux */
 extern my_bool	srv_use_native_aio;
-#ifdef _WIN32
-extern bool	srv_use_native_conditions;
-#endif /* _WIN32 */
 #endif /* !UNIV_HOTBACKUP */
 
 /** Server undo tablespaces directory, can be absolute path. */
@@ -253,6 +252,11 @@ extern ulong	srv_undo_tablespaces;
 
 /** The number of UNDO tablespaces that are open and ready to use. */
 extern ulint	srv_undo_tablespaces_open;
+
+/** The number of UNDO tablespaces that are active (hosting some rollback
+segment). It is quite possible that some of the tablespaces doesn't host
+any of the rollback-segment based on configuration used. */
+extern ulint	srv_undo_tablespaces_active;
 
 /** The number of undo segments to use */
 extern ulong	srv_undo_logs;
@@ -290,6 +294,7 @@ extern uint	srv_flush_log_at_timeout;
 extern ulong	srv_log_write_ahead_size;
 extern char	srv_use_global_flush_log_at_trx_commit;
 extern char	srv_adaptive_flushing;
+extern my_bool	srv_flush_sync;
 
 /* If this flag is TRUE, then we will load the indexes' (and tables') metadata
 even if they are marked as "corrupted". Mostly it is for DBA to process
@@ -300,6 +305,8 @@ extern my_bool	srv_load_corrupted;
 extern ulint		srv_buf_pool_size;
 /** Minimum pool size in bytes */
 extern const ulint	srv_buf_pool_min_size;
+/** Default pool size in bytes */
+extern const ulint	srv_buf_pool_def_size;
 /** Requested buffer pool chunk size. Each buffer pool instance consists
 of one or more chunks. */
 extern ulong		srv_buf_pool_chunk_unit;
@@ -412,6 +419,9 @@ extern ibool	srv_use_doublewrite_buf;
 extern ulong	srv_doublewrite_batch_size;
 extern ulong	srv_checksum_algorithm;
 
+/* Checksum algorithm used for the redo log file blocks */
+extern ulong	srv_log_checksum_algorithm;
+
 extern double	srv_max_buf_pool_modified_pct;
 
 extern ulong	srv_log_arch_expire_sec;
@@ -471,6 +481,7 @@ extern my_bool	srv_ibuf_disable_background_merge;
 #endif /* UNIV_DEBUG || UNIV_IBUF_DEBUG */
 
 #ifdef UNIV_DEBUG
+extern my_bool	srv_sync_debug;
 extern my_bool	srv_purge_view_update_only_debug;
 #endif /* UNIV_DEBUG */
 
@@ -570,6 +581,39 @@ do {								\
 } while (0)
 # endif /* UNIV_PFS_THREAD */
 
+#ifdef HAVE_PSI_STAGE_INTERFACE
+/** Performance schema stage event for monitoring ALTER TABLE progress
+everything after flush log_make_checkpoint_at(). */
+extern PSI_stage_info	srv_stage_alter_table_end;
+
+/** Performance schema stage event for monitoring ALTER TABLE progress
+log_make_checkpoint_at(). */
+extern PSI_stage_info	srv_stage_alter_table_flush;
+
+/** Performance schema stage event for monitoring ALTER TABLE progress
+row_merge_insert_index_tuples(). */
+extern PSI_stage_info	srv_stage_alter_table_insert;
+
+/** Performance schema stage event for monitoring ALTER TABLE progress
+row_log_apply(). */
+extern PSI_stage_info	srv_stage_alter_table_log_index;
+
+/** Performance schema stage event for monitoring ALTER TABLE progress
+row_log_table_apply(). */
+extern PSI_stage_info	srv_stage_alter_table_log_table;
+
+/** Performance schema stage event for monitoring ALTER TABLE progress
+row_merge_sort(). */
+extern PSI_stage_info	srv_stage_alter_table_merge_sort;
+
+/** Performance schema stage event for monitoring ALTER TABLE progress
+row_merge_read_clustered_index(). */
+extern PSI_stage_info	srv_stage_alter_table_read_pk_internal_sort;
+
+/** Performance schema stage event for monitoring buffer pool load progress. */
+extern PSI_stage_info	srv_stage_buffer_pool_load;
+#endif /* HAVE_PSI_STAGE_INTERFACE */
+
 #endif /* !UNIV_HOTBACKUP */
 
 #ifndef _WIN32
@@ -647,6 +691,11 @@ enum srv_stats_method_name_enum {
 
 typedef enum srv_stats_method_name_enum		srv_stats_method_name_t;
 
+#ifdef UNIV_DEBUG
+/** Force all user tables to use page compression. */
+extern ulong	srv_debug_compress;
+#endif /* UNIV_DEBUG */
+
 #ifndef UNIV_HOTBACKUP
 /** Types of threads existing in the system. */
 enum srv_thread_type {
@@ -661,32 +710,27 @@ enum srv_thread_type {
 
 /*********************************************************************//**
 Boots Innobase server. */
-
 void
 srv_boot(void);
 /*==========*/
 /*********************************************************************//**
 Initializes the server. */
-
 void
 srv_init(void);
 /*==========*/
 /*********************************************************************//**
 Frees the data structures created in srv_init(). */
-
 void
 srv_free(void);
 /*==========*/
 /*********************************************************************//**
 Initializes the synchronization primitives, memory system, and the thread
 local storage. */
-
 void
 srv_general_init(void);
 /*==================*/
 /*********************************************************************//**
 Sets the info describing an i/o thread current state. */
-
 void
 srv_set_io_thread_op_info(
 /*======================*/
@@ -695,7 +739,6 @@ srv_set_io_thread_op_info(
 				state */
 /*********************************************************************//**
 Resets the info describing an i/o thread current state. */
-
 void
 srv_reset_io_thread_op_info();
 /*=========================*/
@@ -705,7 +748,6 @@ and wakes up the purge thread if it is suspended (not sleeping).  Note
 that there is a small chance that the purge thread stays suspended
 (we do not protect our operation with the srv_sys_t:mutex, for
 performance reasons). */
-
 void
 srv_wake_purge_thread_if_not_active(void);
 /*=====================================*/
@@ -715,7 +757,6 @@ and wakes up the master thread if it is suspended (not sleeping). Used
 in the MySQL interface. Note that there is a small chance that the master
 thread stays suspended (we do not protect our operation with the kernel
 mutex, for performace reasons). */
-
 void
 srv_active_wake_master_thread_low(void);
 /*===================================*/
@@ -727,7 +768,6 @@ srv_active_wake_master_thread_low(void);
 	} while (0)
 /*******************************************************************//**
 Wakes up the master thread if it is suspended or being suspended. */
-
 void
 srv_wake_master_thread(void);
 /*========================*/
@@ -745,7 +785,6 @@ DECLARE_THREAD(srv_redo_log_follow_thread)(
 Outputs to a file the output of the InnoDB Monitor.
 @return FALSE if not all information printed
 due to failure to obtain necessary mutex */
-
 ibool
 srv_printf_innodb_monitor(
 /*======================*/
@@ -759,7 +798,6 @@ srv_printf_innodb_monitor(
 
 /******************************************************************//**
 Function to pass InnoDB status variables to MySQL */
-
 void
 srv_export_innodb_status(void);
 /*==========================*/
@@ -779,21 +817,18 @@ purge_archived_logs(
 Get current server activity count. We don't hold srv_sys::mutex while
 reading this value as it is only used in heuristics.
 @return activity count. */
-
 ulint
 srv_get_activity_count(void);
 /*========================*/
 /*******************************************************************//**
 Check if there has been any activity.
 @return FALSE if no change in activity counter. */
-
 ibool
 srv_check_activity(
 /*===============*/
 	ulint		old_activity_count);	/*!< old activity count */
 /******************************************************************//**
 Increment the server activity counter. */
-
 void
 srv_inc_activity_count(void);
 /*=========================*/
@@ -801,7 +836,6 @@ srv_inc_activity_count(void);
 /**********************************************************************//**
 Enqueues a task to server task queue and releases a worker thread, if there
 is a suspended one. */
-
 void
 srv_que_task_enqueue_low(
 /*=====================*/
@@ -812,7 +846,6 @@ Check whether any background thread is active. If so, return the thread
 type.
 @return SRV_NONE if all are are suspended or have exited, thread
 type if any are still active. */
-
 enum srv_thread_type
 srv_get_active_thread_type(void);
 /*============================*/
@@ -822,7 +855,6 @@ extern "C" {
 /*********************************************************************//**
 A thread which prints the info output by various InnoDB monitors.
 @return a dummy parameter */
-
 os_thread_ret_t
 DECLARE_THREAD(srv_monitor_thread)(
 /*===============================*/
@@ -832,7 +864,6 @@ DECLARE_THREAD(srv_monitor_thread)(
 /*********************************************************************//**
 The master thread controlling the server.
 @return a dummy parameter */
-
 os_thread_ret_t
 DECLARE_THREAD(srv_master_thread)(
 /*==============================*/
@@ -843,7 +874,6 @@ DECLARE_THREAD(srv_master_thread)(
 A thread which prints warnings about semaphore waits which have lasted
 too long. These can be used to track bugs which cause hangs.
 @return a dummy parameter */
-
 os_thread_ret_t
 DECLARE_THREAD(srv_error_monitor_thread)(
 /*=====================================*/
@@ -853,7 +883,6 @@ DECLARE_THREAD(srv_error_monitor_thread)(
 /*********************************************************************//**
 Purge coordinator thread that schedules the purge tasks.
 @return a dummy parameter */
-
 os_thread_ret_t
 DECLARE_THREAD(srv_purge_coordinator_thread)(
 /*=========================================*/
@@ -863,7 +892,6 @@ DECLARE_THREAD(srv_purge_coordinator_thread)(
 /*********************************************************************//**
 Worker thread that reads tasks from the work queue and executes them.
 @return a dummy parameter */
-
 os_thread_ret_t
 DECLARE_THREAD(srv_worker_thread)(
 /*==============================*/
@@ -874,7 +902,6 @@ DECLARE_THREAD(srv_worker_thread)(
 /**********************************************************************//**
 Get count of tasks in the queue.
 @return number of tasks in queue */
-
 ulint
 srv_get_task_queue_length(void);
 /*===========================*/
@@ -884,7 +911,6 @@ Releases threads of the type given from suspension in the thread table.
 NOTE! The server mutex has to be reserved by the caller!
 @return number of threads released: this may be less than n if not
 enough threads were suspended at the moment */
-
 ulint
 srv_release_threads(
 /*================*/
@@ -895,17 +921,19 @@ srv_release_threads(
 Check whether any background thread are active. If so print which thread
 is active. Send the threads wakeup signal.
 @return name of thread that is active or NULL */
-
 const char*
 srv_any_background_threads_are_active(void);
 /*=======================================*/
 
 /**********************************************************************//**
 Wakeup the purge threads. */
-
 void
 srv_purge_wakeup(void);
 /*==================*/
+
+/** Call exit(3) */
+void
+srv_fatal_error();
 
 /** Check if tablespace is being truncated.
 (Ignore system-tablespace as we don't re-create the tablespace
@@ -914,9 +942,15 @@ for independent tablespace are not applicable to system-tablespace).
 @param	space_id	space_id to check for truncate action
 @return true		if being truncated, false if not being
 			truncated or tablespace is system-tablespace. */
-
 bool
 srv_is_tablespace_truncated(ulint space_id);
+
+/** Check if tablespace was truncated.
+@param	space_id	space_id to check for truncate action
+@return true if tablespace was truncated and we still have an active
+MLOG_TRUNCATE REDO log record. */
+bool
+srv_was_tablespace_truncated(ulint space_id);
 
 /** Status variables to be passed to MySQL */
 struct export_var_t{
@@ -960,7 +994,6 @@ struct export_var_t{
 	ulint innodb_checkpoint_max_age;
 	ulint innodb_dblwr_pages_written;	/*!< srv_dblwr_pages_written */
 	ulint innodb_dblwr_writes;		/*!< srv_dblwr_writes */
-	ibool innodb_have_atomic_builtins;	/*!< HAVE_ATOMIC_BUILTINS */
 	ulint innodb_ibuf_free_list;
 	ulint innodb_ibuf_segment_size;
 	ulint innodb_log_waits;			/*!< srv_log_waits */
@@ -975,9 +1008,6 @@ struct export_var_t{
 	trx_id_t innodb_max_trx_id;
 	ulint innodb_mem_adaptive_hash;
 	ulint innodb_mem_dictionary;
-	ib_uint64_t innodb_mutex_os_waits;
-	ib_uint64_t innodb_mutex_spin_rounds;
-	ib_uint64_t innodb_mutex_spin_waits;
 	trx_id_t innodb_oldest_view_low_limit_trx_id;
 	ulint innodb_os_log_fsyncs;		/*!< fil_n_log_flushes */
 	ulint innodb_os_log_pending_writes;	/*!< srv_os_log_pending_writes */

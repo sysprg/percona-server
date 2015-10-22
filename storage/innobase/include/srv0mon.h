@@ -1,6 +1,6 @@
 /***********************************************************************
 
-Copyright (c) 2010, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2010, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it
@@ -29,7 +29,13 @@ Created 12/15/2009	Jimmy Yang
 #define srv0mon_h
 
 #include "univ.i"
-#include "sync0mutex.h"
+
+#ifndef __STDC_LIMIT_MACROS
+/* Required for FreeBSD so that INT64_MAX is defined. */
+#define __STDC_LIMIT_MACROS
+#endif /* __STDC_LIMIT_MACROS */
+
+#include <stdint.h>
 
 #ifndef UNIV_HOTBACKUP
 
@@ -177,6 +183,24 @@ enum monitor_id_t {
 	MONITOR_FLUSH_NEIGHBOR_COUNT,
 	MONITOR_FLUSH_NEIGHBOR_PAGES,
 	MONITOR_FLUSH_N_TO_FLUSH_REQUESTED,
+
+	MONITOR_FLUSH_N_TO_FLUSH_BY_AGE,
+	MONITOR_FLUSH_ADAPTIVE_AVG_TIME_SLOT,
+	MONITOR_LRU_BATCH_FLUSH_AVG_TIME_SLOT,
+
+	MONITOR_FLUSH_ADAPTIVE_AVG_TIME_THREAD,
+	MONITOR_LRU_BATCH_FLUSH_AVG_TIME_THREAD,
+	MONITOR_FLUSH_ADAPTIVE_AVG_TIME_EST,
+	MONITOR_LRU_BATCH_FLUSH_AVG_TIME_EST,
+	MONITOR_FLUSH_AVG_TIME,
+
+	MONITOR_FLUSH_ADAPTIVE_AVG_PASS,
+	MONITOR_LRU_BATCH_FLUSH_AVG_PASS,
+	MONITOR_FLUSH_AVG_PASS,
+
+	MONITOR_LRU_GET_FREE_LOOPS,
+	MONITOR_LRU_GET_FREE_WAITS,
+
 	MONITOR_FLUSH_AVG_PAGE_RATE,
 	MONITOR_FLUSH_LSN_AVG_RATE,
 	MONITOR_FLUSH_PCT_FOR_DIRTY,
@@ -392,6 +416,10 @@ enum monitor_id_t {
 	MONITOR_ICP_OUT_OF_RANGE,
 	MONITOR_ICP_MATCH,
 
+	/* Mutex/RW-Lock related counters */
+	MONITOR_MODULE_LATCHES,
+	MONITOR_LATCHES,
+
 	/* This is used only for control system to turn
 	on/off and reset all monitor counters */
 	MONITOR_ALL_COUNTER,
@@ -544,34 +572,6 @@ on the counters */
 		}							\
 	}
 
-/** Increment a monitor counter under mutex protection.
-Use MONITOR_INC if appropriate mutex protection already exists.
-@param monitor monitor to be incremented by 1
-@param mutex mutex to acquire and relese */
-# define MONITOR_MUTEX_INC(mutex, monitor)				\
-	ut_ad(!mutex_own(mutex));					\
-	if (MONITOR_IS_ON(monitor)) {					\
-		mutex_enter(mutex);					\
-		if (++MONITOR_VALUE(monitor) > MONITOR_MAX_VALUE(monitor)) { \
-			MONITOR_MAX_VALUE(monitor) = MONITOR_VALUE(monitor); \
-		}							\
-		mutex_exit(mutex);					\
-	}
-/** Decrement a monitor counter under mutex protection.
-Use MONITOR_DEC if appropriate mutex protection already exists.
-@param monitor monitor to be decremented by 1
-@param mutex mutex to acquire and relese */
-# define MONITOR_MUTEX_DEC(mutex, monitor)				\
-	ut_ad(!mutex_own(mutex));					\
-	if (MONITOR_IS_ON(monitor)) {					\
-		mutex_enter(mutex);					\
-		if (--MONITOR_VALUE(monitor) < MONITOR_MIN_VALUE(monitor)) { \
-			MONITOR_MIN_VALUE(monitor) = MONITOR_VALUE(monitor); \
-		}							\
-		mutex_exit(mutex);					\
-	}
-
-#if defined HAVE_ATOMIC_BUILTINS_64
 /** Atomically increment a monitor counter.
 Use MONITOR_INC if appropriate mutex protection exists.
 @param monitor monitor to be incremented by 1 */
@@ -601,34 +601,6 @@ Use MONITOR_DEC if appropriate mutex protection exists.
 			MONITOR_MIN_VALUE(monitor) = value;		\
 		}							\
 	}
-# define srv_mon_create() ((void) 0)
-# define srv_mon_free() ((void) 0)
-#else /* HAVE_ATOMIC_BUILTINS_64 */
-/** Mutex protecting atomic operations on platforms that lack
-built-in operations for atomic memory access */
-extern ib_mutex_t	monitor_mutex;
-/****************************************************************//**
-Initialize the monitor subsystem. */
-
-void
-srv_mon_create(void);
-/*================*/
-/****************************************************************//**
-Close the monitor subsystem. */
-
-void
-srv_mon_free(void);
-/*==============*/
-
-/** Atomically increment a monitor counter.
-Use MONITOR_INC if appropriate mutex protection exists.
-@param monitor monitor to be incremented by 1 */
-# define MONITOR_ATOMIC_INC(monitor) MONITOR_MUTEX_INC(&monitor_mutex, monitor)
-/** Atomically decrement a monitor counter.
-Use MONITOR_DEC if appropriate mutex protection exists.
-@param monitor monitor to be decremented by 1 */
-# define MONITOR_ATOMIC_DEC(monitor) MONITOR_MUTEX_DEC(&monitor_mutex, monitor)
-#endif /* HAVE_ATOMIC_BUILTINS_64 */
 
 #define	MONITOR_DEC(monitor)						\
 	if (MONITOR_IS_ON(monitor)) {					\
@@ -806,7 +778,6 @@ Get monitor's monitor_info_t by its monitor id (index into the
 innodb_counter_info array
 @return Point to corresponding monitor_info_t, or NULL if no such
 monitor */
-
 monitor_info_t*
 srv_mon_get_info(
 /*=============*/
@@ -817,7 +788,6 @@ Get monitor's name by its monitor id (index into the
 innodb_counter_info array
 @return corresponding monitor name, or NULL if no such
 monitor */
-
 const char*
 srv_mon_get_name(
 /*=============*/
@@ -829,7 +799,6 @@ Turn on/off/reset monitor counters in a module. If module_value
 is NUM_MONITOR then turn on all monitor counters.
 @return 0 if successful, or the first monitor that cannot be
 turned on because it is already turned on. */
-
 void
 srv_mon_set_module_control(
 /*=======================*/
@@ -846,7 +815,6 @@ mechanism to start/stop and reset the counters, so we simulate these
 controls by remembering the corresponding counter values when the
 corresponding monitors are turned on/off/reset, and do appropriate
 mathematics to deduct the actual value. */
-
 void
 srv_mon_process_existing_counter(
 /*=============================*/
@@ -875,7 +843,6 @@ srv_mon_calc_min_since_start(
 /*************************************************************//**
 Reset a monitor, create a new base line with the current monitor
 value. This baseline is recorded by MONITOR_VALUE_RESET(monitor) */
-
 void
 srv_mon_reset(
 /*==========*/
@@ -889,7 +856,6 @@ srv_mon_reset_all(
 	monitor_id_t	monitor);	/*!< in: monitor id*/
 /*************************************************************//**
 Turn on monitor counters that are marked as default ON. */
-
 void
 srv_mon_default_on(void);
 /*====================*/

@@ -1,4 +1,4 @@
-/* Copyright (c) 2004, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2004, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -372,7 +372,6 @@
 
 
 #define MYSQL_SERVER 1
-#include "sql_priv.h"
 #include "sql_servers.h"         // FOREIGN_SERVER, get_server_by_name
 #include "sql_class.h"           // SSV
 #include "sql_analyse.h"         // append_escaped
@@ -383,6 +382,7 @@
 
 #include "m_string.h"
 #include "key.h"                                // key_copy
+#include "myisam.h"                             // TT_USEFRM
 
 #include <mysql/plugin.h>
 
@@ -444,7 +444,7 @@ static PSI_mutex_info all_federated_mutexes[]=
 
 static PSI_memory_info all_federated_memory[]=
 {
-  { &fe_key_memory_federated_share, "FEDERATED_SHARE", 0}
+  { &fe_key_memory_federated_share, "FEDERATED_SHARE", PSI_FLAG_GLOBAL}
 };
 
 static void init_federated_psi_keys(void)
@@ -500,7 +500,8 @@ int federated_db_init(void *p)
                        &federated_mutex, MY_MUTEX_INIT_FAST))
     goto error;
   if (!my_hash_init(&federated_open_tables, &my_charset_bin, 32, 0, 0,
-                    (my_hash_get_key) federated_get_key, 0, 0))
+                    (my_hash_get_key) federated_get_key, 0, 0,
+                    fe_key_memory_federated_share))
   {
     DBUG_RETURN(FALSE);
   }
@@ -1687,6 +1688,14 @@ int ha_federated::close(void)
   
   results.clear();
   
+  /*
+    Check to verify wheather the connection is still alive or not.
+    FLUSH TABLES will quit the connection and if connection is broken,
+    it will reconnect again and quit silently.
+  */
+  if (mysql && !vio_is_connected(mysql->net.vio))
+     mysql->net.error= 2;
+
   /* Disconnect from mysql */
   mysql_close(mysql);
   mysql= NULL;
@@ -2262,7 +2271,10 @@ int ha_federated::delete_row(const uchar *buf)
   DBUG_ENTER("ha_federated::delete_row");
 
   delete_string.length(0);
-  delete_string.append(STRING_WITH_LEN("DELETE FROM "));
+  if (ignore_duplicates)
+    delete_string.append(STRING_WITH_LEN("DELETE IGNORE FROM "));
+  else
+    delete_string.append(STRING_WITH_LEN("DELETE FROM "));
   append_ident(&delete_string, share->table_name,
                share->table_name_length, ident_quote_char);
   delete_string.append(STRING_WITH_LEN(" WHERE "));
@@ -2903,7 +2915,7 @@ int ha_federated::info(uint flag)
 
   }
 
-  if (flag & HA_STATUS_AUTO)
+  if ((flag & HA_STATUS_AUTO) && mysql)
     stats.auto_increment_value= mysql->insert_id;
 
   mysql_free_result(result);
@@ -3015,7 +3027,37 @@ int ha_federated::delete_all_rows()
   query.length(0);
 
   query.set_charset(system_charset_info);
-  query.append(STRING_WITH_LEN("TRUNCATE "));
+  if (ignore_duplicates)
+    query.append(STRING_WITH_LEN("DELETE IGNORE FROM "));
+  else
+    query.append(STRING_WITH_LEN("DELETE FROM "));
+  append_ident(&query, share->table_name, share->table_name_length,
+               ident_quote_char);
+
+  if (real_query(query.ptr(), query.length()))
+  {
+    DBUG_RETURN(stash_remote_error());
+  }
+  stats.deleted+= stats.records;
+  stats.records= 0;
+  DBUG_RETURN(0);
+}
+
+
+/*
+  Used to manually truncate the table.
+*/
+
+int ha_federated::truncate()
+{
+  char query_buffer[FEDERATED_QUERY_BUFFER_SIZE];
+  String query(query_buffer, sizeof(query_buffer), &my_charset_bin);
+  DBUG_ENTER("ha_federated::truncate");
+
+  query.length(0);
+
+  query.set_charset(system_charset_info);
+  query.append(STRING_WITH_LEN("TRUNCATE TABLE "));
   append_ident(&query, share->table_name, share->table_name_length,
                ident_quote_char);
 
@@ -3029,16 +3071,6 @@ int ha_federated::delete_all_rows()
   stats.deleted+= stats.records;
   stats.records= 0;
   DBUG_RETURN(0);
-}
-
-
-/*
-  Used to manually truncate the table via a delete of all rows in a table.
-*/
-
-int ha_federated::truncate()
-{
-  return delete_all_rows();
 }
 
 
@@ -3159,7 +3191,10 @@ int ha_federated::real_connect()
   /* this sets the csname like 'set names utf8' */
   mysql_options(mysql,MYSQL_SET_CHARSET_NAME,
                 this->table->s->table_charset->csname);
-
+  mysql_options4(mysql, MYSQL_OPT_CONNECT_ATTR_ADD,
+                "program_name", "mysqld");
+  mysql_options4(mysql, MYSQL_OPT_CONNECT_ATTR_ADD,
+                "_client_role", "federated_storage");
   sql_query.length(0);
 
   if (!mysql_real_connect(mysql,

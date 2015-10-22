@@ -2,6 +2,8 @@
 --source suite/funcs_1/storedproc/load_sp_tb.inc
 --------------------------------------------------------------------------------
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 
 --source suite/funcs_1/storedproc/cleanup_sp_tb.inc
 --------------------------------------------------------------------------------
@@ -64,6 +66,8 @@ engine = <engine_to_be_tested>;
 load data infile '<MYSQLTEST_VARDIR>/std_data/funcs_1/t4.txt' into table t11;
 SET sql_mode = default;
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 
 Section 3.1.1 - Syntax checks for the CREATE PROCEDURE, CREATE
 FUNCTION, ALTER PROCEDURE, ALTER FUNCTION, DROP PROCEDURE, DROP FUNCTION, SHOW
@@ -17263,8 +17267,7 @@ set f1 = f1;
 return f1;
 END//
 SELECT fn103('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0@');
-fn103('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\
-                   ?      ?      4@      ?      4@      4@      ?      4@      ?      ?         @      @       @      @       @       @      @       @      @      @
+ERROR 22003: Cannot get geometry object from data you send to the GEOMETRY field
 DROP FUNCTION IF EXISTS fn104;
 CREATE FUNCTION fn104( f1 linestring) returns linestring
 BEGIN
@@ -17272,8 +17275,7 @@ set f1 = f1;
 return f1;
 END//
 SELECT fn104('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0@');
-fn104('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0@')
-                ?      ?       @       @      @      @
+ERROR 22003: Cannot get geometry object from data you send to the GEOMETRY field
 DROP FUNCTION IF EXISTS fn105;
 CREATE FUNCTION fn105( f1 point) returns point
 BEGIN
@@ -17290,8 +17292,7 @@ set f1 = f1;
 return f1;
 END//
 SELECT fn106('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0@');
-fn106('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\
-                   ?      ?      4@      ?      4@      4@      ?      4@      ?      ?         @      @       @      @       @       @      @       @      @      @
+ERROR 22003: Cannot get geometry object from data you send to the GEOMETRY field
 DROP FUNCTION IF EXISTS fn107;
 CREATE FUNCTION fn107( f1 timestamp) returns timestamp
 BEGIN
@@ -18302,8 +18303,7 @@ set f1 = f1;
 SELECT f1;
 END//
 CALL sp103('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0@');
-f1
-                   ?      ?      4@      ?      4@      4@      ?      4@      ?      ?         @      @       @      @       @       @      @       @      @      @
+ERROR 22003: Cannot get geometry object from data you send to the GEOMETRY field
 DROP PROCEDURE IF EXISTS sp104;
 CREATE PROCEDURE sp104( f1 linestring)
 BEGIN
@@ -18311,8 +18311,7 @@ set f1 = f1;
 SELECT f1;
 END//
 CALL sp104('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0@');
-f1
-                ?      ?       @       @      @      @
+ERROR 22003: Cannot get geometry object from data you send to the GEOMETRY field
 DROP PROCEDURE IF EXISTS sp105;
 CREATE PROCEDURE sp105( f1 point)
 BEGIN
@@ -18329,8 +18328,7 @@ set f1 = f1;
 SELECT f1;
 END//
 CALL sp106('\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\04@\0\0\0\0\0\0?\0\0\0\0\0\0?\0\0\0\0\0\0\0\0\0@\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0 @\0\0\0\0\0\0@\0\0\0\0\0\0@');
-f1
-                   ?      ?      4@      ?      4@      4@      ?      4@      ?      ?         @      @       @      @       @       @      @       @      @      @
+ERROR 22003: Cannot get geometry object from data you send to the GEOMETRY field
 DROP PROCEDURE IF EXISTS sp107;
 CREATE PROCEDURE sp107( f1 timestamp)
 BEGIN
@@ -21638,13 +21636,15 @@ set a = '2005-03-14 01:01:02';
 insert into temp_table values(a);
 END	latin1	latin1_swedish_ci	latin1_swedish_ci
 set @@sql_mode = 'traditional';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CALL sp2 ();
 SELECT * from temp_table;
 f1
 2005-03-14 01:01:02
 SELECT @@sql_mode;
 @@sql_mode
-STRICT_TRANS_TABLES,STRICT_ALL_TABLES,TRADITIONAL,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION
+STRICT_TRANS_TABLES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,TRADITIONAL,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION
 DROP PROCEDURE sp2;
 drop table temp_table;
 
@@ -21657,6 +21657,8 @@ check for *high_not_precedence* server sql mode
 --------------------------------------------------------------------------------
 DROP PROCEDURE IF EXISTS sp3;
 set @@sql_mode = 'high_not_precedence';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE PROCEDURE sp3()
 BEGIN
 declare a int signed;
@@ -21696,10 +21698,10 @@ set @@sql_mode = 'ansi, error_for_division_by_zero';
 ERROR 42000: Variable 'sql_mode' can't be set to the value of ' error_for_division_by_zero'
 set @@sql_mode = 'ansi,error_for_division_by_zero';
 Warnings:
-Warning	1912	'ERROR_FOR_DIVISION_BY_ZERO' mode no longer has any effect. Use STRICT_ALL_TABLES or STRICT_TRANS_TABLES instead.
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
 SHOW VARIABLES LIKE 'sql_mode';
 Variable_name	Value
-sql_mode	REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI
+sql_mode	REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI,ERROR_FOR_DIVISION_BY_ZERO
 CREATE PROCEDURE sp4()
 BEGIN
 declare a int;
@@ -21725,6 +21727,9 @@ END	latin1	latin1_swedish_ci	latin1_swedish_ci
 set @@sql_mode='';
 CALL sp4();
 Level	Code	Message
+Warning	1365	Division by 0
+Warnings:
+Warning	1365	Division by 0
 DROP PROCEDURE sp4;
 set @@sql_mode='';
 

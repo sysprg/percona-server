@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,9 +16,11 @@
 #ifndef RPL_INFO_HANDLER_H
 #define RPL_INFO_HANDLER_H
 
-#include <my_global.h>
-#include <dynamic_ids.h>
-#include "rpl_info_values.h"
+#include "my_global.h"
+
+class Rpl_info_values;
+class Server_ids;
+
 
 enum enum_info_repository
 {
@@ -199,6 +201,27 @@ public:
       cursor++;
 
     return(prv_error);
+  }
+
+  /**
+    set the value of a field pointed at @c pk_cursor to
+    @ value.
+
+    @param[in]   pk_cursor   cursor for the filed value.
+    @param[in]   value       fieled[pk_cursor] would be set
+                             this value.
+
+    @retval      FALSE       ok
+    @retval      TRUE       error.
+  */
+
+  template <class TypeHandler>
+  bool set_info(int pk_cursor, TypeHandler const value)
+  {
+    if (pk_cursor >= ninfo)
+      return TRUE;
+
+    return (do_set_info(pk_cursor, value));
   }
 
   /**

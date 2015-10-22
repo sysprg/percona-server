@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -21,6 +21,7 @@
 #include "my_global.h"
 #include "my_sys.h"
 #include "pfs_global.h"
+#include "pfs_builtin_memory.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -39,20 +40,18 @@
 #endif
 
 bool pfs_initialized= false;
-size_t pfs_allocated_memory_size= 0;
-size_t pfs_allocated_memory_count= 0;
 
 /**
   Memory allocation for the performance schema.
-  The memory used internally in the performance schema implementation
-  is allocated once during startup, and considered static thereafter.
+  The memory used internally in the performance schema implementation.
+  It is allocated at startup, or during runtime with scalable buffers.
 */
-void *pfs_malloc(size_t size, myf flags)
+void *pfs_malloc(PFS_builtin_memory_class *klass, size_t size, myf flags)
 {
-  DBUG_ASSERT(! pfs_initialized);
+  DBUG_ASSERT(klass != NULL);
   DBUG_ASSERT(size > 0);
 
-  void *ptr;
+  void *ptr= NULL;
 
 #ifdef PFS_ALIGNEMENT
 #ifdef HAVE_POSIX_MEMALIGN
@@ -83,14 +82,14 @@ void *pfs_malloc(size_t size, myf flags)
     return NULL;
 #endif
 
-  pfs_allocated_memory_size+= size;
-  pfs_allocated_memory_count++;
+  klass->count_alloc(size);
+
   if (flags & MY_ZEROFILL)
     memset(ptr, 0, size);
   return ptr;
 }
 
-void pfs_free(void *ptr)
+void pfs_free(PFS_builtin_memory_class *klass, size_t size, void *ptr)
 {
   if (ptr == NULL)
     return;
@@ -112,6 +111,61 @@ void pfs_free(void *ptr)
 #endif /* HAVE_ALIGNED_MALLOC */
 #endif /* HAVE_MEMALIGN */
 #endif /* HAVE_POSIX_MEMALIGN */
+
+  klass->count_free(size);
+}
+
+/**
+  Array allocation for the performance schema.
+  Checks for overflow of n * size before allocating.
+  @param klass performance schema memory class
+  @param n     number of array elements
+  @param size  element size
+  @param flags malloc flags
+  @return pointer to memory on success, else NULL
+*/
+void *pfs_malloc_array(PFS_builtin_memory_class *klass, size_t n, size_t size, myf flags)
+{
+  DBUG_ASSERT(klass != NULL);
+  DBUG_ASSERT(n > 0);
+  DBUG_ASSERT(size > 0);
+  size_t array_size= n * size;
+  /* Check for overflow before allocating. */
+  if (is_overflow(array_size, n, size))
+    return NULL;
+  return pfs_malloc(klass, array_size, flags);
+}
+
+/**
+  Free array allocated by @sa pfs_malloc_array.
+  @param klass performance schema memory class
+  @param n     number of array elements
+  @param size  element size
+  @param ptr   pointer to memory
+*/
+void pfs_free_array(PFS_builtin_memory_class *klass, size_t n, size_t size, void *ptr)
+{
+  if (ptr == NULL)
+    return;
+  size_t array_size= n * size;
+  /* Overflow should have been detected by pfs_malloc_array. */
+  DBUG_ASSERT(!is_overflow(array_size, n, size));
+  return pfs_free(klass, array_size, ptr);
+}
+
+/**
+  Detect multiplication overflow.
+  @param product  multiplication product
+  @param n1  operand
+  @param n2  operand
+  @return true if multiplication caused an overflow.
+*/
+bool is_overflow(size_t product, size_t n1, size_t n2)
+{
+  if (n1 != 0 && (product / n1 != n2))
+    return true;
+  else
+    return false;
 }
 
 void pfs_print_error(const char *format, ...)
@@ -128,6 +182,7 @@ void pfs_print_error(const char *format, ...)
   va_end(args);
   fflush(stderr);
 }
+
 
 /** Convert raw ip address into readable format. Do not do a reverse DNS lookup. */
 

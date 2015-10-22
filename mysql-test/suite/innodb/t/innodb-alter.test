@@ -374,15 +374,25 @@ DROP TABLE tt, t1o, sys_tables, sys_indexes, sys_foreign;
 
 CREATE TABLE t (t TEXT, FULLTEXT(t)) ENGINE=InnoDB;
 DROP INDEX t ON t;
+LET $regexp=/FTS_([0-9a-f_]+)([A-Z_]+)/FTS_AUX_\2/;
+--replace_regex $regexp
+SELECT SUBSTRING(name, LOCATE('_', name) - 3, 5) AS prefix, name
+FROM INFORMATION_SCHEMA.INNODB_SYS_TABLES
+WHERE name LIKE '%FTS_%' ORDER BY 1, 2;
 
 SELECT sc.pos, sc.NAME FROM information_schema.innodb_sys_columns sc
 INNER JOIN information_schema.innodb_sys_tables st
 ON sc.TABLE_ID=st.TABLE_ID
 WHERE st.NAME='test/t';
 
---error ER_ALTER_OPERATION_NOT_SUPPORTED_REASON
 ALTER TABLE t ROW_FORMAT=REDUNDANT, ALGORITHM=INPLACE;
-ALTER TABLE t ROW_FORMAT=REDUNDANT;
+
+--replace_regex $regexp
+SELECT SUBSTRING(name, LOCATE('_', name) - 3, 5) AS prefix, name
+FROM INFORMATION_SCHEMA.INNODB_SYS_TABLES
+WHERE name LIKE '%FTS_%' ORDER BY 1, 2;
+
+ALTER TABLE t ADD FULLTEXT INDEX(t);
 
 SELECT sc.pos, sc.NAME FROM information_schema.innodb_sys_columns sc
 INNER JOIN information_schema.innodb_sys_tables st
@@ -394,3 +404,19 @@ DROP TABLE t;
 --disable_query_log
 call mtr.add_suppression("deleting orphaned .ibd file");
 --enable_query_log
+
+--echo #
+--echo # Bug #19465984 INNODB DATA DICTIONARY IS NOT UPDATED WHILE
+--echo #		RENAMING THE COLUMN
+--echo #
+CREATE TABLE t1(c1 INT NOT NULL, PRIMARY KEY(c1))ENGINE=INNODB;
+CREATE TABLE t2(c2 INT NOT NULL, FOREIGN KEY(c2) REFERENCES t1(c1))ENGINE=INNODB;
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+ALTER TABLE t1 CHANGE COLUMN c1 C1 INT;
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+ALTER TABLE t1 CHANGE COLUMN C1 c5 INT;
+SHOW CREATE TABLE t1;
+SHOW CREATE TABLE t2;
+DROP TABLE t2, t1;

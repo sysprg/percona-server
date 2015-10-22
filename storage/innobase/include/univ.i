@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1994, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -96,10 +96,10 @@ used throughout InnoDB but do not include too much themselves.  They
 support cross-platform development and expose comonly used SQL names. */
 
 # include <my_global.h>
-# include <my_pthread.h>
 # ifdef HAVE_MALLOC_H
 #  include <malloc.h>
 # endif
+# include <my_thread.h>
 
 # ifndef UNIV_INNOCHECKSUM
 #  include <m_string.h>
@@ -210,8 +210,6 @@ command. */
 #define UNIV_DEBUG_LOCK_VALIDATE		/* Enable
 						ut_ad(lock_rec_validate_page())
 						assertions. */
-#define UNIV_DEBUG_FILE_ACCESSES		/* Enable freed block access
-						debugging without UNIV_DEBUG */
 #define UNIV_LRU_DEBUG				/* debug the buffer pool LRU */
 #define UNIV_HASH_DEBUG				/* debug HASH_ macros */
 #define UNIV_LOG_LSN_DEBUG			/* write LSN to the redo log;
@@ -224,10 +222,6 @@ and the insert buffer must be empty when the database is started */
 #define UNIV_PERF_DEBUG                         /* debug flag that enables
                                                 light weight performance
                                                 related stuff. */
-#define UNIV_SYNC_DEBUG				/* debug mutex and latch
-operations (very slow); also UNIV_DEBUG must be defined */
-#define UNIV_SYNC_PERF_STAT			/* operation counts for
-						rw-locks and mutexes */
 #define UNIV_SEARCH_PERF_STAT			/* statistics for the
 						adaptive hash index */
 #define UNIV_SRV_PRINT_LATCH_WAITS		/* enable diagnostic output
@@ -357,11 +351,13 @@ limit both with this same constant. */
 /** Minimum Page Size Shift (power of 2) */
 #define UNIV_PAGE_SIZE_SHIFT_MIN	12
 /** Maximum Page Size Shift (power of 2) */
-#define UNIV_PAGE_SIZE_SHIFT_MAX	14
+#define UNIV_PAGE_SIZE_SHIFT_MAX	16
 /** Default Page Size Shift (power of 2) */
 #define UNIV_PAGE_SIZE_SHIFT_DEF	14
 /** Original 16k InnoDB Page Size Shift, in case the default changes */
 #define UNIV_PAGE_SIZE_SHIFT_ORIG	14
+/** Original 16k InnoDB Page Size as an ssize (log2 - 9) */
+#define UNIV_PAGE_SSIZE_ORIG		(UNIV_PAGE_SIZE_SHIFT_ORIG - 9)
 
 /** Minimum page size InnoDB currently supports. */
 #define UNIV_PAGE_SIZE_MIN	(1 << UNIV_PAGE_SIZE_SHIFT_MIN)
@@ -382,8 +378,12 @@ limit both with this same constant. */
 (The convention 'ssize' is used for 'log2 minus 9' or the number of
 shifts starting with 512.)
 This max number varies depending on UNIV_PAGE_SIZE. */
-#define UNIV_PAGE_SSIZE_MAX					\
+#define UNIV_PAGE_SSIZE_MAX	\
 	static_cast<ulint>(UNIV_PAGE_SIZE_SHIFT - UNIV_ZIP_SIZE_SHIFT_MIN + 1)
+
+/** Smallest possible ssize for an uncompressed page. */
+#define UNIV_PAGE_SSIZE_MIN	\
+	static_cast<ulint>(UNIV_PAGE_SIZE_SHIFT_MIN - UNIV_ZIP_SIZE_SHIFT_MIN + 1)
 
 /** Maximum number of parallel threads in a parallelized operation */
 #define UNIV_MAX_PARALLELISM	32
@@ -410,6 +410,10 @@ database name and table name. In addition, 14 bytes is added for:
 	9 for the #mysql50# prefix */
 #define MAX_FULL_NAME_LEN				\
 	(MAX_TABLE_NAME_LEN + MAX_DATABASE_NAME_LEN + 14)
+
+/** Maximum length of the compression alogrithm string. Currently we support
+only (NONE | ZLIB | LZ4). */
+#define MAX_COMPRESSION_LEN     4
 
 /** The maximum length in bytes that a database name can occupy when stored in
 UTF8, including the terminating '\0', see dict_fs2utf8(). You must include
@@ -517,7 +521,7 @@ number indicate that a field contains a reference to an externally
 stored part of the field in the tablespace. The length field then
 contains the sum of the following flag and the locally stored len. */
 
-#define UNIV_EXTERN_STORAGE_FIELD (UNIV_SQL_NULL - UNIV_PAGE_SIZE_MAX)
+#define UNIV_EXTERN_STORAGE_FIELD (UNIV_SQL_NULL - UNIV_PAGE_SIZE_DEF)
 
 #if defined(__GNUC__)
 /* Tell the compiler that variable/function is unused. */
@@ -586,12 +590,14 @@ functions. */
 
 #ifdef _WIN32
 typedef ulint os_thread_ret_t;
-#define OS_THREAD_DUMMY_RETURN return(0)
-#define OS_PATH_SEPARATOR '\\'
+# define OS_THREAD_DUMMY_RETURN		return(0)
+# define OS_PATH_SEPARATOR		'\\'
+# define OS_PATH_SEPARATOR_ALT		'/'
 #else
 typedef void* os_thread_ret_t;
-#define OS_THREAD_DUMMY_RETURN return(NULL)
-#define OS_PATH_SEPARATOR '/'
+# define OS_THREAD_DUMMY_RETURN		return(NULL)
+# define OS_PATH_SEPARATOR		'/'
+# define OS_PATH_SEPARATOR_ALT		'\\'
 #endif
 
 #include <stdio.h>
@@ -663,6 +669,8 @@ typedef void* os_thread_ret_t;
 
 extern ulong	srv_page_size_shift;
 extern ulong	srv_page_size;
+
+static const size_t UNIV_SECTOR_SIZE = 512;
 
 /* Dimension of spatial object we support so far. It has its root in
 myisam/sp_defs.h. We only support 2 dimension data */

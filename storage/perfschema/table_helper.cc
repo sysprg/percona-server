@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,7 +19,7 @@
 */
 
 #include "my_global.h"
-#include "my_pthread.h"
+#include "my_thread.h"
 #include "pfs_engine_table.h"
 #include "table_helper.h"
 #include "pfs_host.h"
@@ -27,6 +27,7 @@
 #include "pfs_account.h"
 #include "pfs_instr.h"
 #include "pfs_program.h"
+#include "field.h"
 
 int PFS_host_row::make_row(PFS_host *pfs)
 {
@@ -111,8 +112,8 @@ int PFS_digest_row::make_row(PFS_statements_digest_stat* pfs)
   if (m_schema_name_length > 0)
     memcpy(m_schema_name, pfs->m_digest_key.m_schema_name, m_schema_name_length);
 
-  int safe_byte_count= pfs->m_digest_storage.m_byte_count;
-  if (safe_byte_count > MAX_DIGEST_STORAGE_SIZE)
+  size_t safe_byte_count= pfs->m_digest_storage.m_byte_count;
+  if (safe_byte_count > pfs_max_digest_length)
     safe_byte_count= 0;
 
   /*
@@ -122,31 +123,25 @@ int PFS_digest_row::make_row(PFS_statements_digest_stat* pfs)
   */
   if (safe_byte_count > 0)
   {
-    bool truncated;
     /*
       Calculate digest from MD5 HASH collected to be shown as
       DIGEST in this row.
     */
-    MD5_HASH_TO_STRING(pfs->m_digest_key.m_md5, m_digest);
+    MD5_HASH_TO_STRING(pfs->m_digest_storage.m_md5, m_digest);
     m_digest_length= MD5_HASH_TO_STRING_LENGTH;
 
     /*
       Calculate digest_text information from the token array collected
       to be shown as DIGEST_TEXT column.
     */
-    compute_digest_text(&pfs->m_digest_storage,
-                        m_digest_text,
-                        sizeof(m_digest_text),
-                        & truncated);
-    m_digest_text_length= strlen(m_digest_text);
+    compute_digest_text(&pfs->m_digest_storage, &m_digest_text);
 
-    if (m_digest_text_length == 0)
+    if (m_digest_text.length() == 0)
       m_digest_length= 0;
   }
   else
   {
     m_digest_length= 0;
-    m_digest_text_length= 0;
   }
 
   return 0;
@@ -171,9 +166,9 @@ void PFS_digest_row::set_field(uint index, Field *f)
         f->set_null();
       break;
     case 2: /* DIGEST_TEXT */
-      if (m_digest_text_length > 0)
-        PFS_engine_table::set_field_longtext_utf8(f, m_digest_text,
-                                                  m_digest_text_length);
+      if (m_digest_text.length() > 0)
+        PFS_engine_table::set_field_longtext_utf8(f, m_digest_text.ptr(),
+                                                  m_digest_text.length());
       else
         f->set_null();
       break;
@@ -280,6 +275,16 @@ int PFS_object_row::make_row(const MDL_key *mdl)
     m_schema_name_length= 0;
     m_object_name_length= 0;
     break;
+  case MDL_key::TABLESPACE:
+    m_object_type= OBJECT_TYPE_TABLESPACE;
+    m_schema_name_length= 0;
+    m_object_name_length= mdl->name_length();
+    break;
+  case MDL_key::LOCKING_SERVICE:
+    m_object_type= OBJECT_TYPE_LOCKING_SERVICE;
+    m_schema_name_length= mdl->db_name_length();
+    m_object_name_length= mdl->name_length();
+    break;
   case MDL_key::NAMESPACE_END:
   default:
     m_object_type= NO_OBJECT_TYPE;
@@ -346,21 +351,38 @@ void PFS_object_row::set_nullable_field(uint index, Field *f)
   }
 }
 
-int PFS_index_row::make_row(PFS_table_share *pfs, uint table_index)
+int PFS_index_row::make_row(PFS_table_share *pfs,
+                            PFS_table_share_index *pfs_index,
+                            uint table_index)
 {
   if (m_object_row.make_row(pfs))
     return 1;
 
+  if (pfs_index == NULL)
+  {
+    if (table_index < MAX_INDEXES)
+    {
+      m_index_name_length= sprintf(m_index_name, "(index %d)", table_index);
+    }
+    else
+    {
+      m_index_name_length= 0;
+    }
+    return 0;
+  }
+
   if (table_index < MAX_INDEXES)
   {
-    PFS_table_key *key= &pfs->m_keys[table_index];
-    m_index_name_length= key->m_name_length;
+    m_index_name_length= pfs_index->m_key.m_name_length;
     if (m_index_name_length > sizeof(m_index_name))
       return 1;
-    memcpy(m_index_name, key->m_name, sizeof(m_index_name));
+
+    memcpy(m_index_name, pfs_index->m_key.m_name, sizeof(m_index_name));
   }
   else
+  {
     m_index_name_length= 0;
+  }
 
   return 0;
 }
@@ -545,6 +567,12 @@ void set_field_object_type(Field *f, enum_object_type object_type)
     break;
   case OBJECT_TYPE_BINLOG:
     PFS_engine_table::set_field_varchar_utf8(f, "BINLOG", 6);
+    break;
+  case OBJECT_TYPE_TABLESPACE:
+    PFS_engine_table::set_field_varchar_utf8(f, "TABLESPACE", 10);
+    break;
+  case OBJECT_TYPE_LOCKING_SERVICE:
+    PFS_engine_table::set_field_varchar_utf8(f, "LOCKING SERVICE", 15);
     break;
   case NO_OBJECT_TYPE:
   default:
@@ -780,7 +808,18 @@ void set_field_xa_state(Field *f, enum_xa_transaction_state xa_state)
   }
 }
 
-void PFS_variable_name_row::make_row(const char* str, uint length)
+void PFS_variable_name_row::make_row(const char* str, size_t length)
+{
+  DBUG_ASSERT(length <= sizeof(m_str));
+  DBUG_ASSERT(length <= NAME_CHAR_LEN);
+
+  m_length= MY_MIN(length, NAME_CHAR_LEN); /* enforce max name length */
+  if (m_length > 0)
+    memcpy(m_str, str, length);
+  m_str[m_length]= '\0';
+}
+
+void PFS_variable_value_row::make_row(const char* str, size_t length)
 {
   DBUG_ASSERT(length <= sizeof(m_str));
   if (length > 0)
@@ -790,14 +829,14 @@ void PFS_variable_name_row::make_row(const char* str, uint length)
   m_length= length;
 }
 
-void PFS_variable_value_row::clear()
+void PFS_user_variable_value_row::clear()
 {
   my_free(m_value);
   m_value= NULL;
   m_value_length= 0;
 }
 
-void PFS_variable_value_row::make_row(const char* val, size_t length)
+void PFS_user_variable_value_row::make_row(const char* val, size_t length)
 {
   if (length > 0)
   {

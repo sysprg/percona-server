@@ -1,4 +1,4 @@
-# Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -31,42 +31,6 @@ ENDIF()
 
 ADD_SUBDIRECTORY(ca)
 
-# mysql_server_extra.wxs.in needs DATADIR_MYSQL_FILES and DATADIR_PERFORMANCE_SCHEMA_FILES, i.e
-# Wix-compatible file lists for ${builddir}\sql\data\{mysql,performance_schema}
-
-FOREACH(dir mysql performance_schema)
- FILE(GLOB files ${CMAKE_BINARY_DIR}/sql/data/${dir}/*)
- SET(filelist)
- FOREACH(f ${files})
-   IF(NOT f MATCHES ".rule")
-   FILE(TO_NATIVE_PATH "${f}" file_native_path)
-   GET_FILENAME_COMPONENT(file_name "${f}" NAME)
-   SET(filelist 
-"${filelist}
-<File Id='${file_name}' Source='${file_native_path}'/>")
-   ENDIF()
- ENDFOREACH()
- STRING(TOUPPER ${dir} DIR_UPPER)
- SET(DATADIR_${DIR_UPPER}_FILES "${filelist}")
-ENDFOREACH()
-
-FILE(GLOB files ${CMAKE_BINARY_DIR}/sql/data/*)
-SET(filelist)
-FOREACH(f ${files})
-  IF(IS_DIRECTORY "${f}")
-  ELSE()
-    IF(NOT (f MATCHES ".rule" OR f MATCHES "bootstrap.sql"))
-      FILE(TO_NATIVE_PATH "${f}" file_native_path)
-      GET_FILENAME_COMPONENT(file_name "${f}" NAME)
-      SET(filelist 
-"${filelist}
-<File Id='${file_name}' Source='${file_native_path}'/>")
-    ENDIF()
-  ENDIF()
-ENDFOREACH()
-SET(DATADIR_FILES "${filelist}")
-
-
 FIND_PROGRAM(HEAT_EXECUTABLE heat ${WIX_DIR})
 FIND_PROGRAM(CANDLE_EXECUTABLE candle ${WIX_DIR})
 FIND_PROGRAM(LIGHT_EXECUTABLE light ${WIX_DIR})
@@ -97,6 +61,20 @@ IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
   SET(WixWin64 " Win64='yes'")
 ELSE()
   SET(WixWin64 " Win64='no'")
+ENDIF()
+
+IF("${VERSION}" MATCHES "-ndb-")
+  MESSAGE(STATUS "This is Cluster build")
+  # Setup DISPLAY_XXX_VERSION which create_msi.cmake will
+  # use as version to "display" when building the msi
+  # (i.e replacing for example 5.6.21 with 7.4.3)
+  MESSAGE(STATUS "Setting DISPLAY_XXX_VERSION")
+  SET(DISPLAY_MAJOR_VERSION ${NDB_VERSION_MAJOR})
+  SET(DISPLAY_MINOR_VERSION ${NDB_VERSION_MINOR})
+  SET(DISPLAY_PATCH_VERSION ${NDB_VERSION_BUILD})
+  MESSAGE(STATUS "DISPLAY_MAJOR_VERSION: ${DISPLAY_MAJOR_VERSION}")
+  MESSAGE(STATUS "DISPLAY_MINOR_VERSION: ${DISPLAY_MINOR_VERSION}")
+  MESSAGE(STATUS "DISPLAY_PATCH_VERSION: ${DISPLAY_PATCH_VERSION}")
 ENDIF()
 
 CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/mysql_server_extra.wxs.in

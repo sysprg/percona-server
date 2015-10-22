@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,11 +19,12 @@
 */
 
 #include "my_global.h"
-#include "my_pthread.h"
+#include "my_thread.h"
 #include "table_setup_consumers.h"
 #include "pfs_instr.h"
 #include "pfs_events_waits.h"
 #include "pfs_digest.h"
+#include "field.h"
 
 #define COUNT_SETUP_CONSUMERS 15
 
@@ -39,13 +40,13 @@ static row_setup_consumers all_setup_consumers_data[COUNT_SETUP_CONSUMERS]=
     { C_STRING_WITH_LEN("events_stages_history") },
     &flag_events_stages_history,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_stages_history_long") },
     &flag_events_stages_history_long,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_statements_current") },
@@ -57,13 +58,13 @@ static row_setup_consumers all_setup_consumers_data[COUNT_SETUP_CONSUMERS]=
     { C_STRING_WITH_LEN("events_statements_history") },
     &flag_events_statements_history,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_statements_history_long") },
     &flag_events_statements_history_long,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_transactions_current") },
@@ -75,13 +76,13 @@ static row_setup_consumers all_setup_consumers_data[COUNT_SETUP_CONSUMERS]=
     { C_STRING_WITH_LEN("events_transactions_history") },
     &flag_events_transactions_history,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_transactions_history_long") },
     &flag_events_transactions_history_long,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_waits_current") },
@@ -93,13 +94,13 @@ static row_setup_consumers all_setup_consumers_data[COUNT_SETUP_CONSUMERS]=
     { C_STRING_WITH_LEN("events_waits_history") },
     &flag_events_waits_history,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("events_waits_history_long") },
     &flag_events_waits_history_long,
     false,
-    false
+    true
   },
   {
     { C_STRING_WITH_LEN("global_instrumentation") },
@@ -153,7 +154,8 @@ table_setup_consumers::m_share=
   sizeof(PFS_simple_index), /* ref length */
   &m_table_lock,
   &m_field_def,
-  false /* checked */
+  false, /* checked */
+  false  /* perpetual */
 };
 
 PFS_engine_table* table_setup_consumers::create(void)

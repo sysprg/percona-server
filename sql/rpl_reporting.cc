@@ -1,4 +1,4 @@
-/* Copyright (c) 2007, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2007, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,11 +13,12 @@
    along with this program; if not, write to the Free Software Foundation,
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
-#include "sql_priv.h"
 #include "rpl_reporting.h"
-#include "log.h" // sql_print_error, sql_print_warning,
-                 // sql_print_information
-#include "rpl_slave.h"
+
+#include "log.h"               // sql_print_warning
+#include "mysqld.h"            // current_thd
+#include "sql_class.h"         // THD
+#include "sql_error.h"         // Diagnostics_area
 
 Slave_reporting_capability::Slave_reporting_capability(char const *thread_name)
   : m_thread_name(thread_name)
@@ -56,13 +57,10 @@ int Slave_reporting_capability::has_temporary_error(THD *thd,
                   });
 
   /*
-    The state of the slave thread can't be regarded as
-    experiencing a temporary failure in cases of @c is_slave_error was set TRUE,
-    or if there is no message in THD, we can't say if it's a temporary
-    error or not. This is currently the case for Incident_log_event,
-    which sets no message.
+    The slave can't be regarded as experiencing a temporary failure in cases of
+    is_fatal_error is TRUE, or if no error is in THD and error_arg is not set.
   */
-  if (thd->is_fatal_error || !thd->is_error())
+  if (thd->is_fatal_error || (!thd->is_error() && error_arg == 0))
     DBUG_RETURN(0);
 
   error= (error_arg == 0)? thd->get_stmt_da()->mysql_errno() : error_arg;
@@ -166,8 +164,8 @@ Slave_reporting_capability::va_report(loglevel level, int err_code,
   mysql_mutex_unlock(&err_lock);
 
   /* If the msg string ends with '.', do not add a ',' it would be ugly */
-  report_function("Slave %s: %s%s Error_code: %d",
-                  m_thread_name, pbuff,
+  report_function("Slave %s%s: %s%s Error_code: %d",
+                  m_thread_name, get_for_channel_str(false), pbuff,
                   (curr_buff[0] && *(strend(curr_buff)-1) == '.') ? "" : ",",
                   err_code);
 #endif

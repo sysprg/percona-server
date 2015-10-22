@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2014, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -35,26 +35,54 @@ Created 03/11/2014 Shaohua Wang
 /** Innodb B-tree index fill factor for bulk load. */
 extern	long	innobase_fill_factor;
 
+/*
+The proper function call sequence of PageBulk is as below:
+-- PageBulk::init
+-- PageBulk::insert
+-- PageBulk::finish
+-- PageBulk::compress(COMPRESSED table only)
+-- PageBulk::pageSplit(COMPRESSED table only)
+-- PageBulk::commit
+*/
+
 class PageBulk
 {
 public:
 	/** Constructor
-	@param[in]	index	B-tree index
-	@param[in]	page_no	page number
-	@param[in]	level	page level
-	@param[in]	trx_id	transaction id */
+	@param[in]	index		B-tree index
+	@param[in]	page_no		page number
+	@param[in]	level		page level
+	@param[in]	trx_id		transaction id
+	@param[in]	observer	flush observer */
 	PageBulk(
-		dict_index_t* index,
-		trx_id_t trx_id,
-		ulint page_no,
-		ulint level)
+		dict_index_t*	index,
+		trx_id_t	trx_id,
+		ulint		page_no,
+		ulint		level,
+		FlushObserver*	observer)
 		:
 		m_heap(NULL),
 		m_index(index),
+		m_mtr(NULL),
 		m_trx_id(trx_id),
+		m_block(NULL),
+		m_page(NULL),
+		m_page_zip(NULL),
+		m_cur_rec(NULL),
 		m_page_no(page_no),
-		m_level(level)
+		m_level(level),
+		m_is_comp(dict_table_is_comp(index->table)),
+		m_heap_top(NULL),
+		m_rec_no(0),
+		m_free_space(0),
+		m_reserved_space(0),
+#ifdef UNIV_DEBUG
+		m_total_data(0),
+#endif /* UNIV_DEBUG */
+		m_modify_clock(0),
+		m_flush_observer(observer)
 	{
+		ut_ad(!dict_index_is_spatial(m_index));
 	}
 
 	/** Deconstructor */
@@ -64,8 +92,9 @@ public:
 	}
 
 	/** Initialize members and allocate page if needed and start mtr.
-	Note: must be called right after constructor. */
-	void init();
+	Note: must be called and only once right after constructor.
+	@return error code */
+	dberr_t init();
 
 	/** Insert a record in the page.
 	@param[in]	rec		record
@@ -195,7 +224,7 @@ private:
 	ulint		m_level;
 
 	/** Flag: is page in compact format */
-	bool		m_is_comp;
+	const bool	m_is_comp;
 
 	/** The heap top in page for next insert */
 	byte*		m_heap_top;
@@ -216,6 +245,13 @@ private:
 	/** Total data in the page */
 	ulint		m_total_data;
 #endif /* UNIV_DEBUG */
+
+	/** The modify clock value of the buffer block
+	when the block is re-pinned */
+	ib_uint64_t     m_modify_clock;
+
+	/** Flush observer */
+	FlushObserver*	m_flush_observer;
 };
 
 typedef std::vector<PageBulk*, ut_allocator<PageBulk*> >
@@ -225,17 +261,20 @@ class BtrBulk
 {
 public:
 	/** Constructor
-	@param[in]	index	B-tree index
-	@param[in]	trx_id	transaction id */
+	@param[in]	index		B-tree index
+	@param[in]	trx_id		transaction id
+	@param[in]	observer	flush observer */
 	BtrBulk(
-		dict_index_t* index,
-		trx_id_t trx_id)
+		dict_index_t*	index,
+		trx_id_t	trx_id,
+		FlushObserver*	observer)
 		:
 		m_heap(NULL),
 		m_index(index),
 		m_trx_id(trx_id),
-		m_root_level(0)
+		m_flush_observer(observer)
 	{
+		ut_ad(m_flush_observer != NULL);
 #ifdef UNIV_DEBUG
 		fil_space_inc_redo_skipped_count(m_index->space);
 #endif /* UNIV_DEBUG */
@@ -332,6 +371,9 @@ private:
 
 	/** Root page level */
 	ulint			m_root_level;
+
+	/** Flush observer */
+	FlushObserver*		m_flush_observer;
 
 	/** Page cursor vector for all level */
 	page_bulk_vector*	m_page_bulks;

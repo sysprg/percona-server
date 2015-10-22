@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -33,9 +33,7 @@
   currently running transactions etc will not be disrupted.
 */
 
-#include "sql_priv.h"
 #include "sql_servers.h"
-#include "unireg.h"
 #include "sql_base.h"                           // close_mysql_tables
 #include "records.h"          // init_read_record, end_read_record
 #include "hash_filo.h"
@@ -45,7 +43,7 @@
 #include "auth_common.h"
 #include "sql_parse.h"
 #include "lock.h"                               // MYSQL_LOCK_IGNORE_TIMEOUT
-
+#include "transaction.h"      // trans_rollback_stmt, trans_commit_stmt
 /*
   We only use 1 mutex to guard the data structures - THR_LOCK_servers.
   Read locked when only reading data and write-locked for all other access.
@@ -143,7 +141,8 @@ bool servers_init(bool dont_read_servers_table)
 
   /* initialise our servers cache */
   if (my_hash_init(&servers_cache, system_charset_info, 32, 0, 0,
-                   (my_hash_get_key) servers_cache_get_key, 0, 0))
+                   (my_hash_get_key) servers_cache_get_key, 0, 0,
+                   key_memory_servers))
   {
     return_val= TRUE; /* we failed, out of memory? */
     goto end;
@@ -241,15 +240,14 @@ end:
 bool servers_reload(THD *thd)
 {
   TABLE_LIST tables[1];
-  bool return_val= TRUE;
+  bool return_val= true;
   DBUG_ENTER("servers_reload");
 
   DBUG_PRINT("info", ("locking servers_cache"));
   mysql_rwlock_wrlock(&THR_LOCK_servers);
 
   tables[0].init_one_table("mysql", 5, "servers", 7, "servers", TL_READ);
-
-  if (open_and_lock_tables(thd, tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (open_trans_system_tables_for_read(thd, tables))
   {
     /*
       Execution might have been interrupted; only print the error message
@@ -258,7 +256,6 @@ bool servers_reload(THD *thd)
     if (thd->get_stmt_da()->is_error())
       sql_print_error("Can't open and lock privilege tables: %s",
                       thd->get_stmt_da()->message_text());
-    return_val= FALSE;
     goto end;
   }
 
@@ -270,8 +267,8 @@ bool servers_reload(THD *thd)
     servers_free();
   }
 
+  close_trans_system_tables(thd);
 end:
-  close_mysql_tables(thd);
   DBUG_PRINT("info", ("unlocking servers_cache"));
   mysql_rwlock_unlock(&THR_LOCK_servers);
   DBUG_RETURN(return_val);
@@ -662,9 +659,10 @@ bool Sql_cmd_create_server::execute(THD *thd)
                      (uchar*) m_server_options->m_server_name.str,
                      m_server_options->m_server_name.length))
   {
+    mysql_rwlock_unlock(&THR_LOCK_servers);
     my_error(ER_FOREIGN_SERVER_EXISTS, MYF(0),
              m_server_options->m_server_name.str);
-    mysql_rwlock_unlock(&THR_LOCK_servers);
+    trans_rollback_stmt(thd);
     close_mysql_tables(thd);
     DBUG_RETURN(true);
   }
@@ -675,15 +673,17 @@ bool Sql_cmd_create_server::execute(THD *thd)
   empty_record(table);
 
   /* set the field that's the PK to the value we're looking for */
-  table->field[SERVERS_FIELD_NAME]->store(m_server_options->m_server_name.str,
-                                         m_server_options->m_server_name.length,
-                                         system_charset_info);
+  table->field[SERVERS_FIELD_NAME]->store(
+    m_server_options->m_server_name.str,
+    m_server_options->m_server_name.length,
+    system_charset_info);
 
   /* read index until record is that specified in server_name */
-  error= table->file->ha_index_read_idx_map(table->record[0], 0,
-                                 (uchar *)table->field[SERVERS_FIELD_NAME]->ptr,
-                                 HA_WHOLE_KEY,
-                                 HA_READ_KEY_EXACT);
+  error= table->file->ha_index_read_idx_map(
+    table->record[0], 0,
+    table->field[SERVERS_FIELD_NAME]->ptr,
+    HA_WHOLE_KEY,
+    HA_READ_KEY_EXACT);
 
   if (!error)
   {
@@ -714,6 +714,11 @@ bool Sql_cmd_create_server::execute(THD *thd)
 
   reenable_binlog(table->in_use);
   mysql_rwlock_unlock(&THR_LOCK_servers);
+
+  if (error)
+    trans_rollback_stmt(thd);
+  else
+    trans_commit_stmt(thd);
   close_mysql_tables(thd);
 
   if (error == 0 && !thd->killed)
@@ -733,13 +738,14 @@ bool Sql_cmd_alter_server::execute(THD *thd)
   mysql_rwlock_wrlock(&THR_LOCK_servers);
   FOREIGN_SERVER *existing=
     (FOREIGN_SERVER *) my_hash_search(&servers_cache,
-                                   (uchar*) m_server_options->m_server_name.str,
-                                   m_server_options->m_server_name.length);
+                                  (uchar*) m_server_options->m_server_name.str,
+                                  m_server_options->m_server_name.length);
   if (!existing)
   {
     my_error(ER_FOREIGN_SERVER_DOESNT_EXIST, MYF(0),
              m_server_options->m_server_name.str);
     mysql_rwlock_unlock(&THR_LOCK_servers);
+    trans_rollback_stmt(thd);
     close_mysql_tables(thd);
     DBUG_RETURN(true);
   }
@@ -749,14 +755,16 @@ bool Sql_cmd_alter_server::execute(THD *thd)
   table->use_all_columns();
 
   /* set the field that's the PK to the value we're looking for */
-  table->field[SERVERS_FIELD_NAME]->store(m_server_options->m_server_name.str,
-                                         m_server_options->m_server_name.length,
-                                         system_charset_info);
+  table->field[SERVERS_FIELD_NAME]->store(
+    m_server_options->m_server_name.str,
+    m_server_options->m_server_name.length,
+    system_charset_info);
 
-  error= table->file->ha_index_read_idx_map(table->record[0], 0,
-                                 (uchar *)table->field[SERVERS_FIELD_NAME]->ptr,
-                                 ~(longlong)0,
-                                 HA_READ_KEY_EXACT);
+  error= table->file->ha_index_read_idx_map(
+    table->record[0], 0,
+    table->field[SERVERS_FIELD_NAME]->ptr,
+    ~(longlong)0,
+    HA_READ_KEY_EXACT);
   if (error)
   {
     if (error != HA_ERR_KEY_NOT_FOUND && error != HA_ERR_END_OF_FILE)
@@ -783,12 +791,17 @@ bool Sql_cmd_alter_server::execute(THD *thd)
   }
 
   reenable_binlog(table->in_use);
-  mysql_rwlock_unlock(&THR_LOCK_servers);
 
   /* Perform a reload so we don't have a 'hole' in our mem_root */
   servers_load(thd, table);
 
-  /* close the servers table before we call closed_cached_connection_tables */
+  // NOTE: servers_load() must be called under acquired THR_LOCK_servers.
+  mysql_rwlock_unlock(&THR_LOCK_servers);
+
+  if (error)
+    trans_rollback_stmt(thd);
+  else
+    trans_commit_stmt(thd);
   close_mysql_tables(thd);
 
   if (close_cached_connection_tables(thd, m_server_options->m_server_name.str,
@@ -821,10 +834,10 @@ bool Sql_cmd_drop_server::execute(THD *thd)
                                           m_server_name.length,
                                           system_charset_info);
 
-  error= table->file->ha_index_read_idx_map(table->record[0], 0,
-                                 (uchar *)table->field[SERVERS_FIELD_NAME]->ptr,
-                                 HA_WHOLE_KEY,
-                                 HA_READ_KEY_EXACT);
+  error= table->file->ha_index_read_idx_map(
+    table->record[0], 0,
+    table->field[SERVERS_FIELD_NAME]->ptr,
+    HA_WHOLE_KEY, HA_READ_KEY_EXACT);
   if (error)
   {
     if (error != HA_ERR_KEY_NOT_FOUND && error != HA_ERR_END_OF_FILE)
@@ -859,7 +872,10 @@ bool Sql_cmd_drop_server::execute(THD *thd)
   reenable_binlog(table->in_use);
   mysql_rwlock_unlock(&THR_LOCK_servers);
 
-  /* close the servers table before we call closed_cached_connection_tables */
+  if (error)
+    trans_rollback_stmt(thd);
+  else
+    trans_commit_stmt(thd);
   close_mysql_tables(thd);
 
   if (close_cached_connection_tables(thd, m_server_name.str,

@@ -68,7 +68,6 @@ uint	os_large_page_size;
 
 /** Converts the current process id to a number.
 @return process id as a number */
-
 ulint
 os_proc_get_number(void)
 /*====================*/
@@ -80,6 +79,7 @@ os_proc_get_number(void)
 #endif
 }
 
+#if OS_MAP_ANON && OS_MAP_POPULATE
 /****************************************************************//**
 Retrieve and compare operating system release.
 @return	true if the OS release is equal to, or later than release. */
@@ -97,12 +97,12 @@ os_compare_release(
 	return false;
 #endif
 }
+#endif
 
 /** Allocates large pages memory.
 @param[in,out]	n	Number of bytes to allocate
 @param[in]	populate	virtual page preallocation
 @return allocated memory */
-
 void*
 os_mem_alloc_large(
 	ulint*	n,
@@ -125,15 +125,14 @@ os_mem_alloc_large(
 
 	shmid = shmget(IPC_PRIVATE, (size_t) size, SHM_HUGETLB | SHM_R | SHM_W);
 	if (shmid < 0) {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Failed to allocate %lu bytes. errno %d", size, errno);
+		ib::warn() << "Failed to allocate " << size
+			<< " bytes. errno " << errno;
 		ptr = NULL;
 	} else {
 		ptr = shmat(shmid, NULL, 0);
 		if (ptr == (void*)-1) {
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Failed to attach shared memory segment,"
-				" errno %d", errno);
+			ib::warn() << "Failed to attach shared memory segment,"
+				" errno " << errno;
 			ptr = NULL;
 		}
 
@@ -145,14 +144,14 @@ os_mem_alloc_large(
 
 	if (ptr) {
 		*n = size;
-		os_increment_counter_by_amount(
-			server_mutex, os_total_large_mem_allocated, size);
+		os_atomic_increment_ulint(
+			&os_total_large_mem_allocated, size);
 
 		UNIV_MEM_ALLOC(ptr, size);
 		return(ptr);
 	}
 
-	ib_logf(IB_LOG_LEVEL_WARN, "Using conventional memory pool");
+	ib::warn() << "Using conventional memory pool";
 skip:
 #endif /* HAVE_LINUX_LARGE_PAGES && UNIV_LINUX */
 
@@ -169,13 +168,11 @@ skip:
 	ptr = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE,
 			   PAGE_READWRITE);
 	if (!ptr) {
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"VirtualAlloc(%lu bytes) failed;"
-			" Windows error %lu",
-			(ulong) size, (ulong) GetLastError());
+		ib::info() << "VirtualAlloc(" << size << " bytes) failed;"
+			" Windows error " << GetLastError();
 	} else {
-		os_increment_counter_by_amount(
-			server_mutex, os_total_large_mem_allocated, size);
+		os_atomic_increment_ulint(
+			&os_total_large_mem_allocated, size);
 		UNIV_MEM_ALLOC(ptr, size);
 	}
 #else
@@ -187,14 +184,12 @@ skip:
 		   MAP_PRIVATE | OS_MAP_ANON |
 		   (populate ? OS_MAP_POPULATE : 0), -1, 0);
 	if (UNIV_UNLIKELY(ptr == (void*) -1)) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"mmap(%lu bytes) failed;"
-			" errno %lu",
-			(ulong) size, (ulong) errno);
-		return(NULL);
+		ib::error() << "mmap(" << size << " bytes) failed;"
+			" errno " << errno;
+		ptr = NULL;
 	} else {
-		os_increment_counter_by_amount(
-			server_mutex, os_total_large_mem_allocated, size);
+		os_atomic_increment_ulint(
+			&os_total_large_mem_allocated, size);
 		UNIV_MEM_ALLOC(ptr, size);
 	}
 #endif
@@ -223,7 +218,6 @@ skip:
 /** Frees large pages memory.
 @param[in]	ptr	pointer returned by os_mem_alloc_large()
 @param[in]	size	size returned by os_mem_alloc_large() */
-
 void
 os_mem_free_large(
 	void	*ptr,
@@ -233,8 +227,8 @@ os_mem_free_large(
 
 #if defined HAVE_LINUX_LARGE_PAGES && defined UNIV_LINUX
 	if (os_use_large_pages && os_large_page_size && !shmdt(ptr)) {
-		os_decrement_counter_by_amount(
-			server_mutex, os_total_large_mem_allocated, size);
+		os_atomic_decrement_ulint(
+			&os_total_large_mem_allocated, size);
 		UNIV_MEM_FREE(ptr, size);
 		return;
 	}
@@ -243,13 +237,11 @@ os_mem_free_large(
 	/* When RELEASE memory, the size parameter must be 0.
 	Do not use MEM_RELEASE with MEM_DECOMMIT. */
 	if (!VirtualFree(ptr, 0, MEM_RELEASE)) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"VirtualFree(%p, %lu) failed;"
-			" Windows error %lu",
-			ptr, (ulong) size, (ulong) GetLastError());
+		ib::error() << "VirtualFree(" << ptr << ", " << size
+			<< ") failed; Windows error " << GetLastError();
 	} else {
-		os_decrement_counter_by_amount(
-			server_mutex, os_total_large_mem_allocated, size);
+		os_atomic_decrement_ulint(
+			&os_total_large_mem_allocated, size);
 		UNIV_MEM_FREE(ptr, size);
 	}
 #elif !defined OS_MAP_ANON
@@ -260,13 +252,11 @@ os_mem_free_large(
 # else
 	if (munmap(ptr, size)) {
 # endif /* UNIV_SOLARIS */
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"munmap(%p, %lu) failed;"
-			" errno %lu",
-			ptr, (ulong) size, (ulong) errno);
+		ib::error() << "munmap(" << ptr << ", " << size << ") failed;"
+			" errno " << errno;
 	} else {
-		os_decrement_counter_by_amount(
-			server_mutex, os_total_large_mem_allocated, size);
+		os_atomic_decrement_ulint(
+			&os_total_large_mem_allocated, size);
 		UNIV_MEM_FREE(ptr, size);
 	}
 #endif

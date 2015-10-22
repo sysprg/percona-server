@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2007, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2007, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -28,10 +28,10 @@
 #include "hostname.h"                   // Host_errors
 #include "log.h"                        // sql_print_information
 #include "mysqld.h"                     // LOCK_user_conn
-#include "structs.h"                    // user_conn
 #include "sql_audit.h"                  // MYSQL_AUDIT_NOTIFY_CONNECTION_CONNECT
 #include "sql_class.h"                  // THD
 #include "sql_parse.h"                  // sql_command_flags
+#include "sql_plugin.h"                 // plugin_thdvar_cleanup
 
 #include <algorithm>
 #include <string.h>
@@ -136,30 +136,39 @@ end:
 
 }
 
-extern "C" uchar *get_key_user_stats(USER_STATS *user_stats, size_t *length,
-                         my_bool not_used __attribute__((unused)))
+/* Lookup function for my_hash tables with USER_STATS entries */
+static
+uchar *get_key_user_stats(USER_STATS *user_stats, size_t *length,
+			  my_bool not_used __attribute__((unused)))
 {
   *length= user_stats->user_len;
   return (uchar*) user_stats->user;
 }
 
-extern "C" uchar *get_key_thread_stats(THREAD_STATS *thread_stats, size_t *length,
-                         my_bool not_used __attribute__((unused)))
+/* Lookup function for my_hash tables with THREAD_STATS entries */
+static
+uchar *get_key_thread_stats(THREAD_STATS *thread_stats, size_t *length,
+			    my_bool not_used __attribute__((unused)))
 {
   *length= sizeof(my_thread_id);
   return (uchar *) &(thread_stats->id);
 }
 
+/* Free all memory for a my_hash table with USER_STATS entries */
+static
 void free_user_stats(USER_STATS* user_stats)
 {
   my_free((char *) user_stats);
 }
 
+/* Free all memory for a my_hash table with THREAD_STATS entries */
 void free_thread_stats(THREAD_STATS* thread_stats)
 {
   my_free((char *) thread_stats);
 }
 
+/* Intialize an instance of USER_STATS */
+static
 void init_user_stats(USER_STATS *user_stats,
                      const char *user,
                      const char *priv_user,
@@ -219,6 +228,8 @@ void init_user_stats(USER_STATS *user_stats,
   DBUG_VOID_RETURN;
 }
 
+/* Intialize an instance of THREAD_STATS */
+static
 void init_thread_stats(THREAD_STATS *thread_stats,
                      my_thread_id id,
                      uint total_connections,
@@ -277,7 +288,8 @@ void init_global_user_stats(void)
 {
   if (my_hash_init(&global_user_stats, system_charset_info, max_connections,
                 0, 0, (my_hash_get_key)get_key_user_stats,
-                (my_hash_free_key)free_user_stats, 0)) {
+		   (my_hash_free_key)free_user_stats, 0,
+		   key_memory_userstat_user_stats)) {
     sql_print_error("Initializing global_user_stats failed.");
     exit(1);
   }
@@ -287,7 +299,8 @@ void init_global_client_stats(void)
 {
   if (my_hash_init(&global_client_stats, system_charset_info, max_connections,
                 0, 0, (my_hash_get_key)get_key_user_stats,
-                (my_hash_free_key)free_user_stats, 0)) {
+		   (my_hash_free_key)free_user_stats, 0,
+		   key_memory_userstat_client_stats)) {
     sql_print_error("Initializing global_client_stats failed.");
     exit(1);
   }
@@ -297,21 +310,24 @@ void init_global_thread_stats(void)
 {
   if (my_hash_init(&global_thread_stats, &my_charset_bin, max_connections,
                 0, 0, (my_hash_get_key) get_key_thread_stats,
-                (my_hash_free_key) free_thread_stats, 0))
+		   (my_hash_free_key) free_thread_stats, 0,
+		   key_memory_userstat_thread_stats))
   {
     sql_print_error("Initializing global_client_stats failed.");
     exit(1);
   }
 }
 
-extern "C" uchar *get_key_table_stats(TABLE_STATS *table_stats, size_t *length,
-                                     my_bool not_used __attribute__((unused)))
+static
+uchar *get_key_table_stats(TABLE_STATS *table_stats, size_t *length,
+			   my_bool not_used __attribute__((unused)))
 {
   *length= table_stats->table_len;
   return (uchar*) table_stats->table;
 }
 
-extern "C" void free_table_stats(TABLE_STATS* table_stats)
+static
+void free_table_stats(TABLE_STATS* table_stats)
 {
   my_free((char*) table_stats);
 }
@@ -320,20 +336,23 @@ void init_global_table_stats(void)
 {
   if (my_hash_init(&global_table_stats, system_charset_info, max_connections,
                 0, 0, (my_hash_get_key)get_key_table_stats,
-                (my_hash_free_key)free_table_stats, 0)) {
+		   (my_hash_free_key)free_table_stats, 0,
+		   key_memory_userstat_table_stats)) {
     sql_print_error("Initializing global_table_stats failed.");
     exit(1);
   }
 }
 
-extern "C" uchar *get_key_index_stats(INDEX_STATS *index_stats, size_t *length,
-                                     my_bool not_used __attribute__((unused)))
+static
+uchar *get_key_index_stats(INDEX_STATS *index_stats, size_t *length,
+			   my_bool not_used __attribute__((unused)))
 {
   *length= index_stats->index_len;
   return (uchar*) index_stats->index;
 }
 
-extern "C" void free_index_stats(INDEX_STATS* index_stats)
+static
+void free_index_stats(INDEX_STATS* index_stats)
 {
   my_free((char*) index_stats);
 }
@@ -342,7 +361,8 @@ void init_global_index_stats(void)
 {
   if (my_hash_init(&global_index_stats, system_charset_info, max_connections,
                 0, 0, (my_hash_get_key)get_key_index_stats,
-                (my_hash_free_key)free_index_stats, 0)) {
+		   (my_hash_free_key)free_index_stats, 0,
+		   key_memory_userstat_index_stats)) {
     sql_print_error("Initializing global_index_stats failed.");
     exit(1);
   }
@@ -377,7 +397,7 @@ void free_global_client_stats(void)
 static char mysql_system_user[] = "#mysql_system#";
 
 // Returns 'user' if it's not NULL.  Returns 'mysql_system_user' otherwise.
-static char* get_valid_user_string(char* user) {
+static const char* get_valid_user_string(const char* user) {
   return user ? user : mysql_system_user;
 }
 
@@ -393,9 +413,9 @@ static int increment_count_by_name(const char *name, const char *role_name,
                                                    (uchar*) name,
                                                    strlen(name))))
   {
-    if (acl_is_utility_user(thd->security_ctx->user,
-                            thd->security_ctx->get_host()->ptr(),
-                            thd->security_ctx->get_ip()->ptr()))
+    if (acl_is_utility_user(thd->security_context()->user().str,
+			    thd->security_context()->host().str,
+			    thd->security_context()->ip().str))
       return 0;
 
     // First connection for this user or client
@@ -426,7 +446,7 @@ static int increment_count_by_name(const char *name, const char *role_name,
     }
   }
   user_stats->total_connections++;
-  if (thd->net.vio &&  thd->net.vio->type == VIO_TYPE_SSL)
+  if (thd->get_protocol()->get_ssl())
     user_stats->total_ssl_connections++;
   return 0;
 }
@@ -440,9 +460,9 @@ static int increment_count_by_id(my_thread_id id,
                                                        (uchar*) &id,
                                                        sizeof(my_thread_id))))
   {
-    if (acl_is_utility_user(thd->security_ctx->user,
-                            thd->security_ctx->get_host()->ptr(),
-                            thd->security_ctx->get_ip()->ptr()))
+    if (acl_is_utility_user(thd->security_context()->user().str,
+			    thd->security_context()->host().str,
+			    thd->security_context()->ip().str))
       return 0;
 
     // First connection for this user or client
@@ -473,7 +493,7 @@ static int increment_count_by_id(my_thread_id id,
     }
   }
   thread_stats->total_connections++;
-  if (thd->net.vio && thd->net.vio->type == VIO_TYPE_SSL)
+  if (thd->get_protocol()->get_ssl())
     thread_stats->total_ssl_connections++;
   return 0;
 }
@@ -484,13 +504,14 @@ static int increment_count_by_id(my_thread_id id,
 */
 static int increment_connection_count(THD* thd, bool use_lock)
 {
-  char* user_string=         get_valid_user_string(thd->main_security_ctx.user);
+  const char* user_string=
+    get_valid_user_string(thd->m_main_security_ctx.user().str);
   const char* client_string= get_client_host(thd);
   int return_value=          0;
 
-  if (acl_is_utility_user(thd->security_ctx->user,
-                          thd->security_ctx->get_host()->ptr(),
-                          thd->security_ctx->get_ip()->ptr()))
+  if (acl_is_utility_user(thd->security_context()->user().str,
+			  thd->security_context()->host().str,
+			  thd->security_context()->ip().str))
     return return_value;
 
   if (use_lock)
@@ -578,15 +599,16 @@ static void update_global_thread_stats_with_thread(THD* thd,
 // Updates the global stats of a user or client
 void update_global_user_stats(THD* thd, bool create_user, time_t now)
 {
-  char* user_string=         get_valid_user_string(thd->main_security_ctx.user);
+  const char* user_string=
+    get_valid_user_string(thd->m_main_security_ctx.user().str);
   const char* client_string= get_client_host(thd);
 
   USER_STATS* user_stats;
   THREAD_STATS* thread_stats;
 
-  if (acl_is_utility_user(thd->security_ctx->user,
-                          thd->security_ctx->get_host()->ptr(),
-                          thd->security_ctx->get_ip()->ptr()))
+  if (acl_is_utility_user(thd->security_context()->user().str,
+			  thd->security_context()->host().str,
+			  thd->security_context()->ip().str))
     return;
 
   mysql_mutex_lock(&LOCK_global_user_client_stats);
@@ -726,7 +748,7 @@ end:
   mysql_mutex_unlock(&LOCK_user_conn);
   if (error)
   {
-    inc_host_errors(thd->main_security_ctx.get_ip()->ptr(), &errors);
+    inc_host_errors(thd->m_main_security_ctx.ip().str, &errors);
   }
   DBUG_RETURN(error);
 }
@@ -896,7 +918,8 @@ void init_max_user_conn(void)
   (void)
     my_hash_init(&hash_user_connections,system_charset_info,max_connections,
                  0,0, (my_hash_get_key) get_key_conn,
-                 (my_hash_free_key) free_user, 0);
+                 (my_hash_free_key) free_user, 0,
+                 key_memory_user_conn);
 #endif
 }
 
@@ -1031,17 +1054,17 @@ static int check_connection(THD *thd, bool extra_port_connection)
 {
   uint connect_errors= 0;
   int auth_rc;
-  NET *net= &thd->net;
-
+  NET *net= thd->get_protocol_classic()->get_net();
   DBUG_PRINT("info",
              ("New connection received on %s", vio_description(net->vio)));
 
   thd->set_active_vio(net->vio);
 
-  if (!thd->main_security_ctx.get_host()->length())     // If TCP/IP connection
+  if (!thd->m_main_security_ctx.host().length)     // If TCP/IP connection
   {
     my_bool peer_rc;
     char ip[NI_MAXHOST];
+    LEX_CSTRING main_sctx_ip;
 
     peer_rc= vio_peer_addr(net->vio, ip, &thd->peer_port, NI_MAXHOST);
 
@@ -1118,9 +1141,9 @@ static int check_connection(THD *thd, bool extra_port_connection)
       my_error(ER_BAD_HOST_ERROR, MYF(0));
       return 1;
     }
-    thd->main_security_ctx.set_ip(my_strdup(key_memory_Security_context,
-                                            ip, MYF(MY_WME)));
-    if (!(thd->main_security_ctx.get_ip()->length()))
+    thd->m_main_security_ctx.assign_ip(ip, strlen(ip));
+    main_sctx_ip= thd->m_main_security_ctx.ip();
+    if (!(main_sctx_ip.length))
     {
       /*
         No error accounting per IP in host_cache,
@@ -1130,59 +1153,71 @@ static int check_connection(THD *thd, bool extra_port_connection)
       connection_errors_internal++;
       return 1; /* The error is set by my_strdup(). */
     }
-    thd->main_security_ctx.host_or_ip= thd->main_security_ctx.get_ip()->ptr();
+    thd->m_main_security_ctx.set_host_or_ip_ptr(main_sctx_ip.str,
+                                                main_sctx_ip.length);
     if (!(specialflag & SPECIAL_NO_RESOLVE))
     {
       int rc;
-      char *host= (char *) thd->main_security_ctx.get_host()->ptr();
+      char *host;
+      LEX_CSTRING main_sctx_host;
 
       rc= ip_to_hostname(&net->vio->remote,
-                         thd->main_security_ctx.get_ip()->ptr(),
+                         main_sctx_ip.str,
                          &host, &connect_errors);
 
-      thd->main_security_ctx.set_host(host);
-      /* Cut very long hostnames to avoid possible overflows */
-      if (thd->main_security_ctx.get_host()->length())
+      thd->m_main_security_ctx.assign_host(host, host? strlen(host) : 0);
+      main_sctx_host= thd->m_main_security_ctx.host();
+      if (host && host != my_localhost)
       {
-        if (thd->main_security_ctx.get_host()->ptr() != my_localhost)
-          thd->main_security_ctx.set_host(thd->main_security_ctx.get_host()->ptr(),
-                       min<size_t>(thd->main_security_ctx.get_host()->length(),
-                       HOSTNAME_LENGTH));
-        thd->main_security_ctx.host_or_ip= thd->main_security_ctx.get_host()->ptr();
+        my_free(host);
+        host= (char *) main_sctx_host.str;
+      }
+
+      /* Cut very long hostnames to avoid possible overflows */
+      if (main_sctx_host.length)
+      {
+        if (main_sctx_host.str != my_localhost)
+          thd->m_main_security_ctx.set_host_ptr(
+            main_sctx_host.str,
+            min<size_t>(main_sctx_host.length, HOSTNAME_LENGTH));
+        thd->m_main_security_ctx.set_host_or_ip_ptr(main_sctx_host.str,
+                                                    main_sctx_host.length);
       }
 
       if (rc == RC_BLOCKED_HOST)
       {
         /* HOST_CACHE stats updated by ip_to_hostname(). */
-        my_error(ER_HOST_IS_BLOCKED, MYF(0), thd->main_security_ctx.host_or_ip);
+        my_error(ER_HOST_IS_BLOCKED, MYF(0),
+                 thd->m_main_security_ctx.host_or_ip().str);
         return 1;
       }
     }
     DBUG_PRINT("info",("Host: %s  ip: %s",
-           (thd->main_security_ctx.get_host()->length() ?
-                 thd->main_security_ctx.get_host()->ptr() : "unknown host"),
-           (thd->main_security_ctx.get_ip()->length() ?
-                 thd->main_security_ctx.get_ip()->ptr() : "unknown ip")));
-    if (acl_check_host(thd->main_security_ctx.get_host()->ptr(),
-                       thd->main_security_ctx.get_ip()->ptr()))
+           (thd->m_main_security_ctx.host().length ?
+              thd->m_main_security_ctx.host().str : "unknown host"),
+           (main_sctx_ip.length ? main_sctx_ip.str : "unknown ip")));
+    if (acl_check_host(thd->m_main_security_ctx.host().str, main_sctx_ip.str))
     {
       /* HOST_CACHE stats updated by acl_check_host(). */
       my_error(ER_HOST_NOT_PRIVILEGED, MYF(0),
-               thd->main_security_ctx.host_or_ip);
+               thd->m_main_security_ctx.host_or_ip().str);
       return 1;
     }
   }
   else /* Hostname given means that the connection was on a socket */
   {
-    DBUG_PRINT("info",("Host: %s", thd->main_security_ctx.get_host()->ptr()));
-    thd->main_security_ctx.host_or_ip= thd->main_security_ctx.get_host()->ptr();
-    thd->main_security_ctx.set_ip("");
+    LEX_CSTRING main_sctx_host= thd->m_main_security_ctx.host();
+    DBUG_PRINT("info",("Host: %s", main_sctx_host.str));
+    thd->m_main_security_ctx.set_host_or_ip_ptr(main_sctx_host.str,
+                                                main_sctx_host.length);
+    thd->m_main_security_ctx.set_ip_ptr(STRING_WITH_LEN(""));
     /* Reset sin_addr */
     memset(&net->vio->remote, 0, sizeof(net->vio->remote));
   }
   vio_keepalive(net->vio, TRUE);
 
-  if (thd->packet.alloc(thd->variables.net_buffer_length))
+  if (thd->get_protocol_classic()->get_packet()->alloc(
+      thd->variables.net_buffer_length))
   {
     /*
       Important note:
@@ -1199,7 +1234,7 @@ static int check_connection(THD *thd, bool extra_port_connection)
     return 1; /* The error is set by alloc(). */
   }
 
-  auth_rc= acl_authenticate(thd, 0, extra_port_connection);
+  auth_rc= acl_authenticate(thd, COM_CONNECT, extra_port_connection);
   if (auth_rc == 0 && connect_errors != 0)
   {
     /*
@@ -1207,7 +1242,7 @@ static int check_connection(THD *thd, bool extra_port_connection)
       after some previous failures.
       Reset the connection error counter.
     */
-    reset_host_connect_errors(thd->main_security_ctx.get_ip()->ptr());
+    reset_host_connect_errors(thd->m_main_security_ctx.ip().str);
   }
 
   return auth_rc;
@@ -1233,37 +1268,42 @@ static int check_connection(THD *thd, bool extra_port_connection)
 
 static bool login_connection(THD *thd, bool extra_port_connection)
 {
-  NET *net= &thd->net;
   int error;
   DBUG_ENTER("login_connection");
   DBUG_PRINT("info", ("login_connection called by thread %u",
                       thd->thread_id()));
 
   /* Use "connect_timeout" value during connection phase */
-  my_net_set_read_timeout(net, connect_timeout);
-  my_net_set_write_timeout(net, connect_timeout);
+  thd->get_protocol_classic()->set_read_timeout(connect_timeout);
+  thd->get_protocol_classic()->set_write_timeout(connect_timeout);
 
   error= check_connection(thd, extra_port_connection);
-  thd->protocol->end_statement();
+  thd->send_statement_status();
 
   if (error)
   {           // Wrong permissions
 #ifdef _WIN32
-    if (vio_type(net->vio) == VIO_TYPE_NAMEDPIPE)
+    if (vio_type(thd->get_protocol_classic()->get_vio()) ==
+        VIO_TYPE_NAMEDPIPE)
       my_sleep(1000);       /* must wait after eof() */
 #endif
     thd->diff_denied_connections++;
     DBUG_RETURN(1);
   }
   /* Connect completed, set read/write timeouts back to default */
-  my_net_set_read_timeout(net, thd->variables.net_read_timeout);
-  my_net_set_write_timeout(net, thd->variables.net_write_timeout);
+  thd->get_protocol_classic()->set_read_timeout(
+    thd->variables.net_read_timeout);
+  thd->get_protocol_classic()->set_write_timeout(
+    thd->variables.net_write_timeout);
 
-  thd->reset_stats();
+  if (unlikely(opt_userstat))
+  {
+    thd->reset_stats();
 
-  // Updates global user connection stats.
-  if (opt_userstat && increment_connection_count(thd, true))
-    DBUG_RETURN(1);
+    // Updates global user connection stats.
+    if (increment_connection_count(thd, true))
+      DBUG_RETURN(1);
+  }
 
   DBUG_RETURN(0);
 }
@@ -1278,7 +1318,7 @@ static bool login_connection(THD *thd, bool extra_port_connection)
 
 void end_connection(THD *thd)
 {
-  NET *net= &thd->net;
+  NET *net= thd->get_protocol_classic()->get_net();
   plugin_thdvar_cleanup(thd, thd->m_enable_plugins);
 
   /*
@@ -1298,13 +1338,13 @@ void end_connection(THD *thd)
   {
     if (!thd->killed)
     {
-      Security_context *sctx= thd->security_ctx;
-
+      Security_context *sctx= thd->security_context();
+      LEX_CSTRING sctx_user= sctx->user();
       sql_print_information(ER(ER_NEW_ABORTING_CONNECTION),
                             thd->thread_id(),
                             (thd->db().str ? thd->db().str : "unconnected"),
-                            sctx->user ? sctx->user : "unauthenticated",
-                            sctx->host_or_ip,
+                            sctx_user.str ? sctx_user.str : "unauthenticated",
+                            sctx->host_or_ip().str,
                             (thd->get_stmt_da()->is_error() ?
                              thd->get_stmt_da()->message_text() :
                              ER(ER_UNKNOWN_ERROR)));
@@ -1319,10 +1359,11 @@ void end_connection(THD *thd)
 
 static void prepare_new_connection_state(THD* thd)
 {
-  Security_context *sctx= thd->security_ctx;
+  NET *net= thd->get_protocol_classic()->get_net();
+  Security_context *sctx= thd->security_context();
 
-  if (thd->client_capabilities & CLIENT_COMPRESS)
-    thd->net.compress=1;        // Use compression
+  if (thd->get_protocol()->has_client_capability(CLIENT_COMPRESS))
+    net->compress=1;        // Use compression
 
   // Initializing session system variables.
   alloc_and_copy_thd_dynamic_variables(thd, true);
@@ -1337,20 +1378,20 @@ static void prepare_new_connection_state(THD* thd)
   thd->set_time();
   thd->init_for_queries();
 
-  if (opt_init_connect.length && !(sctx->master_access & SUPER_ACL))
+  if (opt_init_connect.length && !(sctx->check_access(SUPER_ACL)))
   {
     execute_init_command(thd, &opt_init_connect, &LOCK_sys_init_connect);
     if (thd->is_error())
     {
       Host_errors errors;
       ulong packet_length;
-      NET *net= &thd->net;
+      LEX_CSTRING sctx_user= sctx->user();
 
       sql_print_warning(ER(ER_NEW_ABORTING_CONNECTION),
                         thd->thread_id(),
                         thd->db().str ? thd->db().str : "unconnected",
-                        sctx->user ? sctx->user : "unauthenticated",
-                        sctx->host_or_ip, "init_connect command failed");
+                        sctx_user.str ? sctx_user.str : "unauthenticated",
+                        sctx->host_or_ip().str, "init_connect command failed");
       sql_print_warning("%s", thd->get_stmt_da()->message_text());
 
       thd->lex->set_current_select(0);
@@ -1366,14 +1407,14 @@ static void prepare_new_connection_state(THD* thd)
         my_error(ER_NEW_ABORTING_CONNECTION, MYF(0),
                  thd->thread_id(),
                  thd->db().str ? thd->db().str : "unconnected",
-                 sctx->user ? sctx->user : "unauthenticated",
-                 sctx->host_or_ip, "init_connect command failed");
+                 sctx_user.str ? sctx_user.str : "unauthenticated",
+                 sctx->host_or_ip().str, "init_connect command failed");
 
       thd->server_status&= ~SERVER_STATUS_CLEAR_SET;
-      thd->protocol->end_statement();
+      thd->send_statement_status();
       thd->killed = THD::KILL_CONNECTION;
       errors.m_init_connect= 1;
-      inc_host_errors(thd->main_security_ctx.get_ip()->ptr(), &errors);
+      inc_host_errors(thd->m_main_security_ctx.ip().str, &errors);
       return;
     }
 
@@ -1393,8 +1434,9 @@ bool thd_prepare_connection(THD *thd, bool extra_port_connection)
   if (rc)
     return rc;
 
-  MYSQL_CONNECTION_START(thd->thread_id(), &thd->security_ctx->priv_user[0],
-                         (char *) thd->security_ctx->host_or_ip);
+  MYSQL_CONNECTION_START(thd->thread_id(),
+                         (char *) &thd->security_context()->priv_user().str[0],
+                         (char *) thd->security_context()->host_or_ip().str);
 
   prepare_new_connection_state(thd);
   return FALSE;
@@ -1433,7 +1475,7 @@ void close_connection(THD *thd, uint sql_errno)
 
 bool thd_is_connection_alive(THD *thd)
 {
-  NET *net= &thd->net;
+  NET *net= thd->get_protocol_classic()->get_net();
   if (!net->error &&
       net->vio != 0 &&
       !(thd->killed == THD::KILL_CONNECTION))

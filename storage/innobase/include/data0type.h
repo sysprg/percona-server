@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -85,11 +85,14 @@ format (http://www.opengeospatial.org/standards/sfa).
 We use BLOB as underlying datatype for DATA_GEOMETRY and DATA_VAR_POINT
 while CHAR for DATA_POINT */
 #define DATA_GEOMETRY	14	/* geometry datatype of variable length */
+/* The following two are disabled temporarily, we won't create them in
+get_innobase_type_from_mysql_type().
+TODO: We will enable DATA_POINT/them when we come to the fixed-length POINT
+again. */
 #define DATA_POINT	15	/* geometry datatype of fixed length POINT */
 #define DATA_VAR_POINT	16	/* geometry datatype of variable length
 				POINT, used when we want to store POINT
 				as BLOB internally */
-
 #define DATA_MTYPE_MAX	63	/* dtype_store_for_order_and_null_size()
 				requires the values are <= 63 */
 
@@ -191,6 +194,8 @@ be less than 256 */
 				type when the column is true VARCHAR where
 				MySQL uses 2 bytes to store the data len;
 				for shorter VARCHARs MySQL uses only 1 byte */
+#define	DATA_VIRTUAL	8192	/* Virtual column */
+
 /*-------------------------------------------*/
 
 /* This many bytes we need to store the type information affecting the
@@ -268,7 +273,6 @@ Determine how many bytes the first n characters of the given string occupy.
 If the string is shorter than n characters, returns the number of bytes
 the characters in the string occupy.
 @return length of the prefix, in bytes */
-
 ulint
 dtype_get_at_most_n_mbchars(
 /*========================*/
@@ -286,7 +290,6 @@ dtype_get_at_most_n_mbchars(
 Checks if a data main type is a string type. Also a BLOB is considered a
 string type.
 @return TRUE if string type */
-
 ibool
 dtype_is_string_type(
 /*=================*/
@@ -296,7 +299,6 @@ Checks if a type is a binary string type. Note that for tables created with
 < 4.0.14, we do not know if a DATA_BLOB column is a BLOB or a TEXT column. For
 those DATA_BLOB columns this function currently returns FALSE.
 @return TRUE if binary string type */
-
 ibool
 dtype_is_binary_string_type(
 /*========================*/
@@ -308,7 +310,6 @@ TRUE and dtype_is_binary_string_type is FALSE. Note that for tables created
 with < 4.0.14, we do not know if a DATA_BLOB column is a BLOB or a TEXT column.
 For those DATA_BLOB columns this function currently returns TRUE.
 @return TRUE if non-binary string type */
-
 ibool
 dtype_is_non_binary_string_type(
 /*============================*/
@@ -373,7 +374,6 @@ dtype_get_charset_coll(
 Forms a precise type from the < 4.1.2 format precise type plus the
 charset-collation code.
 @return precise type, including the charset-collation code */
-
 ulint
 dtype_form_prtype(
 /*==============*/
@@ -532,14 +532,12 @@ dtype_sql_name(
 /*********************************************************************//**
 Validates a data type structure.
 @return TRUE if ok */
-
 ibool
 dtype_validate(
 /*===========*/
 	const dtype_t*	type);	/*!< in: type struct to validate */
 /*********************************************************************//**
 Prints a data type structure. */
-
 void
 dtype_print(
 /*========*/

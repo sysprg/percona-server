@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -29,52 +29,38 @@ case "$1" in
 
 	if [ -z "$2" ];
 	then
+
 		set -e
 
 		MYSQLDATA=/var/lib/mysql
+		MYSQLFILES=/var/lib/mysql-files
 
-		if [ ! -d "${MYSQLDATA}/mysql" -a ! -L "${MYSQLDATA}/mysql" ];
+		if [ ! "$(ls -A ${MYSQLDATA})" ] && [ -d ${MYSQLFILES} ];
 		then
-			mkdir ${MYSQLDATA}/mysql
-			chown mysql:mysql ${MYSQLDATA}/mysql
-			chmod 700 ${MYSQLDATA}/mysql
-			if [ ! "$(ls -A ${MYSQLDATA}/mysql)" ];
+			db_get mysql-community-server/root-pass && PASSWD=${RET}
+			if [ ! -z "${PASSWD}" ];
 			then
-				mysql_install_db --user=mysql --skip-random-passwords > /dev/null
-				if [ -f "/usr/my.cnf" ];
-				then
-					rm -f /usr/my.cnf
-				fi
-			fi
-		fi
+				SQL=/var/lib/mysql-files/SQL
+				touch ${SQL}
+				chmod 600 ${SQL}
+				chown mysql:mysql ${SQL}
 
-		db_get mysql-community-server/remove-test-db && RMTESTDB=${RET}
-		if [ -z "${RMTESTDB}" ] || [ "${RMTESTDB}" = "false" ];
-		then
-			RMTESTDB="DROP DATABASE IF EXISTS test;"
-		else
-			RMTESTDB=""
-		fi
-
-		db_get mysql-community-server/root-pass && PASSWD=${RET}
-		if [ ! -z "${PASSWD}" ];
-		then
-			db_set mysql-community-server/root-pass ""
-			db_set mysql-community-server/re-root-pass ""
-			SQL=`mktemp`
-			if [ -f "${SQL}" ];
-			then
-				chmod 700 ${SQL}
+				db_set mysql-community-server/root-pass ""
+				db_set mysql-community-server/re-root-pass ""
 				cat << EOF > ${SQL}
 USE mysql;
-UPDATE user SET password=PASSWORD("${PASSWD}") WHERE user='root';
-DELETE FROM user WHERE user='';
-${RMTESTDB}
-FLUSH PRIVILEGES;
+UPDATE user SET authentication_string=PASSWORD('${PASSWD}') WHERE user='root';
 EOF
-				mysqld --basedir=/usr --bootstrap --user=mysql --skip-grant-tables < $SQL
 				PASSWD=""
+				su - mysql -s /bin/bash -c "/usr/sbin/mysqld --initialize-insecure=on --init-file=${SQL} 2>&1 > /dev/null"
 				rm -f ${SQL}
+			else
+				su - mysql -s /bin/bash -c "/usr/sbin/mysqld --initialize-insecure=on 2>&1 > /dev/null"
+				su - mysql -s /bin/bash -c "/usr/sbin/mysqld --log_error_verbosity=2 2>&1 > /dev/null &"
+				while [ ! -e $(my_print_defaults mysqld | grep pid-file | cut -d= -f2) ]; do sleep 1; done
+				mysql -e "INSTALL PLUGIN auth_socket SONAME 'auth_socket.so'"
+				mysql -e "USE mysql; UPDATE user SET plugin='auth_socket' WHERE user='root'"
+				mysqladmin shutdown
 			fi
 		fi
 

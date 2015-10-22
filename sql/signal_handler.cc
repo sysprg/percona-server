@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,6 +20,7 @@
 #include "my_stacktrace.h"
 #include "connection_handler_manager.h"  // Connection_handler_manager
 #include "mysqld_thd_manager.h"          // Global_THD_manager
+#include "sql_class.h"
 
 #ifdef _WIN32
 #include <crtdbg.h>
@@ -57,7 +58,7 @@ extern "C" void handle_fatal_signal(int sig)
   if (segfaulted)
   {
     my_safe_printf_stderr("Fatal " SIGNAL_FMT " while backtracing\n", sig);
-    _exit(1); /* Quit without running destructors */
+    _exit(MYSQLD_FAILURE_EXIT); /* Quit without running destructors */
   }
 
   segfaulted = 1;
@@ -95,9 +96,9 @@ extern "C" void handle_fatal_signal(int sig)
     "or misconfigured. This error can also be caused by malfunctioning hardware.\n");
 
   my_safe_printf_stderr("%s",
-    "We will try our best to scrape up some info that will hopefully help\n"
-    "diagnose the problem, but since we have already crashed, \n"
-    "something is definitely wrong and this may fail.\n"
+    "Attempting to collect some information that could help diagnose the problem.\n"
+    "As this is a crash and something is definitely wrong, the information\n"
+    "collection process might fail.\n"
     "Please help us make Percona Server better by reporting any\n"
     "bugs at http://bugs.percona.com/\n\n");
 
@@ -136,7 +137,7 @@ extern "C" void handle_fatal_signal(int sig)
     "Hope that's ok; if not, decrease some variables in the equation.\n\n");
 
 #ifdef HAVE_STACKTRACE
-  THD *thd= my_pthread_get_THR_THD();
+  THD *thd= my_thread_get_THR_THD();
 
   if (!(test_flags & TEST_NO_STACKTRACE))
   {
@@ -227,6 +228,6 @@ extern "C" void handle_fatal_signal(int sig)
      Quit, without running destructors (etc.)
      On Windows, do not terminate, but pass control to exception filter.
   */
-  _exit(1);  // Using _exit(), since exit() is not async signal safe
+  _exit(MYSQLD_FAILURE_EXIT);  // Using _exit(), since exit() is not async signal safe
 #endif
 }

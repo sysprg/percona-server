@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2013, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -31,6 +31,7 @@ Created 2/17/1996 Heikki Tuuri
 #include "rem0types.h"
 #include "page0types.h"
 #include "sync0rw.h"
+#include "page0size.h"
 
 /** Persistent cursor */
 struct btr_pcur_t;
@@ -39,47 +40,21 @@ struct btr_cur_t;
 /** B-tree search information for the adaptive hash index */
 struct btr_search_t;
 
-#ifndef UNIV_HOTBACKUP
-
-/** @brief The array of latches protecting the adaptive search partitions
-
-These latches protect the
-(1) hash index from the corresponding AHI partition;
-(2) columns of a record to which we have a pointer in the hash index;
-
-but do NOT protect:
-
-(3) next record offset field in a record;
-(4) next or previous records on the same page.
-
-Bear in mind (3) and (4) when using the hash indexes.
-*/
-
-extern rw_lock_t*	btr_search_latch_arr;
-
-#endif /* UNIV_HOTBACKUP */
-
-/** Flag: has the search system been enabled?
-Writes are protected by latching all the AHI search latches, reads are
-protected by latching any single one of them. */
+/** Is search system enabled.
+Search system is protected by array of latches. */
 extern char	btr_search_enabled;
 
-/** Number of adaptive hash index partitions */
-extern ulint	btr_search_index_num;
+/** Number of adaptive hash index partition. */
+extern ulong	btr_ahi_parts;
 
 /** The size of a reference to data stored on a different page.
 The reference is stored at the end of the prefix of the field
 in the index record. */
-#define BTR_EXTERN_FIELD_REF_SIZE	20
+#define BTR_EXTERN_FIELD_REF_SIZE	FIELD_REF_SIZE
 
 /** If the data don't exceed the size, the data are stored locally. */
 #define BTR_EXTERN_LOCAL_STORED_MAX_SIZE	\
 	(BTR_EXTERN_FIELD_REF_SIZE * 2)
-
-/** A BLOB field reference full of zero, for use in assertions and tests.
-Initially, BLOB field references are set to zero, in
-dtuple_convert_big_rec(). */
-extern const byte field_ref_zero[BTR_EXTERN_FIELD_REF_SIZE];
 
 /** The information is used for creating a new index tree when
 applying TRUNCATE log record during recovery */

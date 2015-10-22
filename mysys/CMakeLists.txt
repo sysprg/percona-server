@@ -1,4 +1,4 @@
-# Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -34,7 +34,7 @@ SET(MYSYS_SOURCES  array.c charset-def.c charset.c checksum.c
 				thr_rwlock.c tree.c typelib.c base64.c my_memmem.c
 				lf_alloc-pin.c lf_dynarray.c lf_hash.c
 				my_rdtsc.c psi_noop.c my_syslog.c
-				my_chmod.c)
+				my_chmod.c my_thread.c)
 
 IF (WIN32)
   LIST(APPEND MYSYS_SOURCES
@@ -42,7 +42,7 @@ IF (WIN32)
     my_windac.c
     my_winerr.c
     my_winfile.c
-    my_winthread.c
+    win_timers.c
   )
 ENDIF()
 
@@ -52,10 +52,6 @@ ENDIF()
 
 IF(HAVE_KQUEUE_TIMERS)
   SET(MYSYS_SOURCES ${MYSYS_SOURCES} kqueue_timers.c)
-ENDIF()
-
-IF(HAVE_WINDOWS_TIMERS)
-  SET(MYSYS_SOURCES ${MYSYS_SOURCES} win_timers.c)
 ENDIF()
 
 IF(CMAKE_SYSTEM_NAME MATCHES "SunOS" AND CMAKE_C_COMPILER_ID MATCHES "SunPro")
@@ -86,7 +82,19 @@ TARGET_LINK_LIBRARIES(queues mysys)
 SET_TARGET_PROPERTIES(queues PROPERTIES COMPILE_FLAGS "-DMAIN")
 ADD_TEST(queues_test queues)
 
+ADD_EXECUTABLE(base64_test base64.c)
+SET_TARGET_PROPERTIES(base64_test PROPERTIES COMPILE_FLAGS "-DMAIN")
+TARGET_LINK_LIBRARIES(base64_test mysys)
+
 IF(MSVC)
    INSTALL_DEBUG_TARGET(mysys DESTINATION ${INSTALL_LIBDIR}/debug)
 ENDIF()
 
+MY_CHECK_CXX_COMPILER_FLAG("-Wno-deprecated-declarations" HAVE_NO_DEPREC_CONST)
+
+IF(CMAKE_GENERATOR MATCHES "Xcode" AND HAVE_NO_DEPREC_CONST)
+  INCLUDE(${MYSQL_CMAKE_SCRIPT_DIR}/compile_flags.cmake)
+  ADD_COMPILE_FLAGS(
+    stacktrace.c
+    COMPILE_FLAGS -Wno-deprecated-declarations)
+ENDIF()

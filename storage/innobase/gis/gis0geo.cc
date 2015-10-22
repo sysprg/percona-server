@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2013, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2013, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -23,6 +23,7 @@ InnoDB R-tree related functions.
 Created 2013/03/27 Allen Lai and Jimmy Yang
 *******************************************************/
 
+#include "page0types.h"
 #include "gis0geo.h"
 #include "page0cur.h"
 #include "ut0rnd.h"
@@ -363,6 +364,11 @@ mbr_join_square(
 		b += 2;
 	} while (a != end);
 
+	/* Check for infinity or NaN, so we don't get NaN in calculations */
+	if (my_isinf(square) || my_isnan(square)) {
+		return DBL_MAX;
+	}
+
 	return square;
 }
 
@@ -419,6 +425,9 @@ pick_seeds(
 
 	double			max_d = -DBL_MAX;
 	double			d;
+
+	*seed_a = node;
+	*seed_b = node + 1;
 
 	for (cur1 = node; cur1 < lim1; ++cur1) {
 		for (cur2 = cur1 + 1; cur2 < lim2; ++cur2) {
@@ -612,7 +621,7 @@ Return 0 on success, otherwise 1. */
 int
 rtree_key_cmp(
 /*==========*/
-	int		mode,	/*!< in: compare method. */
+	page_cur_mode_t	mode,	/*!< in: compare method. */
 	const uchar*	b,	/*!< in: first key. */
 	int		b_len,	/*!< in: first key len. */
 	const uchar*	a,	/*!< in: second key. */
@@ -724,7 +733,7 @@ rtree_area_increase(
 		are ignored. For example: 3.2884281489988079e+284 - 100 =
 		3.2884281489988079e+284. This results some area difference
 		are not detected */
-		if (loc_ab_area == a_area) { 
+		if (loc_ab_area == a_area) {
 			if (bmin < amin || bmax > amax) {
 				data_round *= ((double)std::max(amax, bmax)
 					       - amax
@@ -746,6 +755,49 @@ rtree_area_increase(
 	}
 
 	return(loc_ab_area - a_area);
+}
+
+/** Calculates overlapping area
+@param[in]	a	mbr a
+@param[in]	b	mbr b
+@param[in]	mbr_len	mbr length
+@return overlapping area */
+double
+rtree_area_overlapping(
+	const uchar*	a,
+	const uchar*	b,
+	int		mbr_len)
+{
+	double	area = 1.0;
+	double	amin;
+	double	amax;
+	double	bmin;
+	double	bmax;
+	int	key_len;
+	int	keyseg_len;
+
+	keyseg_len = 2 * sizeof(double);
+
+	for (key_len = mbr_len; key_len > 0; key_len -= keyseg_len) {
+		amin = mach_double_read(a);
+		bmin = mach_double_read(b);
+		amax = mach_double_read(a + sizeof(double));
+		bmax = mach_double_read(b + sizeof(double));
+
+		amin = std::max(amin, bmin);
+		amax = std::min(amax, bmax);
+
+		if (amin > amax) {
+			return(0);
+		} else {
+			area *= (amax - amin);
+		}
+
+		a += keyseg_len;
+		b += keyseg_len;
+	}
+
+	return(area);
 }
 
 /** Get the wkb of default POINT value, which represents POINT(0 0)

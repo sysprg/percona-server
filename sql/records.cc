@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,8 +20,6 @@
   Functions for easy reading of records, possible through a cache
 */
 
-#include "records.h"
-#include "sql_priv.h"
 #include "records.h"
 #include "sql_list.h"
 #include "filesort.h"            // filesort_free_buffers
@@ -273,7 +271,7 @@ bool init_read_record(READ_RECORD *info,THD *thd,
         info->ref_length <= MAX_REFLENGTH)
     {
       if (init_rr_cache(thd, info))
-        DBUG_RETURN(true);
+        goto skip_caching;
       DBUG_PRINT("info",("using rr_from_cache"));
       info->read_record=rr_from_cache;
     }
@@ -325,6 +323,8 @@ bool init_read_record(READ_RECORD *info,THD *thd,
       (void) table->file->extra_opt(HA_EXTRA_CACHE,
 				  thd->variables.read_buff_size);
   }
+
+skip_caching:
   /* 
     Do condition pushdown for UPDATE/DELETE.
     TODO: Remove this from here as it causes two condition pushdown calls 
@@ -401,6 +401,7 @@ static int rr_quick(READ_RECORD *info)
       break;
     }
   }
+
   return tmp;
 }
 
@@ -595,7 +596,7 @@ static int rr_unpack_from_tempfile(READ_RECORD *info)
 {
   uchar *destination= info->rec_buf;
 #ifndef DBUG_OFF
-  size_t where= my_b_tell(info->io_cache);
+  my_off_t where= my_b_tell(info->io_cache);
 #endif
   if (Packed_addon_fields)
   {
@@ -672,7 +673,8 @@ static int rr_unpack_from_buffer(READ_RECORD *info)
   if (info->unpack_counter == info->table->sort.found_records)
     return -1;                      /* End of buffer */
 
-  uchar *record= info->table->sort.get_sorted_record(info->unpack_counter);
+  uchar *record= info->table->sort.get_sorted_record(
+    static_cast<uint>(info->unpack_counter));
   uchar *plen= record + info->table->sort.get_sort_length();
   info->table->sort.unpack_addon_fields<Packed_addon_fields>(plen);
   info->unpack_counter++;
@@ -680,11 +682,20 @@ static int rr_unpack_from_buffer(READ_RECORD *info)
 }
 	/* cacheing of records from a database */
 
+/**
+  Initialize caching of records from temporary file.
+  
+  @retval
+    0 OK, use caching.
+    1 Buffer is too small, or cannot be allocated.
+      Skip caching, and read records directly from temporary file.
+ */
 static int init_rr_cache(THD *thd, READ_RECORD *info)
 {
   uint rec_cache_size;
   DBUG_ENTER("init_rr_cache");
 
+  READ_RECORD info_copy= *info;
   info->struct_length= 3+MAX_REFLENGTH;
   info->reclength= ALIGN_SIZE(info->table->s->reclength+1);
   if (info->reclength < info->struct_length)
@@ -701,8 +712,10 @@ static int init_rr_cache(THD *thd, READ_RECORD *info)
                                        rec_cache_size+info->cache_records*
                                        info->struct_length,
                                        MYF(0))))
+  {
+    *info= info_copy;
     DBUG_RETURN(1);
-
+  }
   DBUG_PRINT("info",("Allocated buffert for %d records",info->cache_records));
   info->read_positions=info->cache+rec_cache_size;
   info->cache_pos=info->cache_end=info->cache;

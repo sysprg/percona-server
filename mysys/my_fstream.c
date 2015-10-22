@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,9 +14,12 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "mysys_err.h"
 #include <errno.h>
 #include <stdio.h>
+#include "my_thread_local.h"
+
 
 #ifdef HAVE_FSEEKO
 #undef ftell
@@ -55,7 +58,7 @@ size_t my_fread(FILE *stream, uchar *Buffer, size_t Count, myf MyFlags)
       if (ferror(stream))
       {
         char errbuf[MYSYS_STRERROR_SIZE];
-        my_error(EE_READ, MYF(ME_BELL+ME_WAITTANG),
+        my_error(EE_READ, MYF(0),
                  my_filename(my_fileno(stream)),
                  errno, my_strerror(errbuf, sizeof(errbuf), errno));
       }
@@ -63,7 +66,7 @@ size_t my_fread(FILE *stream, uchar *Buffer, size_t Count, myf MyFlags)
       if (MyFlags & (MY_NABP | MY_FNABP))
       {
         char errbuf[MYSYS_STRERROR_SIZE];
-        my_error(EE_EOFERR, MYF(ME_BELL+ME_WAITTANG),
+        my_error(EE_EOFERR, MYF(0),
                  my_filename(my_fileno(stream)), errno,
                  my_strerror(errbuf, sizeof(errbuf), errno));
       }
@@ -128,7 +131,7 @@ size_t my_fwrite(FILE *stream, const uchar *Buffer, size_t Count, myf MyFlags)
         if (MyFlags & (MY_WME | MY_FAE | MY_FNABP))
         {
           char errbuf[MYSYS_STRERROR_SIZE];
-          my_error(EE_WRITE, MYF(ME_BELL+ME_WAITTANG),
+          my_error(EE_WRITE, MYF(0),
                    my_filename(my_fileno(stream)),
                    errno, my_strerror(errbuf, sizeof(errbuf), errno));
         }

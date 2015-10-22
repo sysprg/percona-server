@@ -1,4 +1,4 @@
-/* Copyright (c) 2003, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2003, 2015, Oracle and/or its affiliates. All rights reserved.
    
    This library is free software; you can redistribute it and/or
    modify it under the terms of the GNU Library General Public
@@ -38,13 +38,12 @@
 #define EILSEQ ENOENT
 #endif
 
-#undef  ULONGLONG_MAX
 #define ULONGLONG_MAX                (~(ulonglong) 0)
-#define MAX_NEGATIVE_NUMBER        ((ulonglong) LL(0x8000000000000000))
+#define MAX_NEGATIVE_NUMBER        ((ulonglong) 0x8000000000000000LL)
 #define INIT_CNT  9
-#define LFACTOR   ULL(1000000000)
-#define LFACTOR1  ULL(10000000000)
-#define LFACTOR2  ULL(100000000000)
+#define LFACTOR   1000000000ULL
+#define LFACTOR1  10000000000ULL
+#define LFACTOR2  100000000000ULL
 
 #ifdef HAVE_CHARSET_mb2_or_mb4
 static unsigned long lfactor[9]=
@@ -399,16 +398,16 @@ bs:
   
   if (negative)
   {
-    if (res  > (ulonglong) LONGLONG_MIN)
+    if (res  > (ulonglong) LLONG_MIN)
       overflow = 1;
   }
-  else if (res > (ulonglong) LONGLONG_MAX)
+  else if (res > (ulonglong) LLONG_MAX)
     overflow = 1;
   
   if (overflow)
   {
     err[0]=ERANGE;
-    return negative ? LONGLONG_MIN : LONGLONG_MAX;
+    return negative ? LLONG_MIN : LLONG_MAX;
   }
   
   return (negative ? -((longlong)res) : (longlong)res);
@@ -606,7 +605,7 @@ my_l10tostr_mb2_or_mb4(const CHARSET_INFO *cs,
     if (val < 0)
     {
       sl= 1;
-      /* Avoid integer overflow in (-val) for LONGLONG_MIN (BUG#31799). */
+      /* Avoid integer overflow in (-val) for LLONG_MIN (BUG#31799). */
       uval  = (unsigned long int)0 - uval;
     }
   }
@@ -654,7 +653,7 @@ my_ll10tostr_mb2_or_mb4(const CHARSET_INFO *cs,
     if (val < 0)
     {
       sl= 1;
-      /* Avoid integer overflow in (-val) for LONGLONG_MIN (BUG#31799). */
+      /* Avoid integer overflow in (-val) for LLONG_MIN (BUG#31799). */
       uval = (ulonglong)0 - uval;
     }
   }
@@ -873,7 +872,7 @@ my_strtoll10_mb2(const CHARSET_INFO *cs,
 
 overflow:                                        /* *endptr is set here */
   *error= MY_ERRNO_ERANGE;
-  return negative ? LONGLONG_MIN : (longlong) ULONGLONG_MAX;
+  return negative ? LLONG_MIN : (longlong) ULONGLONG_MAX;
 
 end_i:
   *endptr= (char*) s;
@@ -2490,7 +2489,7 @@ my_strtoll10_utf32(const CHARSET_INFO *cs __attribute__((unused)),
 
 overflow:                                        /* *endptr is set here */
   *error= MY_ERRNO_ERANGE;
-  return negative ? LONGLONG_MIN : (longlong) ULONGLONG_MAX;
+  return negative ? LLONG_MIN : (longlong) ULONGLONG_MAX;
 
 end_i:
   *endptr= (char*) s;
@@ -2576,19 +2575,17 @@ void my_fill_utf32(const CHARSET_INFO *cs,
                    char *s, size_t slen, int fill)
 {
   char buf[10];
-#ifndef DBUG_OFF
-  uint buflen;
-#endif
   char *e= s + slen;
 
   DBUG_ASSERT((slen % 4) == 0);
-
+  {
 #ifndef DBUG_OFF
-  buflen=
+    uint buflen=
 #endif
-    cs->cset->wc_mb(cs, (my_wc_t) fill, (uchar*) buf,
-                          (uchar*) buf + sizeof(buf));
-  DBUG_ASSERT(buflen == 4);
+      cs->cset->wc_mb(cs, (my_wc_t) fill, (uchar*) buf,
+                      (uchar*) buf + sizeof(buf));
+    DBUG_ASSERT(buflen == 4);
+  }
   while (s < e)
   {
     memcpy(s, buf, 4);

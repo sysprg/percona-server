@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -43,10 +43,6 @@ struct PFS_events_statements : public PFS_events
   char m_current_schema_name[NAME_LEN];
   /** Length of @c m_current_schema_name. */
   uint m_current_schema_name_length;
-  /** SQL_TEXT */
-  char m_sqltext[COL_INFO_SIZE];
-  /** Length of @ m_info. */
-  uint m_sqltext_length;
 
   /** Locked time. */
   ulonglong m_lock_time;
@@ -94,7 +90,20 @@ struct PFS_events_statements : public PFS_events
   ulonglong m_no_index_used;
   /** Optimizer metric, number of 'no good index used'. */
   ulonglong m_no_good_index_used;
-  /** Statement digest. */
+
+  /**
+    SQL_TEXT.
+    This pointer is immutable,
+    and always point to pre allocated memory.
+  */
+  char *m_sqltext;
+  /** Length of @ m_info. */
+  uint m_sqltext_length;
+  /**
+    Statement digest.
+    This underlying token array storage pointer is immutable,
+    and always point to pre allocated memory.
+  */
   sql_digest_storage m_digest_storage;
 };
 
@@ -110,9 +119,9 @@ extern bool flag_events_statements_history_long;
 extern bool events_statements_history_long_full;
 extern PFS_ALIGNED PFS_cacheline_uint32 events_statements_history_long_index;
 extern PFS_events_statements *events_statements_history_long_array;
-extern ulong events_statements_history_long_size;
+extern size_t events_statements_history_long_size;
 
-int init_events_statements_history_long(uint events_statements_history_long_sizing);
+int init_events_statements_history_long(size_t events_statements_history_long_sizing);
 void cleanup_events_statements_history_long();
 
 void reset_events_statements_current();

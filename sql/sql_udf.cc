@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -27,15 +27,13 @@
    dynamic functions, so this shouldn't be a real problem.
 */
 
-#include "sql_priv.h"
-#include "unireg.h"
 #include "sql_base.h"                           // close_mysql_tables
-#include "sql_parse.h"                        // check_identifier_name
+#include "sql_parse.h"                        // check_string_char_length
 #include "sql_table.h"                        // write_bin_log
 #include "records.h"          // init_read_record, end_read_record
-#include <my_pthread.h>
 #include "lock.h"                               // MYSQL_LOCK_IGNORE_TIMEOUT
 #include "log.h"
+#include "sql_plugin.h"                         // check_valid_path
 
 #ifdef HAVE_DLFCN_H
 #include <dlfcn.h>
@@ -158,7 +156,8 @@ void udf_init()
   init_sql_alloc(key_memory_udf_mem, &mem, UDF_ALLOC_BLOCK_SIZE, 0);
   THD *new_thd = new THD;
   if (!new_thd ||
-      my_hash_init(&udf_hash,system_charset_info,32,0,0,get_hash_key, NULL, 0))
+      my_hash_init(&udf_hash,system_charset_info,32,0,0,get_hash_key, NULL, 0,
+                   key_memory_udf_mem))
   {
     sql_print_error("Can't allocate memory for udf structures");
     my_hash_free(&udf_hash);
@@ -176,7 +175,7 @@ void udf_init()
 
   tables.init_one_table(db, sizeof(db)-1, "func", 4, "func", TL_READ);
 
-  if (open_and_lock_tables(new_thd, &tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (open_and_lock_tables(new_thd, &tables, MYSQL_LOCK_IGNORE_TIMEOUT))
   {
     DBUG_PRINT("error",("Can't open udf table"));
     sql_print_error("Can't open the mysql.func table. Please "
@@ -624,7 +623,7 @@ int mysql_drop_function(THD *thd,const LEX_STRING *udf_name)
   table->use_all_columns();
   table->field[0]->store(exact_name_str, exact_name_len, &my_charset_bin);
   if (!table->file->ha_index_read_idx_map(table->record[0], 0,
-                                          (uchar*) table->field[0]->ptr,
+                                          table->field[0]->ptr,
                                           HA_WHOLE_KEY,
                                           HA_READ_KEY_EXACT))
   {

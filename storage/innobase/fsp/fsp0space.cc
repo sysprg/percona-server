@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2013, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2013, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -30,11 +30,12 @@ Created 2012-11-16 by Sunny Bains as srv/srv0space.cc
 #include "fsp0fsp.h"
 #include "os0file.h"
 
+#include "my_sys.h"
+
 
 /** Check if two tablespaces have common data file names.
 @param other_space	Tablespace to check against this.
 @return true if they have the same data filenames and paths */
-
 bool
 Tablespace::intersection(
 	const Tablespace*	other_space)
@@ -55,7 +56,6 @@ Tablespace::intersection(
 }
 
 /** Frees the memory allocated by the SysTablespace object. */
-
 void
 Tablespace::shutdown()
 {
@@ -70,9 +70,8 @@ Tablespace::shutdown()
 	m_space_id = ULINT_UNDEFINED;
 }
 
-/**
+/** Get the sum of the file sizes of each Datafile in a tablespace
 @return ULINT_UNDEFINED if the size is invalid else the sum of sizes */
-
 ulint
 Tablespace::get_sum_of_sizes() const
 {
@@ -101,7 +100,6 @@ Tablespace::get_sum_of_sizes() const
 
 /** Note that the data file was found.
 @param[in,out] file	Data file object to set */
-
 void
 Tablespace::file_found(Datafile& file)
 {
@@ -117,7 +115,6 @@ Tablespace::file_found(Datafile& file)
 /** Open or Create the data files if they do not exist.
 @param[in]	is_temp	whether this is a temporary tablespace
 @return DB_SUCCESS or error code */
-
 dberr_t
 Tablespace::open_or_create(bool is_temp)
 {
@@ -151,16 +148,17 @@ Tablespace::open_or_create(bool is_temp)
 			break;
 		}
 
+		bool	atomic_write;
+
 #if !defined(NO_FALLOCATE) && defined(UNIV_LINUX)
-		/* Note: This should really be per node and not per
-		tablespace because a tablespace can contain multiple
-		files (nodes). The implication is that all files of
-		the tablespace should be on the same medium. */
-
 		if (!srv_use_doublewrite_buf) {
-			fil_fusionio_enable_atomic_write(it->m_handle);
+			atomic_write = fil_fusionio_enable_atomic_write(
+				it->m_handle);
+		} else {
+			atomic_write = false;
 		}
-
+#else
+		atomic_write = false;
 #endif /* !NO_FALLOCATE && UNIV_LINUX */
 
 		/* We can close the handle now and open the tablespace
@@ -172,12 +170,12 @@ Tablespace::open_or_create(bool is_temp)
 
 			ulint	flags;
 
-			flags = fsp_flags_set_page_size(0, UNIV_PAGE_SIZE);
+			flags = fsp_flags_set_page_size(0, univ_page_size);
 
 			/* Create the tablespace entry for the multi-file
 			tablespace in the tablespace manager. */
 			space = fil_space_create(
-				it->m_filepath, m_space_id, flags, is_temp
+				m_name, m_space_id, flags, is_temp
 				? FIL_TYPE_TEMPORARY : FIL_TYPE_TABLESPACE);
 		}
 
@@ -185,7 +183,9 @@ Tablespace::open_or_create(bool is_temp)
 
 		/* Create the tablespace node entry for this data file. */
 		if (!fil_node_create(
-			    it->m_filepath, it->m_size, space, false)) {
+			    it->m_filepath, it->m_size, space, false,
+			    atomic_write)) {
+
 		       err = DB_ERROR;
 		       break;
 		}
@@ -194,9 +194,8 @@ Tablespace::open_or_create(bool is_temp)
 	return(err);
 }
 
-/**
+/** Find a filename in the list of Datafiles for a tablespace
 @return true if the filename exists in the data files */
-
 bool
 Tablespace::find(const char* filename)
 {
@@ -214,7 +213,6 @@ Tablespace::find(const char* filename)
 
 
 /** Delete all the data files. */
-
 void
 Tablespace::delete_files()
 {
@@ -244,4 +242,50 @@ Tablespace::is_undo_tablespace(
 	return(id <= srv_undo_tablespaces_open
 	       && id != srv_sys_space.space_id()
 	       && id != srv_tmp_space.space_id());
+}
+
+/** Use the ADD DATAFILE path to create a Datafile object and add it to the
+front of m_files.
+Parse the datafile path into a path and a filename with extension 'ibd'.
+This datafile_path provided may or may not be an absolute path, but it
+must end with the extension .ibd and have a basename of at least 1 byte.
+
+Set tablespace m_path member and add a Datafile with the filename.
+@param[in]	datafile_path	full path of the tablespace file. */
+dberr_t
+Tablespace::add_datafile(
+	const char*	datafile_added)
+{
+	/* The path provided ends in ".ibd".  This was assured by
+	validate_create_tablespace_info() */
+	ut_d(const char* dot = strrchr(datafile_added, '.'));
+	ut_ad(dot != NULL && 0 == strcmp(dot, DOT_IBD));
+
+	char* filepath = mem_strdup(datafile_added);
+	os_normalize_path(filepath);
+
+	/* If the path is an absolute path, separate it onto m_path and a
+	basename. For relative paths, make the whole thing a basename so that
+	it can be appended to the datadir. */
+	bool	is_abs_path = is_absolute_path(filepath);
+	size_t	dirlen = (is_abs_path ? dirname_length(filepath) : 0);
+	const char* basename = filepath + dirlen;
+
+	/* If the pathname contains a directory separator, fill the
+	m_path member which is the default directory for files in this
+	tablespace. Leave it null otherwise. */
+	if (dirlen > 0) {
+		set_path(filepath, dirlen);
+	}
+
+	/* Now add a new Datafile and set the filepath
+	using the m_path created above. */
+	m_files.push_back(Datafile(m_name, m_flags,
+				   FIL_IBD_FILE_INITIAL_SIZE, 0));
+	Datafile* datafile = &m_files.back();
+	datafile->make_filepath(m_path, basename, IBD);
+
+	ut_free(filepath);
+
+	return(DB_SUCCESS);
 }

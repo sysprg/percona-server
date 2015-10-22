@@ -3,6 +3,7 @@
 --source include/not_valgrind.inc
 --source include/have_debug.inc
 --source include/have_innodb.inc
+--source include/have_innodb_zip.inc
 
 --echo #
 --echo # Bug #16963396 INNODB: USE OF LARGE EXTERNALLY-STORED FIELDS MAKES
@@ -149,13 +150,8 @@ connection default;
 
 set global innodb_compression_level = 0;
 
-let $innodb_file_format = `select @@innodb_file_format`;
-set global innodb_file_format = 'Barracuda';
-
 create table t3 (f1 bigint primary key, f2 longblob, f3 longblob,
   index(f2(10), f3(10))) engine=innodb row_format=compressed;
-
-eval set global innodb_file_format = $innodb_file_format;
 
 # The BLOB insert will fail, and should disappear. However no data committed
 # up to this point should be lost.

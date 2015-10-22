@@ -31,8 +31,7 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	SIMPLE	t1	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'SELECT * FROM (SELECT * FROM t1) tt'
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	PRIMARY	<derived2>	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
-2	DERIVED	t1	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
+1	SIMPLE	t1	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'SELECT * FROM t1 WHERE f1 IN (SELECT * FROM t1)'
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	SIMPLE	t1	NULL	ALL	NULL	NULL	NULL	NULL	2	100.00	NULL
@@ -55,7 +54,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 2,
       "rows_produced_per_join": 2,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "1.00",
         "eval_cost": "0.40",
@@ -74,50 +73,23 @@ EXPLAIN
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "10.50"
+      "query_cost": "1.40"
     },
     "table": {
-      "table_name": "tt",
+      "table_name": "t1",
       "access_type": "ALL",
       "rows_examined_per_scan": 2,
       "rows_produced_per_join": 2,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
-        "read_cost": "10.10",
+        "read_cost": "1.00",
         "eval_cost": "0.40",
-        "prefix_cost": "10.50",
-        "data_read_per_join": "32"
+        "prefix_cost": "1.40",
+        "data_read_per_join": "16"
       },
       "used_columns": [
         "f1"
-      ],
-      "materialized_from_subquery": {
-        "using_temporary_table": true,
-        "dependent": false,
-        "cacheable": true,
-        "query_block": {
-          "select_id": 2,
-          "cost_info": {
-            "query_cost": "1.40"
-          },
-          "table": {
-            "table_name": "t1",
-            "access_type": "ALL",
-            "rows_examined_per_scan": 2,
-            "rows_produced_per_join": 2,
-            "filtered": 100,
-            "cost_info": {
-              "read_cost": "1.00",
-              "eval_cost": "0.40",
-              "prefix_cost": "1.40",
-              "data_read_per_join": "16"
-            },
-            "used_columns": [
-              "f1"
-            ]
-          }
-        }
-      }
+      ]
     }
   }
 }
@@ -136,7 +108,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 2,
           "rows_produced_per_join": 2,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "0.40",
@@ -154,7 +126,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 2,
           "rows_produced_per_join": 2,
-          "filtered": 50,
+          "filtered": "50.00",
           "using_where": true,
           "first_match": "t1",
           "using_join_buffer": "Block Nested Loop",
@@ -194,7 +166,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 2,
               "rows_produced_per_join": 2,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "0.40",
@@ -220,7 +192,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 2,
               "rows_produced_per_join": 2,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "0.40",
@@ -268,7 +240,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 2,
         "rows_produced_per_join": 2,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "0.40",
@@ -288,25 +260,22 @@ EXPLAIN
             "cost_info": {
               "query_cost": "1.40"
             },
-            "grouping_operation": {
-              "using_filesort": false,
-              "table": {
-                "table_name": "t2",
-                "access_type": "ALL",
-                "rows_examined_per_scan": 2,
-                "rows_produced_per_join": 2,
-                "filtered": 100,
-                "using_where": true,
-                "cost_info": {
-                  "read_cost": "1.00",
-                  "eval_cost": "0.40",
-                  "prefix_cost": "1.40",
-                  "data_read_per_join": "16"
-                },
-                "used_columns": [
-                  "f1"
-                ]
-              }
+            "table": {
+              "table_name": "t2",
+              "access_type": "ALL",
+              "rows_examined_per_scan": 2,
+              "rows_produced_per_join": 2,
+              "filtered": "100.00",
+              "using_where": true,
+              "cost_info": {
+                "read_cost": "1.00",
+                "eval_cost": "0.40",
+                "prefix_cost": "1.40",
+                "data_read_per_join": "16"
+              },
+              "used_columns": [
+                "f1"
+              ]
             }
           }
         }
@@ -361,7 +330,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 4,
           "rows_produced_per_join": 4,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "0.80",
@@ -394,7 +363,7 @@ EXPLAIN
       "table_name": "t1",
       "access_type": "ALL",
       "rows_examined_per_scan": 8,
-      "filtered": 100,
+      "filtered": "100.00",
       "using_where": true
     }
   }
@@ -416,7 +385,7 @@ EXPLAIN
         "table_name": "t1",
         "access_type": "ALL",
         "rows_examined_per_scan": 8,
-        "filtered": 100
+        "filtered": "100.00"
       },
       "order_by_subqueries": [
         {
@@ -448,7 +417,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 8,
           "rows_produced_per_join": 1,
-          "filtered": 12.5,
+          "filtered": "12.50",
           "using_where": true,
           "cost_info": {
             "read_cost": "2.40",
@@ -467,7 +436,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 8,
           "rows_produced_per_join": 1,
-          "filtered": 12.5,
+          "filtered": "12.50",
           "using_where": true,
           "cost_info": {
             "read_cost": "2.40",
@@ -493,7 +462,7 @@ EXPLAIN
       "table_name": "t1",
       "access_type": "ALL",
       "rows_examined_per_scan": 8,
-      "filtered": 100,
+      "filtered": "100.00",
       "using_where": true
     }
   }
@@ -513,8 +482,8 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 1	UPDATE	t1	NULL	ALL	NULL	NULL	NULL	NULL	18	100.00	Using where
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'UPDATE v1 SET f1=5 WHERE f1=5'
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	UPDATE	t1	NULL	ALL	NULL	NULL	NULL	NULL	18	5.56	Using where
-1	SIMPLE	tt	NULL	ALL	NULL	NULL	NULL	NULL	18	5.56	Using where
+1	UPDATE	t1	NULL	ALL	NULL	NULL	NULL	NULL	18	10.00	Using where
+1	SIMPLE	tt	NULL	ALL	NULL	NULL	NULL	NULL	18	10.00	Using where
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'DELETE FROM t1 WHERE f1=4'
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	DELETE	t1	NULL	ALL	NULL	NULL	NULL	NULL	18	100.00	Using where
@@ -557,7 +526,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 17,
               "rows_produced_per_join": 17,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "3.40",
@@ -598,7 +567,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 17,
                 "rows_produced_per_join": 17,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "3.40",
@@ -635,6 +604,8 @@ EXPLAIN
   }
 }
 Ensure materialized derived still has plans after materialization
+set @optimizer_switch_saved= @@optimizer_switch;
+set optimizer_switch='derived_merge=off';
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'SELECT * FROM (SELECT * FROM t1) tt'
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	PRIMARY	<derived2>	NULL	ALL	NULL	NULL	NULL	NULL	17	100.00	NULL
@@ -652,7 +623,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 17,
       "rows_produced_per_join": 17,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "10.85",
         "eval_cost": "3.40",
@@ -676,7 +647,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 17,
             "rows_produced_per_join": 17,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "3.40",
@@ -692,6 +663,7 @@ EXPLAIN
     }
   }
 }
+set optimizer_switch= @optimizer_switch_saved;
 WHERE subqueries, neither parent query nor subquery has plan
 EXPLAIN FORMAT=JSON FOR QUERY 'SELECT t2.f1 FROM t1 STRAIGHT_JOIN t1 AS t2
 WHERE t1.f1>(SELECT t3.f1 FROM t1 AS t3 LIMIT 1)'
@@ -729,7 +701,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 17,
           "rows_produced_per_join": 5,
-          "filtered": 33.33,
+          "filtered": "33.33",
           "using_where": true,
           "cost_info": {
             "read_cost": "3.27",
@@ -758,7 +730,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 17,
           "rows_produced_per_join": 96,
-          "filtered": 100,
+          "filtered": "100.00",
           "using_join_buffer": "Block Nested Loop",
           "cost_info": {
             "read_cost": "1.00",
@@ -791,7 +763,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 17,
           "rows_produced_per_join": 5,
-          "filtered": 33.33,
+          "filtered": "33.33",
           "using_where": true,
           "cost_info": {
             "read_cost": "3.27",
@@ -816,7 +788,7 @@ EXPLAIN
                   "access_type": "ALL",
                   "rows_examined_per_scan": 17,
                   "rows_produced_per_join": 17,
-                  "filtered": 100,
+                  "filtered": "100.00",
                   "cost_info": {
                     "read_cost": "1.00",
                     "eval_cost": "3.40",
@@ -838,7 +810,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 17,
           "rows_produced_per_join": 96,
-          "filtered": 100,
+          "filtered": "100.00",
           "using_join_buffer": "Block Nested Loop",
           "cost_info": {
             "read_cost": "1.00",
@@ -871,7 +843,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 17,
           "rows_produced_per_join": 5,
-          "filtered": 33.33,
+          "filtered": "33.33",
           "cost_info": {
             "read_cost": "3.27",
             "eval_cost": "1.13",
@@ -896,7 +868,7 @@ EXPLAIN
                   "access_type": "ALL",
                   "rows_examined_per_scan": 17,
                   "rows_produced_per_join": 17,
-                  "filtered": 100,
+                  "filtered": "100.00",
                   "cost_info": {
                     "read_cost": "1.00",
                     "eval_cost": "3.40",
@@ -918,7 +890,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 17,
           "rows_produced_per_join": 96,
-          "filtered": 100,
+          "filtered": "100.00",
           "using_join_buffer": "Block Nested Loop",
           "cost_info": {
             "read_cost": "1.00",
@@ -950,7 +922,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 17,
       "rows_produced_per_join": 17,
-      "filtered": 100,
+      "filtered": "100.00",
       "using_where": true,
       "cost_info": {
         "read_cost": "1.00",
@@ -976,7 +948,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 17,
             "rows_produced_per_join": 5,
-            "filtered": 33.33,
+            "filtered": "33.33",
             "using_where": true,
             "cost_info": {
               "read_cost": "3.27",
@@ -1007,7 +979,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 17,
       "rows_produced_per_join": 17,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "1.00",
         "eval_cost": "3.40",
@@ -1033,7 +1005,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 17,
             "rows_produced_per_join": 5,
-            "filtered": 33.33,
+            "filtered": "33.33",
             "cost_info": {
               "read_cost": "3.27",
               "eval_cost": "1.13",
@@ -1078,7 +1050,7 @@ EXPLAIN
       ],
       "rows_examined_per_scan": 1,
       "rows_produced_per_join": 1,
-      "filtered": 100,
+      "filtered": "100.00",
       "using_index": true,
       "cost_info": {
         "read_cost": "0.00",
@@ -1104,7 +1076,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 17,
             "rows_produced_per_join": 17,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "3.40",
@@ -1121,7 +1093,16 @@ EXPLAIN
   }
 }
 # Check access rights checking
+set @orig_sql_mode = @@sql_mode;
+set sql_mode=(select replace(@@sql_mode,'NO_AUTO_CREATE_USER',''));
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 GRANT USAGE ON *.* TO 'privtest'@'localhost';
+Warnings:
+Warning	1287	Using GRANT for creating new user is deprecated and will be removed in future release. Create new user with CREATE USER statement.
+set sql_mode= @orig_sql_mode;
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 GRANT SUPER ON *.* TO 'privtest'@'localhost';
 GRANT SELECT ON mysqltest1.t2 TO 'privtest'@'localhost';
 CREATE VIEW v2 AS SELECT * FROM t2;
@@ -1170,14 +1151,14 @@ KEY col_int_key (col_int_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 EXPLAIN SELECT alias1.pk AS field1 FROM h2 AS alias1 LEFT JOIN aa3 AS alias2 ON  alias1.pk =  alias2.col_int_key WHERE alias1.pk <> 9 GROUP BY field1 ORDER BY field1 LIMIT 1 OFFSET 3;;
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	alias1	NULL	index	PRIMARY	PRIMARY	4	NULL	4	225.00	Using where; Using index
+1	SIMPLE	alias1	NULL	index	PRIMARY	PRIMARY	4	NULL	4	100.00	Using where; Using index
 1	SIMPLE	alias2	NULL	ref	col_int_key	col_int_key	5	mysqltest1.alias1.pk	1	100.00	Using index
 Warnings:
 Note	1003	/* select#1 */ select `mysqltest1`.`alias1`.`pk` AS `field1` from `mysqltest1`.`h2` `alias1` left join `mysqltest1`.`aa3` `alias2` on((`mysqltest1`.`alias2`.`col_int_key` = `mysqltest1`.`alias1`.`pk`)) where (`mysqltest1`.`alias1`.`pk` <> 9) group by `field1` order by `field1` limit 3,1
 Should show same # of rows as above
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'SELECT alias1.pk AS field1 FROM h2 AS alias1 LEFT JOIN aa3 AS alias2 ON  alias1.pk =  alias2.col_int_key WHERE alias1.pk <> 9 GROUP BY field1 ORDER BY field1 LIMIT 1 OFFSET 3'
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
-1	SIMPLE	alias1	NULL	index	PRIMARY	PRIMARY	4	NULL	4	225.00	Using where; Using index
+1	SIMPLE	alias1	NULL	index	PRIMARY	PRIMARY	4	NULL	4	100.00	Using where; Using index
 1	SIMPLE	alias2	NULL	ref	col_int_key	col_int_key	5	mysqltest1.alias1.pk	1	100.00	Using index
 DROP TABLE h2, aa3;
 #
@@ -1220,13 +1201,13 @@ Warning	1364	Field 'cmd' doesn't have a default value
 EXPLAIN FORMAT=TRADITIONAL FOR QUERY 'SELECT 
 t1.login AS tlogin, 
 numb - 
-IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0) -
-IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0) as sp 
+IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0) -
+IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0) as sp
 FROM tbl1 t1, tbl2 t2 
 WHERE t1.login=t2.login 
 GROUP BY t1.login 
-ORDER BY numb - IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0)
-- IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0)
+ORDER BY numb - IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0)
+- IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0)
 '
 id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
 1	PRIMARY	t1	NULL	index	PRIMARY,numb	PRIMARY	4	NULL	2	100.00	Using temporary; Using filesort
@@ -1236,13 +1217,13 @@ id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered
 EXPLAIN FORMAT=JSON FOR QUERY 'SELECT 
 t1.login AS tlogin, 
 numb - 
-IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0) -
-IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0) as sp 
+IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0) -
+IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0) as sp
 FROM tbl1 t1, tbl2 t2 
 WHERE t1.login=t2.login 
 GROUP BY t1.login 
-ORDER BY numb - IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0)
-- IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=tlogin), 0)
+ORDER BY numb - IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0)
+- IFNULL((SELECT sum(nump) FROM tbl2 WHERE login=t1.login), 0)
 '
 EXPLAIN
 {
@@ -1272,7 +1253,7 @@ EXPLAIN
               "key_length": "4",
               "rows_examined_per_scan": 2,
               "rows_produced_per_join": 2,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "0.40",
@@ -1302,7 +1283,7 @@ EXPLAIN
               ],
               "rows_examined_per_scan": 1,
               "rows_produced_per_join": 2,
-              "filtered": 100,
+              "filtered": "100.00",
               "using_index": true,
               "cost_info": {
                 "read_cost": "2.00",
@@ -1341,7 +1322,7 @@ EXPLAIN
                 ],
                 "rows_examined_per_scan": 1,
                 "rows_produced_per_join": 1,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "0.20",
@@ -1379,7 +1360,7 @@ EXPLAIN
                 ],
                 "rows_examined_per_scan": 1,
                 "rows_produced_per_join": 1,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "0.20",
@@ -1399,7 +1380,62 @@ EXPLAIN
   }
 }
 DROP TABLE tbl1, tbl2;
+# End of tests for WL#6369
+#
+# Bug#19822146 EXPLAIN FOR CONNECTION CRASHES IN 
+#              EXPLAIN_JOIN::EXPLAIN_QEP_TAB
+#
+DROP TABLE IF EXISTS t1, t2;
+create table t1(a char(10) charset latin1, key(a)) engine=innodb;
+create table t2(a binary(10), key(a)) engine=innodb;
+insert into t1 values('1'),('2'),('3');
+insert into t2 values('1'),('2'),('s');
+analyze table t1,t2;
+Table	Op	Msg_type	Msg_text
+mysqltest1.t1	analyze	status	OK
+mysqltest1.t2	analyze	status	OK
+# Connection cq
+# Let thread1 to suspend itself right before creating Quick object.
+SET DEBUG_SYNC= 'quick_not_created SIGNAL ready_for_explain WAIT_FOR explained';
+select 1 from  t1 inner join t2 using(a);  ;
+# Connection ce
+SET DEBUG_SYNC= 'now WAIT_FOR ready_for_explain';
+SET DEBUG_SYNC= 'after_explain_other SIGNAL explained';
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	NULL	index	a	a	11	NULL	3	100.00	Using index
+1	SIMPLE	t1	NULL	ALL	a	NULL	NULL	NULL	3	100.00	Range checked for each record (index map: 0x1)
+connection: cq
+1
+SET DEBUG_SYNC= 'RESET';
+# Connection cq
+# Let thread1 to suspend itself right before the mutex section.
+SET DEBUG_SYNC= 'quick_created_before_mutex SIGNAL ready_for_explain WAIT_FOR explained';
+select 1 from  t1 inner join t2 using(a);;
+# Connection ce
+SET DEBUG_SYNC= 'now WAIT_FOR ready_for_explain';
+SET DEBUG_SYNC= 'after_explain_other SIGNAL explained';
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	NULL	index	a	a	11	NULL	3	100.00	Using index
+1	SIMPLE	t1	NULL	ALL	a	NULL	NULL	NULL	3	100.00	Range checked for each record (index map: 0x1)
+connection: cq
+1
+SET DEBUG_SYNC= 'RESET';
+# Connection cq
+# Let thread1 to suspend itself right after quick object is droped.
+SET DEBUG_SYNC= 'quick_droped_after_mutex SIGNAL ready_for_explain WAIT_FOR explained';
+select 1 from  t1 inner join t2 using(a);;
+# Connection ce
+SET DEBUG_SYNC= 'now WAIT_FOR ready_for_explain';
+SET DEBUG_SYNC= 'after_explain_other SIGNAL explained';
+id	select_type	table	partitions	type	possible_keys	key	key_len	ref	rows	filtered	Extra
+1	SIMPLE	t2	NULL	index	a	a	11	NULL	3	100.00	Using index
+1	SIMPLE	t1	NULL	range	a	a	11	NULL	3	100.00	Range checked for each record (index map: 0x1)
+connection: cq
+1
+# Connection default
+DROP TABLE t1, t2;
+SET DEBUG_SYNC= 'RESET';
+# End of test Bug#19822146
 USE test;
 DROP DATABASE mysqltest1;
-#
-# End of tests for WL#6369
+# End of test

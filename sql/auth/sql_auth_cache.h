@@ -1,7 +1,7 @@
 #ifndef SQL_USER_CACHE_INCLUDED
 #define SQL_USER_CACHE_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,11 +19,11 @@
 #include "my_global.h"                  // NO_EMBEDDED_ACCESS_CHECKS
 #include "my_sys.h"                     // wild_many, wild_one, wild_prefix
 #include <string.h>                     // strchr
-#include "structs.h"                    // USER_RESOURCES
 #include "mysql_com.h"                  // SCRAMBLE_LENGTH
 #include "violite.h"                    // SSL_type
 #include "hash_filo.h"                  // HASH, hash_filo
 #include "records.h"                    // READ_RECORD
+#include "partitioned_rwlock.h"         // Partitioned_rwlock
 
 #include "prealloced_array.h"
 
@@ -101,6 +101,10 @@ public:
   MYSQL_TIME password_last_changed;
   uint password_lifetime;
   bool use_default_password_lifetime;
+  /**
+    Specifies whether the user account is locked or unlocked.
+  */
+  bool account_locked;
 
   ACL_USER *copy(MEM_ROOT *root);
 };
@@ -151,7 +155,7 @@ public:
   bool check_validity(bool check_no_resolve);
 
   bool matches(const char *host_arg, const char *user_arg, const char *ip_arg,
-                const char *proxied_user_arg);
+                const char *proxied_user_arg, bool any_proxy_user);
 
   inline static bool auth_element_equals(const char *a, const char *b)
   {
@@ -182,6 +186,9 @@ public:
                       const LEX_CSTRING &user,
                       const LEX_CSTRING &proxied_host,
                       const LEX_CSTRING &proxied_user);
+
+  static int store_with_grant(TABLE * table,
+                              bool with_grant);
 
   static int store_data_record(TABLE *table,
                                const LEX_CSTRING &host,
@@ -240,7 +247,8 @@ public:
 
   GRANT_TABLE(const char *h, const char *d,const char *u,
               const char *t, ulong p, ulong c);
-  GRANT_TABLE (TABLE *form, TABLE *col_privs);
+  explicit GRANT_TABLE(TABLE *form);
+  bool init(TABLE *col_privs);
   ~GRANT_TABLE();
   bool ok() { return privs != 0 || cols != 0; }
 };
@@ -265,6 +273,7 @@ extern hash_filo *acl_cache;
 extern HASH acl_check_hosts;
 extern bool allow_all_hosts;
 extern uint grant_version; /* Version of priv tables */
+extern Partitioned_rwlock LOCK_grant;
 
 GRANT_NAME *name_hash_search(HASH *name_hash,
                              const char *host,const char* ip,

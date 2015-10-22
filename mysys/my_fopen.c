@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,6 +17,8 @@
 #include "my_static.h"
 #include <errno.h>
 #include "mysys_err.h"
+#include "my_thread_local.h"
+
 
 static void make_ftype(char * to,int flag);
 
@@ -89,7 +91,7 @@ FILE *my_fopen(const char *filename, int flags, myf MyFlags)
     char errbuf[MYSYS_STRERROR_SIZE];
     my_error((flags & O_RDONLY) || (flags == O_RDONLY ) ? EE_FILENOTFOUND :
              EE_CANTCREATEFILE,
-             MYF(ME_BELL+ME_WAITTANG), filename,
+             MYF(0), filename,
              my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
   }
   DBUG_RETURN((FILE*) 0);
@@ -193,7 +195,7 @@ int my_fclose(FILE *fd, myf MyFlags)
     if (MyFlags & (MY_FAE | MY_WME))
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(EE_BADCLOSE, MYF(ME_BELL+ME_WAITTANG), my_filename(file),
+      my_error(EE_BADCLOSE, MYF(0), my_filename(file),
                my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     }
   }
@@ -232,7 +234,7 @@ FILE *my_fdopen(File Filedes, const char *name, int Flags, myf MyFlags)
     if (MyFlags & (MY_FAE | MY_WME))
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(EE_CANT_OPEN_STREAM, MYF(ME_BELL+ME_WAITTANG),
+      my_error(EE_CANT_OPEN_STREAM, MYF(0),
                my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     }
   }

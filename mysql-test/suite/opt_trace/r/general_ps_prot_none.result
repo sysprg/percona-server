@@ -102,6 +102,10 @@ SELECT (SELECT 1 FROM t6 WHERE d = c) AS RESULT FROM t5	{
             }
           },
           {
+            "substitute_generated_columns": {
+            }
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -191,18 +195,18 @@ SELECT (SELECT 1 FROM t6 WHERE d = c) AS RESULT FROM t5	{
 select (1-length(replace(TRACE, " ", ""))/length(TRACE))*100
 from information_schema.OPTIMIZER_TRACE;
 (1-length(replace(TRACE, " ", ""))/length(TRACE))*100
-53.9841
+53.9648
 set optimizer_trace="one_line=on";
 SELECT (SELECT 1 FROM t6 WHERE d = c) AS RESULT FROM t5 ;
 RESULT
 NULL
 select * from information_schema.OPTIMIZER_TRACE;
 QUERY	TRACE	MISSING_BYTES_BEYOND_MAX_MEM_SIZE	INSUFFICIENT_PRIVILEGES
-SELECT (SELECT 1 FROM t6 WHERE d = c) AS RESULT FROM t5	{"steps": [{"join_preparation": {"select#": 1,"steps": [{"join_preparation": {"select#": 2,"steps": [{"expanded_query": "/* select#2 */ select 1 from `t6` where (`t6`.`d` = `t5`.`c`)"}]}},{"expanded_query": "/* select#1 */ select (/* select#2 */ select 1 from `t6` where (`t6`.`d` = `t5`.`c`)) AS `RESULT` from `t5`"}]}},{"join_optimization": {"select#": 1,"steps": [{"table_dependencies": [{"table": "`t5`","row_may_be_null": false,"map_bit": 0,"depends_on_map_bits": []}]},{"rows_estimation": [{"table": "`t5`","rows": 1,"cost": 1,"table_type": "system","empty": false}]},{"attaching_conditions_to_tables": {"original_condition": null,"attached_conditions_computation": [],"attached_conditions_summary": []}},{"refine_plan": []}]}},{"join_optimization": {"select#": 2,"steps": [{"condition_processing": {"condition": "WHERE","original_condition": "(`t6`.`d` = NULL)","steps": [{"transformation": "equality_propagation","resulting_condition": "multiple equal(NULL, `t6`.`d`)"},{"transformation": "constant_propagation","resulting_condition": "multiple equal(NULL, `t6`.`d`)"},{"transformation": "trivial_condition_removal","resulting_condition": "multiple equal(NULL, `t6`.`d`)"}]}},{"table_dependencies": [{"table": "`t6`","row_may_be_null": false,"map_bit": 0,"depends_on_map_bits": []}]},{"ref_optimizer_key_uses": [{"table": "`t6`","field": "d","equals": "NULL","null_rejecting": true}]},{"rows_estimation": [{"table": "`t6`","range_analysis": {"table_scan": {"rows": 2,"cost": 4.5034},"potential_range_indexes": [{"index": "d","usable": true,"key_parts": ["d"]}],"best_covering_index_scan": {"index": "d","cost": 1.4233,"chosen": true},"setup_range_conditions": [{"impossible_condition": {"cause": "comparison_with_null_always_false"}}],"impossible_range": true},"rows": 0,"cause": "impossible_where_condition"}]}],"empty_result": {"cause": "no matching row in const table"}}},{"join_execution": {"select#": 1,"steps": [{"subselect_execution": {"select#": 2,"steps": [{"join_execution": {"select#": 2,"steps": []}}]}}]}}]}	0	0
+SELECT (SELECT 1 FROM t6 WHERE d = c) AS RESULT FROM t5	{"steps": [{"join_preparation": {"select#": 1,"steps": [{"join_preparation": {"select#": 2,"steps": [{"expanded_query": "/* select#2 */ select 1 from `t6` where (`t6`.`d` = `t5`.`c`)"}]}},{"expanded_query": "/* select#1 */ select (/* select#2 */ select 1 from `t6` where (`t6`.`d` = `t5`.`c`)) AS `RESULT` from `t5`"}]}},{"join_optimization": {"select#": 1,"steps": [{"table_dependencies": [{"table": "`t5`","row_may_be_null": false,"map_bit": 0,"depends_on_map_bits": []}]},{"rows_estimation": [{"table": "`t5`","rows": 1,"cost": 1,"table_type": "system","empty": false}]},{"attaching_conditions_to_tables": {"original_condition": null,"attached_conditions_computation": [],"attached_conditions_summary": []}},{"refine_plan": []}]}},{"join_optimization": {"select#": 2,"steps": [{"condition_processing": {"condition": "WHERE","original_condition": "(`t6`.`d` = NULL)","steps": [{"transformation": "equality_propagation","resulting_condition": "multiple equal(NULL, `t6`.`d`)"},{"transformation": "constant_propagation","resulting_condition": "multiple equal(NULL, `t6`.`d`)"},{"transformation": "trivial_condition_removal","resulting_condition": "multiple equal(NULL, `t6`.`d`)"}]}},{"substitute_generated_columns": {}},{"table_dependencies": [{"table": "`t6`","row_may_be_null": false,"map_bit": 0,"depends_on_map_bits": []}]},{"ref_optimizer_key_uses": [{"table": "`t6`","field": "d","equals": "NULL","null_rejecting": true}]},{"rows_estimation": [{"table": "`t6`","range_analysis": {"table_scan": {"rows": 2,"cost": 4.5034},"potential_range_indexes": [{"index": "d","usable": true,"key_parts": ["d"]}],"best_covering_index_scan": {"index": "d","cost": 1.4233,"chosen": true},"setup_range_conditions": [{"impossible_condition": {"cause": "comparison_with_null_always_false"}}],"impossible_range": true},"rows": 0,"cause": "impossible_where_condition"}]}],"empty_result": {"cause": "no matching row in const table"}}},{"join_execution": {"select#": 1,"steps": [{"subselect_execution": {"select#": 2,"steps": [{"join_execution": {"select#": 2,"steps": []}}]}}]}}]}	0	0
 select (1-length(replace(TRACE, " ", ""))/length(TRACE))*100
 from information_schema.OPTIMIZER_TRACE;
 (1-length(replace(TRACE, " ", ""))/length(TRACE))*100
-6.0651
+6.0048
 set end_markers_in_json=on;
 set optimizer_trace="one_line=off";
 EXPLAIN SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null)) AS RESULT FROM t5 ;
@@ -301,6 +305,10 @@ EXPLAIN SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null)) AS RESULT FROM t5	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -476,6 +484,10 @@ SELECT /* should be last */ (SELECT 1 FROM t6 WHERE d = ifnull(c,null)) AS RESUL
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -614,6 +626,16 @@ SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SELECT 2 FROM t6 WHERE d
             } /* creating_tmp_table */
           },
           {
+            "join_preparation": {
+              "select#": "fake",
+              "steps": [
+                {
+                  "expanded_query": "/* select#fake */ select `1` from dual"
+                }
+              ] /* steps */
+            } /* join_preparation */
+          },
+          {
             "expanded_query": "/* select#1 */ select (/* select#2 */ select 1 from `t6` where (`t6`.`d` = ifnull(`t5`.`c`,NULL)) union /* select#3 */ select 2 from `t6` where (`t6`.`d` = ifnull(`t5`.`c`,NULL))) AS `RESULT` from `t5`"
           }
         ] /* steps */
@@ -684,6 +706,10 @@ SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SELECT 2 FROM t6 WHERE d
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -774,6 +800,10 @@ SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SELECT 2 FROM t6 WHERE d
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -836,16 +866,6 @@ SELECT (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SELECT 2 FROM t6 WHERE d
           "cause": "no matching row in const table"
         } /* empty_result */
       } /* join_optimization */
-    },
-    {
-      "join_preparation": {
-        "select#": "fake",
-        "steps": [
-          {
-            "expanded_query": "/* select#fake */ select `1` from dual"
-          }
-        ] /* steps */
-      } /* join_preparation */
     },
     {
       "join_optimization": {
@@ -1016,6 +1036,16 @@ SELECT * FROM t5 WHERE 5 IN (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SEL
             } /* creating_tmp_table */
           },
           {
+            "join_preparation": {
+              "select#": "fake",
+              "steps": [
+                {
+                  "expanded_query": "/* select#fake */ select `1` from dual"
+                }
+              ] /* steps */
+            } /* join_preparation */
+          },
+          {
             "expanded_query": "/* select#1 */ select `t5`.`c` AS `c` from `t5` where <in_optimizer>(5,<exists>(/* select#2 */ select 1 from `t6` where ((`t6`.`d` = ifnull(`t5`.`c`,NULL)) and (<cache>(5) = 1)) union /* select#3 */ select 2 from `t6` where ((`t6`.`d` = ifnull(`t5`.`c`,NULL)) and (<cache>(5) = 2))))"
           }
         ] /* steps */
@@ -1050,6 +1080,10 @@ SELECT * FROM t5 WHERE 5 IN (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SEL
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -1140,24 +1174,6 @@ SELECT * FROM t5 WHERE 5 IN (SELECT 1 FROM t6 WHERE d = ifnull(c,null) UNION SEL
                       "cause": "Impossible WHERE"
                     } /* empty_result */
                   } /* join_optimization */
-                },
-                {
-                  "join_preparation": {
-                    "select#": "fake",
-                    "steps": [
-                      {
-                        "expanded_query": "/* select#fake */ select `1` from dual"
-                      },
-                      {
-                        "transformation": {
-                          "select#": "fake",
-                          "from": "IN (SELECT)",
-                          "to": "semijoin",
-                          "chosen": false
-                        } /* transformation */
-                      }
-                    ] /* steps */
-                  } /* join_preparation */
                 },
                 {
                   "join_optimization": {
@@ -1280,7 +1296,7 @@ select (@query:=QUERY)+NULL, (@trace:=TRACE)+NULL from information_schema.OPTIMI
 NULL	NULL
 select length(@trace);
 length(@trace)
-12729
+12469
 set @max_mem_size=13900;
 set optimizer_trace_max_mem_size=@max_mem_size;
 select length(@query)+length(@trace) > @@optimizer_trace_max_mem_size;
@@ -1298,7 +1314,7 @@ select length(@trace2),
 (length(@trace2) + @missing_bytes) = length(@trace),
 @query2 = @query;
 length(@trace2)	(length(@trace2) + @missing_bytes) = length(@trace)	@query2 = @query
-12729	1	1
+12469	1	1
 select length(@query2) + length(@trace2)
 between (@@optimizer_trace_max_mem_size-200) and (@@optimizer_trace_max_mem_size+200);
 length(@query2) + length(@trace2)
@@ -1401,6 +1417,10 @@ explain SELECT c FROM t5 where c+1 in (select d+1 from t6 where d is null)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t5`",
@@ -1459,6 +1479,10 @@ explain SELECT c FROM t5 where c+1 in (select d+1 from t6 where d is null)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -1707,6 +1731,10 @@ explain SELECT c FROM t5 where c+1 in (select d+1 from t6 where d is null)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t5`",
@@ -1765,6 +1793,10 @@ explain SELECT c FROM t5 where c+1 in (select d+1 from t6 where d is null)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -2007,6 +2039,10 @@ explain extended select * from t1 where s1 > any (select s2 from t1)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -2236,6 +2272,10 @@ explain extended select * from t1 where s1 > any (select max(s2) from t1)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -2479,6 +2519,10 @@ explain extended select * from t1 where s1 in (select s2 from t1)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -2574,6 +2618,10 @@ explain extended select * from t1 where s1 in (select s2 from t1)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -2752,6 +2800,10 @@ explain extended select * from t1 where (s1,s2) in (select s2,s1 from t1)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -2847,6 +2899,10 @@ explain extended select * from t1 where (s1,s2) in (select s2,s1 from t1)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -3362,6 +3418,10 @@ where a1 in (select b1 from t2_16 where b1 > '0')	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1_16`",
@@ -3457,6 +3517,10 @@ where a1 in (select b1 from t2_16 where b1 > '0')	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -3633,6 +3697,10 @@ WHERE c2 IN ( SELECT c2 FROM t2 WHERE c2 IN ( 1 ) )	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -3793,6 +3861,10 @@ WHERE c2 IN ( SELECT c2 FROM t2 WHERE c2 IN ( 1 ) )	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -3958,6 +4030,16 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
       } /* creating_tmp_table */
     },
     {
+      "join_preparation": {
+        "select#": "fake",
+        "steps": [
+          {
+            "expanded_query": "/* select#fake */ select `c1` AS `c1` from dual"
+          }
+        ] /* steps */
+      } /* join_preparation */
+    },
+    {
       "join_optimization": {
         "select#": 1,
         "steps": [
@@ -3980,6 +4062,10 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -4079,6 +4165,10 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t2`",
@@ -4150,16 +4240,6 @@ SELECT * FROM t1 WHERE c1=5 UNION SELECT * FROM t2 WHERE c2=5	{
           }
         ] /* steps */
       } /* join_optimization */
-    },
-    {
-      "join_preparation": {
-        "select#": "fake",
-        "steps": [
-          {
-            "expanded_query": "/* select#fake */ select `c1` AS `c1` from dual"
-          }
-        ] /* steps */
-      } /* join_preparation */
     },
     {
       "join_optimization": {
@@ -4377,6 +4457,10 @@ concat(c1,'y') IN
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -4472,6 +4556,10 @@ concat(c1,'y') IN
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -4577,6 +4665,10 @@ concat(c1,'y') IN
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -4883,6 +4975,10 @@ trace
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t3`",
@@ -4937,6 +5033,10 @@ trace
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -5128,6 +5228,10 @@ trace
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t3`",
@@ -5182,6 +5286,10 @@ trace
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -5354,6 +5462,10 @@ select * from t1 left join t2 on t2.a=500 where t2.a is NULL	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -5553,6 +5665,10 @@ select * from t1 where (t1.a,t1.b) not in (select c,d from t2 where c>0)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -5664,6 +5780,10 @@ select * from t1 where (t1.a,t1.b) not in (select c,d from t2 where c>0)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -5833,6 +5953,10 @@ trace
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -6349,6 +6473,10 @@ insert into t6 select * from t6 where d>7	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -6539,6 +6667,10 @@ update t5, t6 set t6.d=t6.d+t5.c+4-t5.c-4 where d>7000	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -6741,6 +6873,10 @@ delete t6 from t5, t6 where d>7000	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -7184,6 +7320,10 @@ select * from t6 where d in (select f1() from t2 where s="c")	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -7279,6 +7419,10 @@ select * from t6 where d in (select f1() from t2 where s="c")	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -8082,6 +8226,10 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -8177,6 +8325,10 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -8909,6 +9061,10 @@ select d+1 into res from t6 where d=res+1	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -9040,6 +9196,10 @@ insert into t2 select d,100,200 from t6 where d is not null	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -9798,6 +9958,10 @@ select @trace;
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -9981,6 +10145,10 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t6`",
@@ -10076,6 +10244,10 @@ select d into res from t6 where d in (select f1() from t2 where s=arg)	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -10790,24 +10962,33 @@ QUERY	TRACE	MISSING_BYTES_BEYOND_MAX_MEM_SIZE	INSUFFICIENT_PRIVILEGES
 explain select * from v1 where id="b"	{
   "steps": [
     {
-      "view": {
-        "database": "test",
-        "view": "v1",
-        "in_select#": 1,
-        "select#": 2,
-        "merged": true
-      } /* view */
-    },
-    {
       "join_preparation": {
         "select#": 1,
         "steps": [
           {
-            "expanded_query": "/* select#1 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from (`t1`) where ((`t1`.`id` = 'b') and (`t1`.`id` < 'c'))"
+            "join_preparation": {
+              "select#": 2,
+              "steps": [
+                {
+                  "expanded_query": "/* select#2 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from `t1` where (`t1`.`id` < 'c')"
+                }
+              ] /* steps */
+            } /* join_preparation */
+          },
+          {
+            "view": {
+              "table": "`v1`",
+              "select#": 2,
+              "merged": true
+            } /* view */
+          },
+          {
+            "expanded_query": "/* select#1 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from (`t1`) where (`t1`.`id` = 'b')"
           },
           {
             "transformations_to_nested_joins": {
               "transformations": [
+                "JOIN_condition_to_WHERE",
                 "parenthesis_removal"
               ] /* transformations */,
               "expanded_query": "/* select#1 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from `t1` where ((`t1`.`id` = 'b') and (`t1`.`id` < 'c'))"
@@ -10839,6 +11020,10 @@ explain select * from v1 where id="b"	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -10978,28 +11163,26 @@ QUERY	TRACE	MISSING_BYTES_BEYOND_MAX_MEM_SIZE	INSUFFICIENT_PRIVILEGES
 explain select * from v1 where id="b"	{
   "steps": [
     {
-      "view": {
-        "database": "test",
-        "view": "v1",
-        "in_select#": 1,
-        "select#": 2,
-        "materialized": true
-      } /* view */
-    },
-    {
-      "join_preparation": {
-        "select#": 2,
-        "steps": [
-          {
-            "expanded_query": "/* select#2 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from `t1` where (`t1`.`id` < 'c') limit 2"
-          }
-        ] /* steps */
-      } /* join_preparation */
-    },
-    {
       "join_preparation": {
         "select#": 1,
         "steps": [
+          {
+            "join_preparation": {
+              "select#": 2,
+              "steps": [
+                {
+                  "expanded_query": "/* select#2 */ select `t1`.`id` AS `id`,`t1`.`data` AS `data` from `t1` where (`t1`.`id` < 'c') limit 2"
+                }
+              ] /* steps */
+            } /* join_preparation */
+          },
+          {
+            "view": {
+              "table": "`v1`",
+              "select#": 2,
+              "materialized": true
+            } /* view */
+          },
           {
             "expanded_query": "/* select#1 */ select `v1`.`id` AS `id`,`v1`.`data` AS `data` from `v1` where (`v1`.`id` = 'b')"
           }
@@ -11033,6 +11216,10 @@ explain select * from v1 where id="b"	{
                       }
                     ] /* steps */
                   } /* condition_processing */
+                },
+                {
+                  "substitute_generated_columns": {
+                  } /* substitute_generated_columns */
                 },
                 {
                   "table_dependencies": [
@@ -11126,6 +11313,10 @@ explain select * from v1 where id="b"	{
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -11293,6 +11484,10 @@ VARIABLE_NAME="optimizer_trace"	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`information_schema`.`session_variables`",
@@ -11415,6 +11610,16 @@ select TRACE into dumpfile 'MYSQLTEST_VARDIR/tmp/optimizer_trace.txt' from infor
       }
     },
     {
+      "join_preparation": {
+        "select#": "fake",
+        "steps": [
+          {
+            "expanded_query": "/* select#fake */ select `1` AS `1` from dual"
+          }
+        ]
+      }
+    },
+    {
       "join_optimization": {
         "select#": 1,
         "steps": [
@@ -11425,16 +11630,6 @@ select TRACE into dumpfile 'MYSQLTEST_VARDIR/tmp/optimizer_trace.txt' from infor
       "join_optimization": {
         "select#": 2,
         "steps": [
-        ]
-      }
-    },
-    {
-      "join_preparation": {
-        "select#": "fake",
-        "steps": [
-          {
-            "expanded_query": "/* select#fake */ select `1` AS `1` from dual"
-          }
         ]
       }
     },

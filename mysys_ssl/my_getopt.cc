@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -132,7 +132,8 @@ static HASH *getopt_constraint_init(my_bool create)
     my_hash_init(&my_option_constraints, &my_charset_utf8_general_ci,
                  20, 0, 0,
                  (my_hash_get_key) getopt_constraint_get_name,
-                 (void (*)(void *))getopt_constraint_free, HASH_UNIQUE);
+                 (void (*)(void *))getopt_constraint_free, HASH_UNIQUE,
+                 PSI_NOT_INSTRUMENTED);
     my_option_constraints_inited= TRUE;
     return &my_option_constraints;
   }
@@ -1331,13 +1332,13 @@ ulonglong max_of_int_range(int var_type)
   case GET_LONG:
     return LONG_MAX;
   case GET_LL:
-    return LONGLONG_MAX;
+    return LLONG_MAX;
   case GET_UINT:
     return UINT_MAX;
   case GET_ULONG:
     return ULONG_MAX;
   case GET_ULL:
-    return ULONGLONG_MAX;
+    return ULLONG_MAX;
   default:
     DBUG_ASSERT(0);
     return 0;
@@ -1438,7 +1439,7 @@ ulonglong getopt_ull_limit_value(ulonglong num, const struct my_option *optp,
   const ulonglong max_of_type=
     max_of_int_range(optp->var_type & GET_TYPE_MASK);
 
-  if ((ulonglong) num > (ulonglong) optp->max_value &&
+  if (num > (ulonglong) optp->max_value &&
       optp->max_value) /* if max value is not set -> no upper limit */
   {
     num= (ulonglong) optp->max_value;
@@ -1563,10 +1564,10 @@ static void init_one_value(const struct my_option *option, void *variable,
     *((ulong*) variable)= (ulong) getopt_ull_limit_value((ulong) value, option, NULL);
     break;
   case GET_LL:
-    *((longlong*) variable)= (longlong) getopt_ll_limit_value((longlong) value, option, NULL);
+    *((longlong*) variable)= getopt_ll_limit_value(value, option, NULL);
     break;
   case GET_ULL:
-    *((ulonglong*) variable)= (ulonglong) getopt_ull_limit_value((ulonglong) value, option, NULL);
+    *((ulonglong*) variable)= getopt_ull_limit_value((ulonglong) value, option, NULL);
     break;
   case GET_SET:
   case GET_FLAGSET:

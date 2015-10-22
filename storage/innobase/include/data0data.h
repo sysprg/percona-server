@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1994, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -33,9 +33,7 @@ Created 5/30/1994 Heikki Tuuri
 #include "mem0mem.h"
 #include "dict0types.h"
 
-#ifndef DBUG_OFF
-# include <ostream>
-#endif /* !DBUG_OFF */
+#include <ostream>
 
 /** Storage for overflow data in a big record, that is, a clustered
 index record which needs external storage of data fields */
@@ -72,8 +70,8 @@ void
 dfield_set_type(
 /*============*/
 	dfield_t*	field,	/*!< in: SQL data field */
-	const dtype_t*	type)	/*!< in: pointer to data type struct */
-	__attribute__((nonnull));
+	const dtype_t*	type);	/*!< in: pointer to data type struct */
+
 /*********************************************************************//**
 Gets length of field data.
 @return length of data; UNIV_SQL_NULL if SQL null data */
@@ -160,9 +158,9 @@ UNIV_INLINE
 void
 dfield_copy_data(
 /*=============*/
-	dfield_t*	field1,	/*!< out: field to copy to */
-	const dfield_t*	field2)	/*!< in: field to copy from */
-	__attribute__((nonnull));
+	dfield_t*	field1,		/*!< out: field to copy to */
+	const dfield_t*	field2);	/*!< in: field to copy from */
+
 /*********************************************************************//**
 Copies a data field to another. */
 UNIV_INLINE
@@ -217,18 +215,36 @@ dtuple_get_n_fields(
 /*================*/
 	const dtuple_t*	tuple)	/*!< in: tuple */
 	__attribute__((nonnull, warn_unused_result));
+/** Gets number of virtual fields in a data tuple.
+@param[in]	tuple	dtuple to check
+@return number of fields */
+UNIV_INLINE
+ulint
+dtuple_get_n_v_fields(
+	const dtuple_t*	tuple);
+
 #ifdef UNIV_DEBUG
-/*********************************************************************//**
-Gets nth field of a tuple.
+/** Gets nth field of a tuple.
+@param[in]	tuple	tuple
+@param[in]	n	index of field
 @return nth field */
 UNIV_INLINE
 dfield_t*
 dtuple_get_nth_field(
-/*=================*/
-	const dtuple_t*	tuple,	/*!< in: tuple */
-	ulint		n);	/*!< in: index of field */
+	const dtuple_t*	tuple,
+	ulint		n);
+/** Gets nth virtual field of a tuple.
+@param[in]	tuple	tuple
+@oaran[in]	n	the nth field to get
+@return nth field */
+UNIV_INLINE
+dfield_t*
+dtuple_get_nth_v_field(
+	const dtuple_t*	tuple,
+	ulint		n);
 #else /* UNIV_DEBUG */
 # define dtuple_get_nth_field(tuple, n) ((tuple)->fields + (n))
+# define dtuple_get_nth_v_field(tuple, n) ((tuple)->fields + (tuple)->n_fields + (n))
 #endif /* UNIV_DEBUG */
 /*********************************************************************//**
 Gets info bits in a data tuple.
@@ -273,19 +289,22 @@ creating a new dtuple_t object */
 #define DTUPLE_EST_ALLOC(n_fields)	\
 	(sizeof(dtuple_t) + (n_fields) * sizeof(dfield_t))
 
-/**********************************************************//**
-Creates a data tuple from an already allocated chunk of memory.
+/** Creates a data tuple from an already allocated chunk of memory.
 The size of the chunk must be at least DTUPLE_EST_ALLOC(n_fields).
 The default value for number of fields used in record comparisons
 for this tuple is n_fields.
+@param[in,out]	buf		buffer to use
+@param[in]	buf_size	buffer size
+@param[in]	n_fields	number of field
+@param[in]	n_v_fields	number of fields on virtual columns
 @return created tuple (inside buf) */
 UNIV_INLINE
 dtuple_t*
 dtuple_create_from_mem(
-/*===================*/
-	void*	buf,		/*!< in, out: buffer to use */
-	ulint	buf_size,	/*!< in: buffer size */
-	ulint	n_fields)	/*!< in: number of fields */
+	void*	buf,
+	ulint	buf_size,
+	ulint	n_fields,
+	ulint	n_v_fields)
 	__attribute__((nonnull, warn_unused_result));
 
 /**********************************************************//**
@@ -302,16 +321,52 @@ dtuple_create(
 	ulint		n_fields)/*!< in: number of fields */
 	__attribute__((nonnull, malloc));
 
+
+/** Initialize the virtual field data in a dtuple_t
+@param[in,out]		vrow	dtuple contains the virtual fields */
+UNIV_INLINE
+void
+dtuple_init_v_fld(
+	const dtuple_t*	vrow);
+
+/** Duplicate the virtual field data in a dtuple_t
+@param[in,out]		vrow	dtuple contains the virtual fields
+@param[in]		heap	heap memory to use */
+UNIV_INLINE
+void
+dtuple_dup_v_fld(
+	const dtuple_t*	vrow,
+	mem_heap_t*	heap);
+
+/** Creates a data tuple with possible virtual columns to a memory heap.
+@param[in]	heap		memory heap where the tuple is created
+@param[in]	n_fields	number of fields
+@param[in]	n_v_fields	number of fields on virtual col
+@return own: created tuple */
+UNIV_INLINE
+dtuple_t*
+dtuple_create_with_vcol(
+	mem_heap_t*	heap,
+	ulint		n_fields,
+	ulint		n_v_fields);
+
 /*********************************************************************//**
 Sets number of fields used in a tuple. Normally this is set in
 dtuple_create, but if you want later to set it smaller, you can use this. */
-
 void
 dtuple_set_n_fields(
 /*================*/
 	dtuple_t*	tuple,		/*!< in: tuple */
 	ulint		n_fields)	/*!< in: number of fields */
 	__attribute__((nonnull));
+/** Copies a data tuple's virtaul fields to another. This is a shallow copy;
+@param[in,out]	d_tuple		destination tuple
+@param[in]	s_tuple		source tuple */
+UNIV_INLINE
+void
+dtuple_copy_v_fields(
+	dtuple_t*	d_tuple,
+	const dtuple_t*	s_tuple);
 /*********************************************************************//**
 Copies a data tuple to another.  This is a shallow copy; if a deep copy
 is desired, dfield_dup() will have to be invoked on each field.
@@ -349,23 +404,25 @@ dtuple_get_n_ext(
 @param[in] tuple2 second data tuple
 @return positive, 0, negative if tuple1 is greater, equal, less, than tuple2,
 respectively */
-
 int
 dtuple_coll_cmp(
 	const dtuple_t*	tuple1,
 	const dtuple_t*	tuple2)
-	__attribute__((nonnull, warn_unused_result));
-/************************************************************//**
-Folds a prefix given as the number of fields of a tuple.
+	__attribute__((warn_unused_result));
+/** Fold a prefix given as the number of fields of a tuple.
+@param[in]	tuple		index record
+@param[in]	n_fields	number of complete fields to fold
+@param[in]	n_bytes		number of bytes to fold in the last field
+@param[in]	index_id	index tree ID
 @return the folded value */
 UNIV_INLINE
 ulint
 dtuple_fold(
-/*========*/
-	const dtuple_t*	tuple,	/*!< in: the tuple */
-	ulint		n_fields,/*!< in: number of complete fields to fold */
-	index_id_t	tree_id)/*!< in: index tree id */
-	__attribute__((nonnull, pure, warn_unused_result));
+	const dtuple_t*	tuple,
+	ulint		n_fields,
+	ulint		n_bytes,
+	index_id_t	tree_id)
+	__attribute__((warn_unused_result));
 /*******************************************************************//**
 Sets types of fields binary in a tuple. */
 UNIV_INLINE
@@ -387,7 +444,6 @@ dtuple_contains_null(
 /**********************************************************//**
 Checks that a data field is typed. Asserts an error if not.
 @return TRUE if ok */
-
 ibool
 dfield_check_typed(
 /*===============*/
@@ -396,7 +452,6 @@ dfield_check_typed(
 /**********************************************************//**
 Checks that a data tuple is typed. Asserts an error if not.
 @return TRUE if ok */
-
 ibool
 dtuple_check_typed(
 /*===============*/
@@ -405,7 +460,6 @@ dtuple_check_typed(
 /**********************************************************//**
 Checks that a data tuple is typed.
 @return TRUE if ok */
-
 ibool
 dtuple_check_typed_no_assert(
 /*=========================*/
@@ -416,7 +470,6 @@ dtuple_check_typed_no_assert(
 Validates the consistency of a tuple which must be complete, i.e,
 all fields must have been set.
 @return TRUE if ok */
-
 ibool
 dtuple_validate(
 /*============*/
@@ -425,7 +478,6 @@ dtuple_validate(
 #endif /* UNIV_DEBUG */
 /*************************************************************//**
 Pretty prints a dfield value according to its data type. */
-
 void
 dfield_print(
 /*=========*/
@@ -434,7 +486,6 @@ dfield_print(
 /*************************************************************//**
 Pretty prints a dfield value according to its data type. Also the hex string
 is printed if a string contains non-printable characters. */
-
 void
 dfield_print_also_hex(
 /*==================*/
@@ -442,34 +493,41 @@ dfield_print_also_hex(
 	__attribute__((nonnull));
 /**********************************************************//**
 The following function prints the contents of a tuple. */
-
 void
 dtuple_print(
 /*=========*/
 	FILE*		f,	/*!< in: output stream */
 	const dtuple_t*	tuple)	/*!< in: tuple */
 	__attribute__((nonnull));
-#ifndef DBUG_OFF
-/** Print the contents of a tuple.
-@param o output stream
-@param field array of data fields
-@param n number of data fields */
 
+/** Print the contents of a tuple.
+@param[out]	o	output stream
+@param[in]	field	array of data fields
+@param[in]	n	number of data fields */
 void
 dfield_print(
 	std::ostream&	o,
 	const dfield_t*	field,
 	ulint		n);
 /** Print the contents of a tuple.
-@param o output stream
-@param tuple data tuple */
-
+@param[out]	o	output stream
+@param[in]	tuple	data tuple */
 void
 dtuple_print(
-/*=========*/
 	std::ostream&	o,
 	const dtuple_t*	tuple);
-#endif /* DBUG_OFF */
+
+/** Print the contents of a tuple.
+@param[out]	o	output stream
+@param[in]	tuple	data tuple */
+inline
+std::ostream&
+operator<<(std::ostream& o, const dtuple_t& tuple)
+{
+	dtuple_print(o, &tuple);
+	return(o);
+}
+
 /**************************************************************//**
 Moves parts of long fields in entry to the big record vector so that
 the size of tuple drops below the maximum record size allowed in the
@@ -478,7 +536,6 @@ to determine uniquely the insertion place of the tuple in the index.
 @return own: created big record vector, NULL if we are not able to
 shorten the entry enough, i.e., if there are too many fixed-length or
 short fields in entry or the index is clustered */
-
 big_rec_t*
 dtuple_convert_big_rec(
 /*===================*/
@@ -492,7 +549,6 @@ dtuple_convert_big_rec(
 Puts back to entry the data stored in vector. Note that to ensure the
 fields in entry can accommodate the data, vector must have been created
 from entry with dtuple_convert_big_rec. */
-
 void
 dtuple_convert_back_big_rec(
 /*========================*/
@@ -542,6 +598,8 @@ struct dtuple_t {
 					default value in dtuple creation is
 					the same value as n_fields */
 	dfield_t*	fields;		/*!< fields */
+	ulint		n_v_fields;	/*!< number of virtual fields */
+	dfield_t*	v_fields;	/*!< fields on virtual column */
 	UT_LIST_NODE_T(dtuple_t) tuple_list;
 					/*!< data tuples can be linked into a
 					list using this field */

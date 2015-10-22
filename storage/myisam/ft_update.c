@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2011, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 /* functions to work with full-text indices */
 
 #include "ftdefs.h"
+#include "my_base.h" /* HA_KEYTYPE_FLOAT */
 #include <math.h>
 
 void _mi_ft_segiterator_init(MI_INFO *info, uint keynr, const uchar *record,
@@ -96,7 +97,7 @@ uint _mi_ft_segiterator(FT_SEG_ITERATOR *ftsi)
 uint _mi_ft_parse(TREE *parsed, MI_INFO *info, uint keynr, const uchar *record,
                   MYSQL_FTPARSER_PARAM *param, MEM_ROOT *mem_root)
 {
-  FT_SEG_ITERATOR ftsi;
+  FT_SEG_ITERATOR ftsi= { 0, 0, NULL, NULL, NULL };
   struct st_mysql_ftparser *parser;
   DBUG_ENTER("_mi_ft_parse");
 
@@ -169,7 +170,8 @@ static int _mi_ft_erase(MI_INFO *info, uint keynr, uchar *keybuf,
 
 int _mi_ft_cmp(MI_INFO *info, uint keynr, const uchar *rec1, const uchar *rec2)
 {
-  FT_SEG_ITERATOR ftsi1, ftsi2;
+  FT_SEG_ITERATOR ftsi1= { 0, 0, NULL, NULL, NULL };
+  FT_SEG_ITERATOR ftsi2= { 0, 0, NULL, NULL, NULL };
   const CHARSET_INFO *cs= info->s->keyinfo[keynr].seg->charset;
   DBUG_ENTER("_mi_ft_cmp");
   _mi_ft_segiterator_init(info, keynr, rec1, &ftsi1);
@@ -305,7 +307,7 @@ uint _mi_ft_convert_to_ft2(MI_INFO *info, uint keynr, uchar *key)
   my_off_t root;
   DYNAMIC_ARRAY *da=info->ft1_to_ft2;
   MI_KEYDEF *keyinfo=&info->s->ft2_keyinfo;
-  uchar *key_ptr= (uchar*) dynamic_array_ptr(da, 0), *end;
+  uchar *key_ptr= da->buffer, *end;
   uint length, key_length;
   DBUG_ENTER("_mi_ft_convert_to_ft2");
 
@@ -333,7 +335,7 @@ uint _mi_ft_convert_to_ft2(MI_INFO *info, uint keynr, uchar *key)
     DBUG_RETURN(-1);
 
   /* inserting the rest of key values */
-  end= (uchar*) dynamic_array_ptr(da, da->elements);
+  end= da->buffer + (da->elements * da->size_of_element);
   for (key_ptr+=length; key_ptr < end; key_ptr+=keyinfo->keylength)
     if(_mi_ck_real_write_btree(info, keyinfo, key_ptr, 0, &root, SEARCH_SAME))
       DBUG_RETURN(-1);

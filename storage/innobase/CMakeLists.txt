@@ -1,4 +1,4 @@
-# Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -68,6 +68,7 @@ SET(INNOBASE_SOURCES
 	gis/gis0sea.cc
 	fts/fts0plugin.cc
 	handler/ha_innodb.cc
+	handler/ha_innopart.cc
 	handler/handler0alter.cc
 	handler/i_s.cc
 	handler/xtradb_i_s.cc
@@ -154,8 +155,17 @@ ENDIF()
 MYSQL_ADD_PLUGIN(innobase ${INNOBASE_SOURCES} STORAGE_ENGINE
   MANDATORY
   MODULE_OUTPUT_NAME ha_innodb
-  LINK_LIBRARIES ${ZLIB_LIBRARY})
+  LINK_LIBRARIES ${ZLIB_LIBRARY} ${LZ4_LIBRARY})
 
 IF(WITH_INNOBASE_STORAGE_ENGINE)
   ADD_DEPENDENCIES(innobase GenError)
+ENDIF()
+
+# Avoid generating Hardware Capabilities due to crc32 instructions
+IF(CMAKE_SYSTEM_NAME MATCHES "SunOS" AND CMAKE_SYSTEM_PROCESSOR MATCHES "i386")
+  INCLUDE(${MYSQL_CMAKE_SCRIPT_DIR}/compile_flags.cmake)
+  ADD_COMPILE_FLAGS(
+    ut/ut0crc32.cc
+    COMPILE_FLAGS "-Wa,-nH"
+  )
 ENDIF()

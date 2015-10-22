@@ -7,6 +7,7 @@
 drop table if exists t1;
 --enable_warnings
 
+--disable_warnings
 SELECT variable_name, variable_value
 FROM information_schema.global_variables
 WHERE variable_name IN ('date_format', 'datetime_format', 'time_format')
@@ -16,6 +17,7 @@ SELECT variable_name, variable_value
 FROM information_schema.session_variables
 WHERE variable_name IN ('date_format', 'datetime_format', 'time_format')
 ORDER BY variable_name;
+--enable_warnings
 
 #
 # The following tests will work only when we at some point will enable
@@ -395,3 +397,17 @@ SELECT TIME_FORMAT(NULL, '%s')+0e0;
 --echo #
 --echo # End of 5.6 tests
 --echo #
+
+--echo #
+--echo # Bug#19047644 EXTRACT_DATE_TIME MISBEHAVES WITH
+--echo #              UNINITIALISED VALUE ON GARBAGE INPUTS
+--echo #
+
+do str_to_date(1, "%#");
+
+--echo #
+--echo # Bug#19047488 MAKE_DATE_TIME WITH TOO BIG STRING ARGUMENT, 
+--echo #              INVALID MEMORY READS
+--echo #
+
+do timestamp(date_format('2011-11-11', right("12345" + 1, 3)));

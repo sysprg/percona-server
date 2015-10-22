@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2002, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2002, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,9 +14,8 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "my_global.h"         // NO_EMBEDDED_ACCESS_CHECKS
-#include "sql_priv.h"
-#include "unireg.h"
+#include "sp_head.h"
+
 #include "sql_cache.h"         // query_cache_*
 #include "probes_mysql.h"
 #include "sql_show.h"          // append_identifier
@@ -24,14 +23,13 @@
 #include "sql_table.h"         // prepare_create_field
 #include "auth_common.h"       // *_ACL
 #include "log_event.h"         // append_query_string, Query_log_event
+#include "binlog.h"
 
-#include "sp_head.h"
 #include "sp_instr.h"
 #include "sp.h"
 #include "sp_pcontext.h"
 #include "sp_rcontext.h"
 #include "sp_cache.h"
-#include "set_var.h"
 #include "sql_parse.h"         // cleanup_items
 #include "sql_base.h"          // close_thread_tables
 #include "transaction.h"       // trans_commit_stmt
@@ -85,35 +83,6 @@ struct SP_TABLE
   uint lock_count;
   uint query_lock_count;
   uint8 trg_event_map;
-};
-
-
-/**
-   A simple RAII wrapper around Strict_error_handler.
-*/
-class Strict_error_handler_wrapper
-{
-  THD *m_thd;
-  Strict_error_handler m_strict_handler;
-  bool m_active;
-
-public:
-  Strict_error_handler_wrapper(THD *thd, sp_head *sp_head)
-    : m_thd(thd), m_active(false)
-  {
-    if (sp_head->m_sql_mode & (MODE_STRICT_ALL_TABLES |
-                               MODE_STRICT_TRANS_TABLES))
-    {
-      m_thd->push_internal_handler(&m_strict_handler);
-      m_active= true;
-    }
-  }
-
-  ~Strict_error_handler_wrapper()
-  {
-    if (m_active)
-      m_thd->pop_internal_handler();
-  }
 };
 
 
@@ -317,9 +286,11 @@ sp_head::sp_head(enum_sp_type type)
   m_body= NULL_STR;
   m_body_utf8= NULL_STR;
 
-  my_hash_init(&m_sptabs, system_charset_info, 0, 0, 0, sp_table_key, 0, 0);
+  my_hash_init(&m_sptabs, system_charset_info, 0, 0, 0, sp_table_key, 0, 0,
+               key_memory_sp_head_main_root);
   my_hash_init(&m_sroutines, system_charset_info, 0, 0, 0, sp_sroutine_key,
-               0, 0);
+               0, 0,
+               key_memory_sp_head_main_root);
 
   m_trg_chistics.ordering_clause= TRG_ORDER_NONE;
   m_trg_chistics.anchor_trigger_name.str= NULL;
@@ -517,7 +488,7 @@ sp_head::~sp_head()
     THD::lex. It is safe to not update LEX::ptr because further query
     string parsing and execution will be stopped anyway.
   */
-  while ((lex= (LEX *) m_parser_data.pop_lex()))
+  while ((lex= m_parser_data.pop_lex()))
   {
     THD *thd= lex->thd;
     thd->lex->sphead= NULL;
@@ -554,6 +525,8 @@ Field *sp_head::create_result_field(size_t field_max_length,
                  m_return_field_def.interval,
                  field_name ? field_name : (const char *) m_name.str);
 
+  field->gcol_info= m_return_field_def.gcol_info;
+  field->stored_in_db= m_return_field_def.stored_in_db;
   if (field)
     field->init(table);
 
@@ -709,6 +682,7 @@ bool sp_head::execute(THD *thd, bool merge_da_on_success)
     too early in the calling query.
   */
   thd->change_list.move_elements_to(&old_change_list);
+
   /*
     Cursors will use thd->packet, so they may corrupt data which was prepared
     for sending by upper level. OTOH cursors in the same routine can share this
@@ -717,7 +691,7 @@ bool sp_head::execute(THD *thd, bool merge_da_on_success)
 
     It is probably safe to use same thd->convert_buff everywhere.
   */
-  old_packet.swap(thd->packet);
+  old_packet.swap(*thd->get_protocol_classic()->get_packet());
 
   /*
     Switch to per-instruction arena here. We can do it since we cleanup
@@ -806,7 +780,7 @@ bool sp_head::execute(THD *thd, bool merge_da_on_success)
       start.
     */
     if (thd->rewritten_query.length())
-      thd->rewritten_query.free();
+      thd->rewritten_query.mem_free();
 
     err_status= i->execute(thd, &ip);
 
@@ -866,7 +840,7 @@ bool sp_head::execute(THD *thd, bool merge_da_on_success)
   thd->sp_runtime_ctx->pop_all_cursors(); // To avoid memory leaks after an error
 
   /* Restore all saved */
-  old_packet.swap(thd->packet);
+  old_packet.swap(*thd->get_protocol_classic()->get_packet());
   DBUG_ASSERT(thd->change_list.is_empty());
   old_change_list.move_elements_to(&thd->change_list);
   thd->lex= old_lex;
@@ -1009,9 +983,6 @@ bool sp_head::execute_trigger(THD *thd,
   DBUG_ENTER("sp_head::execute_trigger");
   DBUG_PRINT("info", ("trigger %s", m_name.str));
 
-  // Push Strict_error_handler if the SP was created in STRICT mode.
-  Strict_error_handler_wrapper strict_wrapper(thd, this);
-
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
   Security_context *save_ctx= NULL;
   LEX_CSTRING definer_user= {m_definer_user.str, m_definer_user.length};
@@ -1045,7 +1016,8 @@ bool sp_head::execute_trigger(THD *thd,
     get_privilege_desc(priv_desc, sizeof(priv_desc), TRIGGER_ACL);
 
     my_error(ER_TABLEACCESS_DENIED_ERROR, MYF(0), priv_desc,
-             thd->security_ctx->priv_user, thd->security_ctx->host_or_ip,
+             thd->security_context()->priv_user().str,
+             thd->security_context()->host_or_ip().str,
              table_name.str);
 
     m_security_ctx.restore_security_context(thd, save_ctx);
@@ -1134,9 +1106,6 @@ bool sp_head::execute_function(THD *thd, Item **argp, uint argcount,
 
   DBUG_ENTER("sp_head::execute_function");
   DBUG_PRINT("info", ("function %s", m_name.str));
-
-  // Push Strict_error_handler if the SP was created in STRICT mode.
-  Strict_error_handler_wrapper strict_wrapper(thd, this);
 
   // Resetting THD::where to its default value
   thd->where= THD::DEFAULT_WHERE;
@@ -1381,9 +1350,6 @@ bool sp_head::execute_procedure(THD *thd, List<Item> *args)
   DBUG_ENTER("sp_head::execute_procedure");
   DBUG_PRINT("info", ("procedure %s", m_name.str));
 
-  // Push Strict_error_handler if the SP was created in STRICT mode.
-  Strict_error_handler_wrapper strict_wrapper(thd, this);
-
   if (args->elements != params)
   {
     my_error(ER_SP_WRONG_NO_OF_ARGS, MYF(0), "PROCEDURE",
@@ -1472,6 +1438,13 @@ bool sp_head::execute_procedure(THD *thd, List<Item> *args)
           err_status= TRUE;
           break;
         }
+      }
+
+      if (thd->variables.session_track_transaction_info > TX_TRACK_NONE)
+      {
+        ((Transaction_state_tracker *)
+         thd->session_tracker.get_tracker(TRANSACTION_INFO_TRACKER))
+          ->add_trx_state_from_thd(thd);
       }
     }
 
@@ -1669,7 +1642,7 @@ bool sp_head::restore_lex(THD *thd)
 
   sublex->set_trg_event_type_for_tables();
 
-  LEX *oldlex= (LEX *) m_parser_data.pop_lex();
+  LEX *oldlex= m_parser_data.pop_lex();
 
   if (!oldlex)
     return false; // Nothing to restore
@@ -1763,7 +1736,7 @@ bool sp_head::show_create_routine(THD *thd, enum_sp_type type)
 
   bool err_status;
 
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
   List<Item> fields;
 
   LEX_STRING sql_mode;
@@ -1806,15 +1779,15 @@ bool sp_head::show_create_routine(THD *thd, enum_sp_type type)
   fields.push_back(new Item_empty_string("Database Collation",
                                          MY_CS_NAME_SIZE));
 
-  if (protocol->send_result_set_metadata(&fields,
-                            Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+  if (thd->send_result_metadata(&fields,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
   {
     return true;
   }
 
   /* Send data. */
 
-  protocol->prepare_for_resend();
+  protocol->start_row();
 
   protocol->store(m_name.str, m_name.length, system_charset_info);
   protocol->store(sql_mode.str, sql_mode.length, system_charset_info);
@@ -1830,7 +1803,7 @@ bool sp_head::show_create_routine(THD *thd, enum_sp_type type)
   protocol->store(m_creation_ctx->get_connection_cl()->name, system_charset_info);
   protocol->store(m_creation_ctx->get_db_cl()->name, system_charset_info);
 
-  err_status= protocol->write();
+  err_status= protocol->end_row();
 
   if (!err_status)
     my_eof(thd);
@@ -1963,7 +1936,7 @@ void sp_head::opt_mark()
 #ifndef DBUG_OFF
 bool sp_head::show_routine_code(THD *thd)
 {
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
   char buff[2048];
   String buffer(buff, sizeof(buff), system_charset_info);
   List<Item> field_list;
@@ -1979,8 +1952,8 @@ bool sp_head::show_routine_code(THD *thd)
   // 1024 is for not to confuse old clients
   field_list.push_back(new Item_empty_string("Instruction",
                                              std::max<size_t>(buffer.length(), 1024U)));
-  if (protocol->send_result_set_metadata(&field_list, Protocol::SEND_NUM_ROWS |
-                                         Protocol::SEND_EOF))
+  if (thd->send_result_metadata(&field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
     return true;
 
   for (ip= 0; (i = get_instr(ip)) ; ip++)
@@ -2001,13 +1974,13 @@ bool sp_head::show_routine_code(THD *thd)
       */
       push_warning(thd, Sql_condition::SL_WARNING, ER_UNKNOWN_ERROR, tmp);
     }
-    protocol->prepare_for_resend();
+    protocol->start_row();
     protocol->store((longlong)ip);
 
     buffer.set("", 0, system_charset_info);
     i->print(&buffer);
     protocol->store(buffer.ptr(), buffer.length(), system_charset_info);
-    if ((res= protocol->write()))
+    if ((res= protocol->end_row()))
       break;
   }
 
@@ -2034,7 +2007,7 @@ bool sp_head::merge_table_list(THD *thd,
   }
 
   for (; table ; table= table->next_global)
-    if (!table->derived && !table->schema_table)
+    if (!table->is_derived() && !table->schema_table)
     {
       /*
         Structure of key for the multi-set is "db\0table\0alias\0".
@@ -2080,7 +2053,7 @@ bool sp_head::merge_table_list(THD *thd,
       }
       else
       {
-        if (!(tab= (SP_TABLE *)thd->calloc(sizeof(SP_TABLE))))
+        if (!(tab= (SP_TABLE *)thd->mem_calloc(sizeof(SP_TABLE))))
           return false;
         if (lex_for_tmp_check->sql_command == SQLCOM_CREATE_TABLE &&
             lex_for_tmp_check->query_tables == table &&
@@ -2129,7 +2102,7 @@ void sp_head::add_used_tables_to_table_list(THD *thd,
     if (stab->temp)
       continue;
 
-    if (!(tab_buff= (char *)thd->calloc(ALIGN_SIZE(sizeof(TABLE_LIST)) *
+    if (!(tab_buff= (char *)thd->mem_calloc(ALIGN_SIZE(sizeof(TABLE_LIST)) *
                                         stab->lock_count)) ||
         !(key_buff= (char*)thd->memdup(stab->qname.str,
                                        stab->qname.length)))
@@ -2202,8 +2175,8 @@ bool sp_head::check_show_access(THD *thd, bool *full_access)
   *full_access=
     ((!check_table_access(thd, SELECT_ACL, &tables, false, 1, true) &&
       (tables.grant.privilege & SELECT_ACL) != 0) ||
-     (!strcmp(m_definer_user.str, thd->security_ctx->priv_user) &&
-      !strcmp(m_definer_host.str, thd->security_ctx->priv_host)));
+     (!strcmp(m_definer_user.str, thd->security_context()->priv_user().str) &&
+      !strcmp(m_definer_host.str, thd->security_context()->priv_host().str)));
 
   return *full_access ?
          false :

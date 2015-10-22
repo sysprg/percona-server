@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2007, 2013, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2007, 2014, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -37,7 +37,6 @@ Created 2007-03-27 Sunny Bains
 /** Types used within FTS. */
 struct fts_que_t;
 struct fts_node_t;
-struct fts_utf8_str_t;
 
 /** Callbacks used within FTS. */
 typedef pars_user_func_cb_t fts_sql_callback;
@@ -268,7 +267,12 @@ struct fts_doc_t {
 					same lifespan, most notably
 					the vector of token positions */
 	CHARSET_INFO*	charset;	/*!< Document's charset info */
+
 	st_mysql_ftparser* parser;	/*!< fts plugin parser */
+
+	bool		is_ngram;	/*!< Whether it is a ngram parser */
+
+	ib_rbt_t*	stopwords;	/*!< Stopwords */
 };
 
 /** A token and its positions within a document. */
@@ -369,43 +373,6 @@ fts_encode_int(
 						enough space */
 
 /******************************************************************//**
-Decode a UTF-8 character.
-
-http://www.unicode.org/versions/Unicode4.0.0/ch03.pdf:
-
- Scalar Value              1st Byte 2nd Byte 3rd Byte 4th Byte
-00000000 0xxxxxxx          0xxxxxxx
-00000yyy yyxxxxxx          110yyyyy 10xxxxxx
-zzzzyyyy yyxxxxxx          1110zzzz 10yyyyyy 10xxxxxx
-000uuuzz zzzzyyyy yyxxxxxx 11110uuu 10zzzzzz 10yyyyyy 10xxxxxx
-
-This function decodes UTF-8 sequences up to 6 bytes (31 bits).
-
-On error *ptr will point to the first byte that was not correctly
-decoded. This will hopefully help in resyncing the input. */
-UNIV_INLINE
-ulint
-fts_utf8_decode(
-/*============*/
-						/*!< out: UTF8_ERROR if *ptr
-						did not point to a valid
-						UTF-8 sequence, or the
-						Unicode code point. */
-	const byte**	ptr);			/*!< in/out: pointer to
-						UTF-8 string. The
-						pointer is advanced to
-						the start of the next
-						character. */
-
-/******************************************************************//**
-Lowercase an UTF-8 string. */
-UNIV_INLINE
-void
-fts_utf8_tolower(
-/*=============*/
-	fts_string_t*	str);			/*!< in: string */
-
-/******************************************************************//**
 Get the selected FTS aux INDEX suffix. */
 UNIV_INLINE
 const char*
@@ -413,34 +380,17 @@ fts_get_suffix(
 /*===========*/
 	ulint		selected);		/*!< in: selected index */
 
-/********************************************************************
-Get the number of index selectors. */
-UNIV_INLINE
-ulint
-fts_get_n_selectors(void);
-/*=====================*/
-
-/******************************************************************//**
-Select the FTS auxiliary index for the given string.
+/** Select the FTS auxiliary index for the given character.
+@param[in]	cs	charset
+@param[in]	str	string
+@param[in]	len	string length in bytes
 @return the index to use for the string */
 UNIV_INLINE
 ulint
 fts_select_index(
-/*=============*/
-	const CHARSET_INFO*	cs,		/*!< Charset */
-	const byte*		str,		/*!< in: word string */
-	ulint			len);		/*!< in: string length */
-
-/********************************************************************
-Select the next FTS auxiliary index for the given character.
-@return the next index to use for character */
-UNIV_INLINE
-ulint
-fts_select_next_index(
-/*==================*/
-	const CHARSET_INFO*	cs,		/*!< Charset */
-	const byte*		str,		/*!< in: string */
-	ulint			len);		/*!< in: string length */
+	const CHARSET_INFO*	cs,
+	const byte*		str,
+	ulint			len);
 
 #ifndef UNIV_NONINL
 #include "fts0types.ic"

@@ -24,7 +24,6 @@
 #include <typelib.h>
 #include <mysql_version.h>
 #include <mysql_com.h>
-#include <my_pthread.h>
 #include <syslog.h>
 
 #include "audit_log.h"
@@ -814,7 +813,7 @@ static MYSQL_SYSVAR_ULONGLONG(buffer_size, audit_log_buffer_size,
   PLUGIN_VAR_RQCMDARG | PLUGIN_VAR_READONLY,
   "The size of the buffer for asynchronous logging, "
   "if FILE handler is used.",
-  NULL, NULL, 1048576UL, 4096UL, ULONGLONG_MAX, 4096UL);
+  NULL, NULL, 1048576UL, 4096UL, ULLONG_MAX, 4096UL);
 
 static
 void audit_log_rotate_on_size_update(
@@ -834,7 +833,7 @@ void audit_log_rotate_on_size_update(
 static MYSQL_SYSVAR_ULONGLONG(rotate_on_size, audit_log_rotate_on_size,
   PLUGIN_VAR_RQCMDARG,
   "Maximum size of the log to start the rotation, if FILE handler is used.",
-  NULL, audit_log_rotate_on_size_update, 0UL, 0UL, ULONGLONG_MAX, 4096UL);
+  NULL, audit_log_rotate_on_size_update, 0UL, 0UL, ULLONG_MAX, 4096UL);
 
 static
 void audit_log_rotations_update(
@@ -946,7 +945,7 @@ static struct st_mysql_audit audit_log_descriptor=
 
 static struct st_mysql_show_var audit_log_status_variables[]=
 {
-  { 0, 0, 0}
+  {NullS, NullS, SHOW_LONG, SHOW_SCOPE_GLOBAL}
 };
 
 

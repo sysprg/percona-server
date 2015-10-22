@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -42,7 +42,6 @@ enum enum_sql_command {
   SQLCOM_SHOW_KEYS, SQLCOM_SHOW_VARIABLES, SQLCOM_SHOW_STATUS,
   SQLCOM_SHOW_ENGINE_LOGS, SQLCOM_SHOW_ENGINE_STATUS, SQLCOM_SHOW_ENGINE_MUTEX,
   SQLCOM_SHOW_PROCESSLIST, SQLCOM_SHOW_MASTER_STAT, SQLCOM_SHOW_SLAVE_STAT,
-  SQLCOM_SHOW_SLAVE_STAT_NONBLOCKING,
   SQLCOM_SHOW_GRANTS, SQLCOM_SHOW_CREATE, SQLCOM_SHOW_CHARSETS,
   SQLCOM_SHOW_COLLATIONS, SQLCOM_SHOW_CREATE_DB, SQLCOM_SHOW_TABLE_STATUS,
   SQLCOM_SHOW_TRIGGERS,
@@ -60,6 +59,7 @@ enum enum_sql_command {
   SQLCOM_ROLLBACK, SQLCOM_ROLLBACK_TO_SAVEPOINT,
   SQLCOM_COMMIT, SQLCOM_SAVEPOINT, SQLCOM_RELEASE_SAVEPOINT,
   SQLCOM_SLAVE_START, SQLCOM_SLAVE_STOP,
+  SQLCOM_START_GROUP_REPLICATION, SQLCOM_STOP_GROUP_REPLICATION,
   SQLCOM_BEGIN, SQLCOM_CHANGE_MASTER, SQLCOM_CHANGE_REPLICATION_FILTER,
   SQLCOM_RENAME_TABLE,  
   SQLCOM_RESET, SQLCOM_PURGE, SQLCOM_PURGE_BEFORE, SQLCOM_SHOW_BINLOGS,
@@ -96,6 +96,7 @@ enum enum_sql_command {
   SQLCOM_GET_DIAGNOSTICS,
   SQLCOM_ALTER_USER,
   SQLCOM_EXPLAIN_OTHER,
+  SQLCOM_SHOW_CREATE_USER,
 
   // TODO(mcallaghan): update status_vars in mysqld to export these
   SQLCOM_SHOW_USER_STATS, SQLCOM_SHOW_TABLE_STATS, SQLCOM_SHOW_INDEX_STATS,
@@ -152,6 +153,17 @@ public:
     @retval true on error
   */
   virtual bool execute(THD *thd) = 0;
+
+  /**
+    Command-specific reinitialization before execution of prepared statement
+
+    @see reinit_stmt_before_use()
+
+    @node Currently this function is overloaded for INSERT/REPLACE stmts only.
+
+    @param thd  Current THD.
+  */
+  virtual void cleanup(THD *thd) {}
 
 protected:
   Sql_cmd()

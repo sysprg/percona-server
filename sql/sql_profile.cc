@@ -1,4 +1,4 @@
-/* Copyright (c) 2007, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2007, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -29,8 +29,6 @@
 */
 
 
-#include "sql_priv.h"
-#include "unireg.h"                    // REQUIRED: for other includes
 #include "sql_profile.h"
 #include "my_sys.h"
 #include "sql_show.h"                     // schema_table_store_record
@@ -411,7 +409,8 @@ void PROFILING::start_new_query(const char *initial_state)
   }
 
   enabled= ((thd->variables.option_bits & OPTION_PROFILING) != 0) ||
-            ((thd->variables.log_slow_verbosity & (ULL(1) << SLOG_V_PROFILING)) != 0);
+            ((thd->variables.log_slow_verbosity
+              & (1ULL << SLOG_V_PROFILING)) != 0);
 
   if (! enabled) DBUG_VOID_RETURN;
 
@@ -450,7 +449,8 @@ void PROFILING::finish_current_query()
 
     if ((enabled) &&                                    /* ON at start? */
         (((thd->variables.option_bits & OPTION_PROFILING) != 0) ||
-          ((thd->variables.log_slow_verbosity & (ULL(1) << SLOG_V_PROFILING)) != 0)) &&   /* and ON at end? */
+          ((thd->variables.log_slow_verbosity & (1ULL << SLOG_V_PROFILING))
+           != 0)) &&   /* and ON at end? */
         (current->m_query_source.str != NULL) &&
         (! current->entries.is_empty()))
     {
@@ -486,14 +486,14 @@ bool PROFILING::show_profiles()
                                            MYSQL_TYPE_DOUBLE));
   field_list.push_back(new Item_empty_string("Query", 40));
 
-  if (thd->protocol->send_result_set_metadata(&field_list,
-                                 Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
+  if (thd->send_result_metadata(&field_list,
+                                Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF))
     DBUG_RETURN(TRUE);
 
   SELECT_LEX *sel= thd->lex->select_lex;
   SELECT_LEX_UNIT *unit= thd->lex->unit;
   ha_rows idx= 0;
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
 
   unit->set_limit(sel);
 
@@ -513,7 +513,7 @@ bool PROFILING::show_profiles()
     if (idx > unit->select_limit_cnt)
       break;
 
-    protocol->prepare_for_resend();
+    protocol->start_row();
     protocol->store((uint32)(prof->profiling_query_id));
     protocol->store((double)(query_time_usecs/(1000.0*1000)),
                     (uint32) TIME_FLOAT_DIGITS-1, &elapsed);
@@ -523,7 +523,7 @@ bool PROFILING::show_profiles()
     else
       protocol->store_null();
 
-    if (protocol->write())
+    if (protocol->end_row())
       DBUG_RETURN(TRUE);
   }
   my_eof(thd);
@@ -552,7 +552,8 @@ void PROFILING::set_query_source(const char *query_source_arg, size_t query_leng
 
 bool PROFILING::enabled_getrusage()
 {
-  return ((thd->variables.log_slow_verbosity & (ULL(1) << SLOG_V_PROFILING_USE_GETRUSAGE)) != 0);
+  return ((thd->variables.log_slow_verbosity
+           & (1ULL << SLOG_V_PROFILING_USE_GETRUSAGE)) != 0);
 }
 
 /**

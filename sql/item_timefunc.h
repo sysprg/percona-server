@@ -1,7 +1,7 @@
 #ifndef ITEM_TIMEFUNC_INCLUDED
 #define ITEM_TIMEFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,12 +19,16 @@
 
 /* Function items used by mysql */
 
+#include "item_strfunc.h"  // Item_str_func
+
 #include <algorithm>
 
 class MY_LOCALE;
+struct Interval;
+struct Date_time_format;
 
 bool get_interval_value(Item *args,interval_type int_type,
-			       String *str_value, INTERVAL *interval);
+			       String *str_value, Interval *interval);
 
 class Item_func_period_add :public Item_int_func
 {
@@ -481,6 +485,13 @@ public:
                                                 args[0]->datetime_precision());
   }
   bool val_timeval(struct timeval *tm);
+  bool check_gcol_func_processor(uchar *int_arg)
+    /*
+      TODO: Allow UNIX_TIMESTAMP called with an argument to be a part
+      of the expression for a generated column
+    */
+  { return true; }
+
 };
 
 
@@ -959,6 +970,7 @@ public:
   bool basic_const_item() const { return true; }
   bool const_item() const { return true; }
   table_map used_tables() const { return (table_map) 0L; }
+  table_map not_null_tables() const { return used_tables(); }
   void cleanup()
   {
     // See Item_basic_const::cleanup()
@@ -1013,6 +1025,7 @@ public:
   bool basic_const_item() const { return true; }
   bool const_item() const { return true; }
   table_map used_tables() const { return (table_map) 0L; }
+  table_map not_null_tables() const { return used_tables(); }
   void cleanup()
   {
     // See Item_basic_const::cleanup()
@@ -1067,6 +1080,7 @@ public:
   bool basic_const_item() const { return true; }
   bool const_item() const { return true; }
   table_map used_tables() const { return (table_map) 0L; }
+  table_map not_null_tables() const { return used_tables(); }
   void cleanup()
   {
     // See Item_basic_const::cleanup()
@@ -1113,6 +1127,8 @@ public:
     DBUG_ASSERT(fixed == 1);
     return cached_time.val_str(&str_value);
   }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -1170,6 +1186,8 @@ public:
     DBUG_ASSERT(fixed == 1);
     return cached_time.val_str(&str_value);
   }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -1227,6 +1245,8 @@ public:
     DBUG_ASSERT(fixed == 1);
     return cached_time.val_str(&str_value);
   }
+  bool check_gcol_func_processor(uchar *int_arg)
+  { return true; }
 };
 
 
@@ -1473,6 +1493,7 @@ public:
 
   void print(String *str, enum_query_type query_type);
   const char *func_name() const { return "cast_as_date"; }
+  enum Functype functype() const { return TYPECAST_FUNC; }
   bool get_date(MYSQL_TIME *ltime, my_time_flags_t fuzzy_date);
   const char *cast_type() const { return "date"; }
 };
@@ -1499,6 +1520,7 @@ public:
   }
   void print(String *str, enum_query_type query_type);
   const char *func_name() const { return "cast_as_time"; }
+  enum Functype functype() const { return TYPECAST_FUNC; }
   bool get_time(MYSQL_TIME *ltime);
   const char *cast_type() const { return "time"; }
   void fix_length_and_dec()
@@ -1533,6 +1555,7 @@ public:
   }
   void print(String *str, enum_query_type query_type);
   const char *func_name() const { return "cast_as_datetime"; }
+  enum Functype functype() const { return TYPECAST_FUNC; }
   const char *cast_type() const { return "datetime"; }
   void fix_length_and_dec()
   {
@@ -1703,7 +1726,7 @@ public:
 
 /* Function prototypes */
 
-bool make_date_time(DATE_TIME_FORMAT *format, MYSQL_TIME *l_time,
+bool make_date_time(Date_time_format *format, MYSQL_TIME *l_time,
                     timestamp_type type, String *str);
 
 #endif /* ITEM_TIMEFUNC_INCLUDED */

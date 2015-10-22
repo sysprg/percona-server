@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,17 +20,60 @@
 #include <cstdlib>
 #include <cstring>
 #include "my_sys.h"
+#include "sql_const.h"
 
 #include "parse_location.h"
 
 class THD;
 class st_select_lex;
 
+// uncachable cause
+#define UNCACHEABLE_DEPENDENT   1
+#define UNCACHEABLE_RAND        2
+#define UNCACHEABLE_SIDEEFFECT	4
+/* For uncorrelated SELECT in an UNION with some correlated SELECTs */
+#define UNCACHEABLE_UNITED      8
+#define UNCACHEABLE_CHECKOPTION 16
+
+/**
+  Names for different query parse tree parts
+*/
+
+enum enum_parsing_context
+{
+  CTX_NONE= 0, ///< Empty value
+  CTX_MESSAGE, ///< "No tables used" messages etc.
+  CTX_TABLE, ///< for single-table UPDATE/DELETE/INSERT/REPLACE
+  CTX_SELECT_LIST, ///< SELECT (subquery), (subquery)...
+  CTX_UPDATE_VALUE_LIST, ///< UPDATE ... SET field=(subquery)...
+  CTX_JOIN,
+  CTX_QEP_TAB,
+  CTX_MATERIALIZATION,
+  CTX_DUPLICATES_WEEDOUT,
+  CTX_DERIVED, ///< "Derived" subquery
+  CTX_WHERE, ///< Subquery in WHERE clause item tree
+  CTX_ON,    ///< ON clause context
+  CTX_HAVING, ///< Subquery in HAVING clause item tree
+  CTX_ORDER_BY, ///< ORDER BY clause execution context
+  CTX_GROUP_BY, ///< GROUP BY clause execution context
+  CTX_SIMPLE_ORDER_BY, ///< ORDER BY clause execution context
+  CTX_SIMPLE_GROUP_BY, ///< GROUP BY clause execution context
+  CTX_DISTINCT, ///< DISTINCT clause execution context
+  CTX_SIMPLE_DISTINCT, ///< DISTINCT clause execution context
+  CTX_BUFFER_RESULT, ///< see SQL_BUFFER_RESULT in the manual
+  CTX_ORDER_BY_SQ, ///< Subquery in ORDER BY clause item tree
+  CTX_GROUP_BY_SQ, ///< Subquery in GROUP BY clause item tree
+  CTX_OPTIMIZED_AWAY_SUBQUERY, ///< Subquery executed once during optimization
+  CTX_UNION,
+  CTX_UNION_RESULT, ///< Pseudo-table context for UNION result
+  CTX_QUERY_SPEC ///< Inner SELECTs of UNION expression
+};
+
 /*
   Note: YYLTYPE doesn't overload a default constructor (as well an underlying
   Symbol_location).
-  OTOH if we need a zero-initialized POS, YYLTYPE or Symbol_location object, we
-  can simply call POS(), YYLTYPE() or Symbol_location(): C++ does
+  OTOH if we need a zero-initialized POS, YYLTYPE or Symbol_location object,
+  we can simply call POS(), YYLTYPE() or Symbol_location(): C++ does
   value-initialization in that case.
 */
 typedef YYLTYPE POS;
@@ -45,6 +88,10 @@ struct Parse_context {
 
   Parse_context(THD *thd, st_select_lex *select);
 };
+
+
+// defined in sql_parse.cc:
+bool check_stack_overrun(THD *thd, long margin, uchar *dummy);
 
 
 /**
@@ -93,7 +140,27 @@ public:
     @retval     false   success
     @retval     true    syntax/OOM/etc error
   */
-  virtual bool contextualize(Parse_context *pc);
+  virtual bool contextualize(Parse_context *pc)
+  {
+#ifndef DBUG_OFF
+    if (transitional)
+    {
+      DBUG_ASSERT(contextualized);
+      return false;
+    }
+#endif//DBUG_OFF
+
+    uchar dummy;
+    if (check_stack_overrun(pc->thd, STACK_MIN_SIZE, &dummy))
+      return true;
+
+#ifndef DBUG_OFF
+    DBUG_ASSERT(!contextualized);
+    contextualized= true;
+#endif//DBUG_OFF
+
+    return false;
+  }
 
   /**
    Intermediate version of the contextualize() function
@@ -132,14 +199,9 @@ public:
     return false;
   }
 
-  /**
-    my_syntax_error() function replacement for deferred reporting of syntax
-    errors
-
-    @param      pc      current parse context
-    @param      pos     location of the error in lexical scanner buffers
-  */
-  void error(Parse_context *pc, const POS &position) const;
+  void error(Parse_context *pc,
+             const POS &position,
+             const char * msg= NULL) const;
 };
 
 #endif /* PARSE_TREE_NODE_INCLUDED */

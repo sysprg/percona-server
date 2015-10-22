@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -194,6 +194,16 @@ static void vio_init(Vio *vio, enum enum_vio_type type,
           to another socket-based transport type. For example,
           rebind a TCP/IP transport to SSL.
 
+  @remark If new socket handle passed to vio_reset() is not equal
+          to the socket handle stored in Vio then socket handle will
+          be closed before storing new value. If handles are equal
+          then old socket is not closed. This is important for
+          vio_reset() usage in ssl_do().
+
+  @remark If any error occurs then Vio members won't be altered thus
+          preserving socket handle stored in Vio and not taking
+          ownership over socket handle passed as parameter.
+
   @param vio    A VIO object.
   @param type   A socket-based transport type.
   @param sd     The socket.
@@ -207,25 +217,19 @@ my_bool vio_reset(Vio* vio, enum enum_vio_type type,
                   my_socket sd, void *ssl __attribute__((unused)), uint flags)
 {
   int ret= FALSE;
-  Vio old_vio= *vio;
+  Vio new_vio;
   DBUG_ENTER("vio_reset");
 
   /* The only supported rebind is from a socket-based transport type. */
   DBUG_ASSERT(vio->type == VIO_TYPE_TCPIP || vio->type == VIO_TYPE_SOCKET);
 
-  /*
-    Will be reinitialized depending on the flags.
-    Nonetheless, already buffered inside the SSL layer.
-  */
-  my_free(vio->read_buffer);
-
-  vio_init(vio, type, sd, flags);
+  vio_init(&new_vio, type, sd, flags);
 
   /* Preserve perfschema info for this connection */
-  vio->mysql_socket.m_psi= old_vio.mysql_socket.m_psi;
+  new_vio.mysql_socket.m_psi= vio->mysql_socket.m_psi;
 
 #ifdef HAVE_OPENSSL
-  vio->ssl_arg= ssl;
+  new_vio.ssl_arg= ssl;
 #endif
 
   /*
@@ -233,11 +237,38 @@ my_bool vio_reset(Vio* vio, enum enum_vio_type type,
     the underlying proprieties associated with the timeout,
     such as the socket blocking mode.
   */
-  if (old_vio.read_timeout >= 0)
-    ret|= vio_timeout(vio, 0, old_vio.read_timeout);
+  if (vio->read_timeout >= 0)
+    ret|= vio_timeout(&new_vio, 0, vio->read_timeout);
 
-  if (old_vio.write_timeout >= 0)
-    ret|= vio_timeout(vio, 1, old_vio.write_timeout);
+  if (vio->write_timeout >= 0)
+    ret|= vio_timeout(&new_vio, 1, vio->write_timeout);
+
+  if (ret)
+  {
+    /*
+      vio_reset() failed
+      free resources allocated by vio_init
+    */
+    my_free(new_vio.read_buffer);
+  }
+  else
+  {
+    /*
+      vio_reset() succeeded
+      free old resources and then overwrite VIO structure
+    */
+
+    /*
+      Close socket only when it is not equal to the new one.
+    */
+    if (sd != mysql_socket_getfd(vio->mysql_socket))
+      if (vio->inactive == FALSE)
+        vio->vioshutdown(vio, SHUT_RDWR);
+
+    my_free(vio->read_buffer);
+
+    *vio= new_vio;
+  }
 
   DBUG_RETURN(MY_TEST(ret));
 }
@@ -392,10 +423,45 @@ void vio_end(void)
 #if defined(HAVE_YASSL)
   yaSSL_CleanUp();
 #elif defined(HAVE_OPENSSL)
-  // This one is needed on the client side
-  ERR_remove_state(0);
-  ERR_free_strings();
-  EVP_cleanup();
-  CRYPTO_cleanup_all_ex_data();
+  vio_ssl_end();
 #endif
 }
+
+struct vio_string
+{
+  const char * m_str;
+  int m_len;
+};
+typedef struct vio_string vio_string;
+
+/**
+  Names for each VIO TYPE.
+  Indexed by enum_vio_type.
+*/
+static const vio_string vio_type_names[] =
+{
+  { "", 0},
+  { C_STRING_WITH_LEN("TCP/IP") },
+  { C_STRING_WITH_LEN("Socket") },
+  { C_STRING_WITH_LEN("Named Pipe") },
+  { C_STRING_WITH_LEN("SSL/TLS") },
+  { C_STRING_WITH_LEN("Shared Memory") }
+};
+
+void get_vio_type_name(enum enum_vio_type vio_type, const char ** str, int * len)
+{
+  int index;
+
+  if ((vio_type >= FIRST_VIO_TYPE) && (vio_type <= LAST_VIO_TYPE))
+  {
+    index= vio_type;
+  }
+  else
+  {
+    index= 0;
+  }
+  *str= vio_type_names[index].m_str;
+  *len= vio_type_names[index].m_len;
+  return;
+}
+

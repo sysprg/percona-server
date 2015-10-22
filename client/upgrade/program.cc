@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,6 +17,7 @@
 
 #include "../client_priv.h"
 #include <string>
+#include <sstream>
 #include <vector>
 #include <algorithm>
 #include <memory>
@@ -26,15 +27,25 @@
 #include "my_default.h"
 #include "check/mysqlcheck.h"
 #include "../scripts/mysql_fix_privilege_tables_sql.c"
+#include "../scripts/sql_commands_sys_schema.h"
 
 #include "base/abstract_connection_program.h"
 #include "base/abstract_options_provider.h"
-#include "show_variable_query_extractor.h"
+#include "base/show_variable_query_extractor.h"
+#include "base/mysql_query_runner.h"
 
 using std::string;
 using std::vector;
+using namespace Mysql::Tools::Base;
+using std::stringstream;
 
 int mysql_check_errors;
+
+const int SYS_TABLE_COUNT = 1;
+const int SYS_VIEW_COUNT = 91;
+const int SYS_TRIGGER_COUNT = 2;
+const int SYS_FUNCTION_COUNT = 14;
+const int SYS_PROCEDURE_COUNT = 22;
 
 /**
   Error callback to be called from mysql_check functionality.
@@ -57,6 +68,7 @@ namespace Upgrade{
 
 using std::vector;
 using std::string;
+using std::stringstream;
 
 enum exit_codes
 {
@@ -66,6 +78,23 @@ enum exit_codes
   EXIT_MYSQL_CHECK_ERROR = 4,
   EXIT_UPGRADING_QUERIES_ERROR = 5,
 };
+
+
+class Mysql_connection_holder
+{
+  MYSQL* m_mysql_connection;
+
+public:
+  explicit Mysql_connection_holder(MYSQL *mysql_connection)
+    : m_mysql_connection(mysql_connection)
+  { }
+
+  ~Mysql_connection_holder()
+  {
+    mysql_close(this->m_mysql_connection);
+  }
+};
+
 
 class Program : public Base::Abstract_connection_program
 {
@@ -108,9 +137,11 @@ public:
     setbuf(stdout, NULL);
 
     this->m_mysql_connection= this->create_connection();
+    // Remember to call mysql_close()
+    Mysql_connection_holder connection_holder(m_mysql_connection);
     this->m_query_runner= new Mysql_query_runner(this->m_mysql_connection);
     this->m_query_runner->add_message_callback(new Instance_callback
-      <int, Mysql_message, Program>(this, &Program::print_error));
+      <int64, const Message_data&, Program>(this, &Program::process_error));
 
     /*
       Master and slave should be upgraded separately. All statements executed
@@ -124,13 +155,13 @@ public:
     }
     if (!this->m_write_binlog)
     {
-      if (mysql_query(this->m_mysql_connection, "SET SQL_LOG_BIN=0;") != 0)
+      if (mysql_query(this->m_mysql_connection, "SET SQL_LOG_BIN=0") != 0)
       {
         return this->print_error(1, "Cannot setup server variables.");
       }
     }
 
-    if (mysql_query(this->m_mysql_connection, "USE mysql;") != 0)
+    if (mysql_query(this->m_mysql_connection, "USE mysql") != 0)
     {
       return this->print_error(1, "Cannot select database.");
     }
@@ -151,11 +182,25 @@ public:
       return EXIT_BAD_VERSION;
 
     /*
-      Run "mysqlcheck" and "mysql_fix_privilege_tables.sql"
-      First run mysqlcheck on the system database.
-      Then do the upgrade.
-      And then run mysqlcheck on all tables.
+      Run "mysql_fix_privilege_tables.sql" and "mysqlcheck".
+
+      First, upgrade all tables in the system database and then check
+      them.
+
+      The order is important here because we might encounter really old
+      log tables in CSV engine which have NULLable columns and old TIMESTAMPs.
+      Trying to do REPAIR TABLE on such table prior to upgrading it will fail,
+      because REPAIR will detect old TIMESTAMPs and try to upgrade them to
+      the new ones. In the process it will attempt to create a table with
+      NULLable columns which is not supported by CSV engine nowadays.
+
+      After that, run mysqlcheck on all tables.
     */
+    if (this->run_sql_fix_privilege_tables() != 0)
+    {
+      return EXIT_UPGRADING_QUERIES_ERROR;
+    }
+
     if (this->m_upgrade_systables_only == false)
     {
       this->print_verbose_message("Checking system database.");
@@ -170,9 +215,224 @@ public:
       }
     }
 
-    if (this->run_sql_fix_privilege_tables() != 0)
+    if (this->m_skip_sys_schema == false)
     {
-      return EXIT_UPGRADING_QUERIES_ERROR;
+      /*
+        If the sys schema does not exist, then create it
+        Otherwise, try to select from sys.version, if this does not
+        exist but the schema does, then raise an error rather than
+        overwriting/adding to the existing schema
+      */
+      if (mysql_query(this->m_mysql_connection, "USE sys") != 0)
+      {
+        if (this->run_sys_schema_upgrade() != 0)
+        {
+          return EXIT_UPGRADING_QUERIES_ERROR;
+        }
+      } else {
+        /* If the version is smaller, upgrade */
+        if (mysql_query(this->m_mysql_connection, "SELECT * FROM sys.version") != 0)
+        {
+          return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+              "A sys schema exists with no sys.version view. "
+              "If you have a user created sys schema, this must be "
+              "renamed for the upgrade to succeed.");
+        } else {
+          MYSQL_RES *result = mysql_store_result(this->m_mysql_connection);
+          if (result)
+          {
+            MYSQL_ROW row;
+
+            while ((row = mysql_fetch_row(result)))
+            {
+                ulong sys_version = calc_server_version(row[0]);
+                if (sys_version >= calc_server_version(SYS_SCHEMA_VERSION))
+                {
+                  stringstream ss;
+                  ss << "The sys schema is already up to date (version " << row[0] << ").";
+                  this->print_verbose_message(ss.str());
+                } else {
+                  stringstream ss;
+                  ss << "Found outdated sys schema version " << row[0] << ".";
+                  this->print_verbose_message(ss.str());
+                  if (this->run_sys_schema_upgrade() != 0)
+                  {
+                    return EXIT_UPGRADING_QUERIES_ERROR;
+                  }
+                }
+            }
+            mysql_free_result(result);
+          } else {
+            return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+                "A sys schema exists with a sys.version view, but it returns no results.");
+          }
+        }
+        /* 
+           The version may be the same, but in some upgrade scenarios 
+           such as importing a 5.6 dump in to a fresh 5.7 install that 
+           includes the mysql schema, and then running mysql_upgrade,
+           the functions/procedures will be removed.
+
+           In this case, we check for the expected counts of objects, 
+           and if those do not match, we just re-install the schema.
+        */
+        if (mysql_query(this->m_mysql_connection, 
+          "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'sys' AND TABLE_TYPE = 'BASE TABLE'") != 0)
+        {
+          return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+              "Query against INFORMATION_SCHEMA.TABLES failed when checking the sys schema.");
+        } else {
+          MYSQL_RES *result = mysql_store_result(this->m_mysql_connection);
+          if (result)
+          {
+            MYSQL_ROW row;
+
+            while ((row = mysql_fetch_row(result)))
+            {
+                if (SYS_TABLE_COUNT != atoi(row[0]))
+                {
+                  stringstream ss;
+                  ss << "Found "  << row[0] <<  " sys tables, but expected " << SYS_TABLE_COUNT << "."
+                  " Re-installing the sys schema.";
+                  this->print_verbose_message(ss.str());
+                  if (this->run_sys_schema_upgrade() != 0)
+                  {
+                    return EXIT_UPGRADING_QUERIES_ERROR;
+                  }
+                }
+            }
+
+            mysql_free_result(result);
+          }
+        }
+
+        if (mysql_query(this->m_mysql_connection, 
+          "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = 'sys' AND TABLE_TYPE = 'VIEW'") != 0)
+        {
+          return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+              "Query against INFORMATION_SCHEMA.TABLES failed when checking the sys schema.");
+        } else {
+          MYSQL_RES *result = mysql_store_result(this->m_mysql_connection);
+          if (result)
+          {
+            MYSQL_ROW row;
+
+            while ((row = mysql_fetch_row(result)))
+            {
+                if (SYS_VIEW_COUNT != atoi(row[0]))
+                {
+                  stringstream ss;
+                  ss << "Found "  << row[0] <<  " sys views, but expected " << SYS_VIEW_COUNT << "."
+                  " Re-installing the sys schema.";
+                  this->print_verbose_message(ss.str());
+                  if (this->run_sys_schema_upgrade() != 0)
+                  {
+                    return EXIT_UPGRADING_QUERIES_ERROR;
+                  }
+                }
+            }
+
+            mysql_free_result(result);
+          }
+        }
+
+        if (mysql_query(this->m_mysql_connection, 
+          "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TRIGGERS WHERE TRIGGER_SCHEMA = 'sys'") != 0)
+        {
+          return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+              "Query against INFORMATION_SCHEMA.TABLES failed when checking the sys schema.");
+        } else {
+          MYSQL_RES *result = mysql_store_result(this->m_mysql_connection);
+          if (result)
+          {
+            MYSQL_ROW row;
+
+            while ((row = mysql_fetch_row(result)))
+            {
+                if (SYS_TRIGGER_COUNT != atoi(row[0]))
+                {
+                  stringstream ss;
+                  ss << "Found "  << row[0] <<  " sys triggers, but expected " << SYS_TRIGGER_COUNT << "."
+                  " Re-installing the sys schema.";
+                  this->print_verbose_message(ss.str());
+                  if (this->run_sys_schema_upgrade() != 0)
+                  {
+                    return EXIT_UPGRADING_QUERIES_ERROR;
+                  }
+                }
+            }
+
+            mysql_free_result(result);
+          }
+        }
+
+        if (mysql_query(this->m_mysql_connection, 
+          "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = 'sys' AND ROUTINE_TYPE = 'FUNCTION'") != 0)
+        {
+          return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+              "Query against INFORMATION_SCHEMA.TABLES failed when checking the sys schema.");
+        } else {
+          MYSQL_RES *result = mysql_store_result(this->m_mysql_connection);
+          if (result)
+          {
+            MYSQL_ROW row;
+
+            while ((row = mysql_fetch_row(result)))
+            {
+                if (SYS_FUNCTION_COUNT != atoi(row[0]))
+                {
+                  stringstream ss;
+                  ss << "Found "  << row[0] <<  " sys functions, but expected " << SYS_FUNCTION_COUNT << "."
+                  " Re-installing the sys schema.";
+                  this->print_verbose_message(ss.str());
+                  if (this->run_sys_schema_upgrade() != 0)
+                  {
+                    return EXIT_UPGRADING_QUERIES_ERROR;
+                  }
+                }
+            }
+
+            mysql_free_result(result);
+          }
+        }
+
+        if (mysql_query(this->m_mysql_connection, 
+          "SELECT COUNT(*) FROM INFORMATION_SCHEMA.ROUTINES WHERE ROUTINE_SCHEMA = 'sys' AND ROUTINE_TYPE = 'PROCEDURE'") != 0)
+        {
+          return this->print_error(EXIT_UPGRADING_QUERIES_ERROR,
+              "Query against INFORMATION_SCHEMA.TABLES failed when checking the sys schema.");
+        } else {
+          MYSQL_RES *result = mysql_store_result(this->m_mysql_connection);
+          if (result)
+          {
+            MYSQL_ROW row;
+
+            while ((row = mysql_fetch_row(result)))
+            {
+                if (SYS_PROCEDURE_COUNT != atoi(row[0]))
+                {
+                  stringstream ss;
+                  ss << "Found "  << row[0] <<  " sys procedures, but expected " << SYS_PROCEDURE_COUNT << "."
+                  " Re-installing the sys schema.";
+                  this->print_verbose_message(ss.str());
+                  if (this->run_sys_schema_upgrade() != 0)
+                  {
+                    return EXIT_UPGRADING_QUERIES_ERROR;
+                  }
+                }
+            }
+
+            mysql_free_result(result);
+          }
+        }
+
+      }
+      if (mysql_query(this->m_mysql_connection, "USE mysql") != 0)
+      {
+        return this->print_error(1, "Cannot select mysql database.");
+      }
+    } else {
+      this->print_verbose_message("Skipping installation/upgrade of the sys schema.");
     }
 
     if (!this->m_upgrade_systables_only)
@@ -227,41 +487,50 @@ public:
         "Force execution of SQL statements even if mysql_upgrade has already "
         "been executed for the current version of MySQL.")
       ->set_short_character('f');
+
+    this->create_new_option(&this->m_skip_sys_schema, "skip-sys-schema",
+        "Do not upgrade/install the sys schema.")
+      ->set_value(false);
   }
 
-  void error(int error_code)
+  void error(const Message_data& message)
   {
     std::cerr << "Upgrade process encountered error and will not continue."
       << std::endl;
 
-    exit(error_code);
+    exit(message.get_code());
   }
 
 private:
   /**
-    Prints errors, warnings and notes to standard error.
+    Process messages and decides if to prints them.
    */
-  int print_error(Mysql_message message)
+  int64 process_error(const Message_data& message)
   {
-    String error;
-    uint dummy_errors;
-    error.copy("error", 5, &my_charset_latin1,
-      this->m_mysql_connection->charset, &dummy_errors);
-
-    bool is_error = my_strcasecmp(this->m_mysql_connection->charset,
-      message.severity.c_str(), error.c_ptr()) == 0;
-    if (this->m_temporary_verbose || is_error)
+    if (this->m_temporary_verbose
+      || message.get_message_type() == Message_type_error)
     {
-      std::cerr << this->get_name() << ": [" << message.severity << "] "
-        << message.code << ": " << message.message << std::endl;
+      message.print_error(this->get_name());
     }
-    if (this->m_ignore_errors == false && is_error)
+    if (this->m_ignore_errors == false
+      && message.get_message_type() == Message_type_error)
     {
-      return message.code;
+      return message.get_code();
     }
     return 0;
   }
 
+  /**
+    Process warning messages during upgrades.
+   */
+  void process_warning(const Message_data& message)
+  {
+    if (this->m_temporary_verbose &&
+        message.get_message_type() == Message_type_warning)
+    {
+      message.print_error(this->get_name());
+    }
+  }
   /**
     Prints error occurred in main routine.
    */
@@ -276,17 +545,17 @@ private:
     version executing all the SQL commands
     compiled into the mysql_fix_privilege_tables array
    */
-  int run_sql_fix_privilege_tables()
+  int64 run_sql_fix_privilege_tables()
   {
     const char **query_ptr;
-    int result;
+    int64 result;
 
     Mysql_query_runner runner(*this->m_query_runner);
     runner.add_result_callback(
-      new Instance_callback<int, vector<string>, Program>(
+      new Instance_callback<int64, const Mysql_query_runner::Row&, Program>(
       this, &Program::result_callback));
     runner.add_message_callback(
-      new Instance_callback<int, Mysql_message, Program>(
+      new Instance_callback<int64, const Message_data&, Program>(
       this, &Program::fix_privilage_tables_error));
 
     this->print_verbose_message("Running queries to upgrade MySQL server.");
@@ -314,14 +583,51 @@ private:
   }
 
   /**
+    Update the sys schema
+   */
+  int run_sys_schema_upgrade()
+  {
+    const char **query_ptr;
+    int result;
+
+    Mysql_query_runner runner(*this->m_query_runner);
+    runner.add_result_callback(
+      new Instance_callback<int64, const Mysql_query_runner::Row&, Program>(
+      this, &Program::result_callback));
+    runner.add_message_callback(
+      new Instance_callback<int64, const Message_data&, Program>(
+      this, &Program::fix_privilage_tables_error));
+
+    this->print_verbose_message("Upgrading the sys schema.");
+
+    for ( query_ptr= &mysql_sys_schema[0];
+      *query_ptr != NULL;
+      query_ptr++
+      )
+    {
+      result= runner.run_query(*query_ptr);
+      if (!this->m_ignore_errors && result != 0)
+      {
+        return result;
+      }
+    }
+
+    return 0;
+  }
+
+  /**
     Gets path to file to write upgrade info into. Path is based on datadir of
     server.
    */
-  int get_upgrade_info_file_name(char* name)
+  int64 get_upgrade_info_file_name(char* name)
   {
     string datadir;
-    int res= Show_variable_query_extractor::get_variable_value(
-      this->m_query_runner, "datadir", &datadir);
+    bool exists;
+
+    int64 res= Show_variable_query_extractor::get_variable_value(
+      this->m_query_runner, "datadir", datadir, exists);
+
+    res |= !exists;
     if (res != 0)
     {
       return res;
@@ -428,11 +734,12 @@ private:
   bool is_version_matching()
   {
     string version;
+    bool exists;
 
     this->print_verbose_message("Checking server version.");
 
     if (Show_variable_query_extractor::get_variable_value(
-      this->m_query_runner, "version", &version) != 0)
+      this->m_query_runner, "version", version, exists) != 0)
     {
       return false;
     }
@@ -465,61 +772,52 @@ private:
   /**
     Server message callback to be called during execution of upgrade queries.
    */
-  int fix_privilage_tables_error(Mysql_message message)
+  int64 fix_privilage_tables_error(const Message_data& message)
   {
-    String error;
-    uint dummy_errors;
-    error.copy("error", 5, &my_charset_latin1,
-      this->m_mysql_connection->charset, &dummy_errors);
-
-    bool is_error = my_strcasecmp(this->m_mysql_connection->charset,
-      message.severity.c_str(), error.c_ptr()) == 0;
-
     // This if it is error message and if it is not expected one.
-    if (this->m_temporary_verbose ||
-      (is_error && is_expected_error(message.code) == false))
+    if (message.get_message_type() == Message_type_error
+        && is_expected_error(message.get_code()) == false)
     {
       // Pass this message to other callbacks, i.e. print_error to be printed out.
       return 0;
     }
+    process_warning(message);
     // Do not pass filtered out messages to other callbacks, i.e. print_error.
     return -1;
   }
 
-  int result_callback(vector<string> result_row)
+  int64 result_callback(const Mysql_query_runner::Row& result_row)
   {
     /*
      This is an old hacky way used in upgrade queries to show warnings from
      executed queries in fix_privilege_tables. It is not result from
-     "SHOW WARNINGS;" query.
+     "SHOW WARNINGS" query.
      */
-    for (vector<string>::iterator it= result_row.begin();
-      it != result_row.end();
-      it++)
+    if (result_row.size() == 1 && !(result_row.is_value_null(0)))
     {
       String error;
       uint dummy_errors;
       error.copy("warning:", 8, &my_charset_latin1,
         this->m_mysql_connection->charset, &dummy_errors);
-      String result((*it).c_str(), (*it).length(),
-        this->m_mysql_connection->charset);
+      std::string result= result_row[0];
       result= result.substr(0, 8);
 
       if (my_strcasecmp(this->m_mysql_connection->charset,
-        result.c_ptr(), error.c_ptr()) == 0)
+        result.c_str(), error.c_ptr()) == 0)
       {
-        std::cerr << *it << std::endl;
+        std::cerr << result_row[0] << std::endl;
       }
     }
+    Mysql_query_runner::cleanup_result(result_row);
     return 0;
   }
 
   /**
     Checks if given error code is expected during upgrade queries execution.
    */
-  bool is_expected_error(int error_no)
+  bool is_expected_error(int64 error_no)
   {
-    static const int expected_errors[]=
+    static const int64 expected_errors[]=
     {
       ER_DUP_FIELDNAME, /* Duplicate column name */
       ER_DUP_KEYNAME, /* Duplicate key name */
@@ -527,7 +825,7 @@ private:
       0
     };
 
-    const int* expected_error= expected_errors;
+    const int64* expected_error= expected_errors;
     while (*expected_error)
     {
       if (*expected_error == error_no)
@@ -628,6 +926,7 @@ private:
   Mysql_query_runner* m_query_runner;
   bool m_write_binlog;
   bool m_upgrade_systables_only;
+  bool m_skip_sys_schema;
   bool m_check_version;
   bool m_ignore_errors;
   bool m_verbose;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,15 +16,13 @@
 /**
   @file
 
-  @brief
-  mysql_select and join optimization
-
+  @brief Evaluate query expressions, throughout resolving, optimization and
+         execution.
 
   @defgroup Query_Optimizer  Query Optimizer
   @{
 */
 
-#include "sql_priv.h"
 #include "sql_select.h"
 #include "sql_table.h"                          // primary_key_name
 #include "sql_derived.h"
@@ -34,19 +32,22 @@
 #include "lock.h"                // mysql_unlock_some_tables,
                                  // mysql_unlock_read_tables
 #include "sql_show.h"            // append_identifier
-#include "sql_base.h"            // setup_wild, setup_fields, fill_record
+#include "sql_base.h"
 #include "auth_common.h"         // *_ACL
 #include "sql_test.h"            // misc. debug printing utilities
 #include "records.h"             // init_read_record, end_read_record
 #include "filesort.h"            // filesort_free_buffers
-#include "sql_union.h"           // mysql_union
 #include "opt_explain.h"
 #include "sql_join_buffer.h"     // JOIN_CACHE
 #include "sql_optimizer.h"       // JOIN
 #include "sql_tmp_table.h"       // tmp tables
 #include "debug_sync.h"          // DEBUG_SYNC
+#include "item_sum.h"            // Item_sum
+#include "sql_planner.h"         // calculate_condition_filter
+#include "opt_hints.h"           // hint_key_state()
 
 #include <algorithm>
+
 using std::max;
 using std::min;
 
@@ -59,17 +60,53 @@ static store_key *get_store_key(THD *thd,
 bool const_expression_in_where(Item *conds,Item *item, Item **comp_item);
 uint find_shortest_key(TABLE *table, const key_map *usable_keys);
 /**
-  This handles SELECT with and without UNION
-*/
-bool handle_select(THD *thd, select_result *result,
-                   ulong setup_tables_done_option)
-{
-  bool res;
-  LEX *const lex= thd->lex;
-  SELECT_LEX *const select_lex = lex->select_lex;
+  Handle a data manipulation query, from preparation through cleanup
 
-  DBUG_ENTER("handle_select");
-  MYSQL_SELECT_START(const_cast<char*>(thd->query().str));
+  @param thd       thread handler
+  @param lex       query to be processed
+  @param result    sink of result of query execution.
+                   may be protocol object (for passing result to a client),
+                   insert object, update object, delete object, etc.
+  @param added_options additional options for detailed control over execution
+  @param removed_options options that are not applicable for this command
+
+  @returns false if success, true if error
+
+  @details
+    Processing a query goes through 5 phases (parsing is already done)
+     - Preparation
+     - Locking of tables
+     - Optimization
+     - Execution or explain
+     - Cleanup
+    The queries handled by this function are:
+
+    SELECT
+    INSERT ... SELECT
+    REPLACE ... SELECT
+    UPDATE (multi-table)
+    DELETE (multi-table)
+
+    @todo make this function also handle INSERT ... VALUES, single-table
+          UPDATE and DELETE, SET and DO.
+    
+    The function processes simple query expressions without UNION and
+    without multi-level ORDER BY/LIMIT separately.
+    Such queries are executed with a more direct code path.
+*/
+bool handle_query(THD *thd, LEX *lex, Query_result *result,
+                  ulonglong added_options, ulonglong removed_options)
+{
+  DBUG_ENTER("handle_query");
+
+  SELECT_LEX_UNIT *const unit= lex->unit;
+  SELECT_LEX *const select= unit->first_select();
+  bool res;
+
+  DBUG_ASSERT(thd == unit->thd);
+
+  DBUG_ASSERT(!unit->is_prepared() && !unit->is_optimized() &&
+              !unit->is_executed());
 
   if (lex->proc_analyse && lex->sql_command != SQLCOM_SELECT)
   {
@@ -77,33 +114,105 @@ bool handle_select(THD *thd, select_result *result,
     DBUG_RETURN(true);
   }
 
-  SELECT_LEX_UNIT *const unit= select_lex->master_unit();
-  DBUG_ASSERT(unit == thd->lex->unit);
+  const bool single_query= unit->is_simple();
 
-  if (unit->is_union() || unit->fake_select_lex)
-    res= mysql_union(thd, lex, result, unit, setup_tables_done_option);
-  else
+  lex->used_tables=0;                         // Updated by setup_fields
+
+  THD_STAGE_INFO(thd, stage_init);
+
+  if (single_query)
   {
     unit->set_limit(unit->global_parameters());
-    /*
-      'options' of mysql_select will be set in JOIN, as far as JOIN for
-      every PS/SP execution new, we will not need reset this flag if 
-      setup_tables_done_option changed for next rexecution
-    */
-    res= mysql_select(thd,
-                      select_lex->item_list,
-                      select_lex->options | thd->variables.option_bits |
-                      setup_tables_done_option,
-                      result, select_lex);
-  }
-  DBUG_PRINT("info",("res: %d  report_error: %d", res,
-		     thd->is_error()));
-  res|= thd->is_error();
-  if (unlikely(res))
-    result->abort_result_set();
 
-  MYSQL_SELECT_DONE((int) res, (ulong) thd->limit_found_rows);
+    select->context.resolve_in_select_list= true;
+    select->set_query_result(result);
+    select->make_active_options(added_options, removed_options);
+    select->fields_list= select->item_list;
+
+    if (select->prepare(thd))
+      goto err;
+
+    unit->set_prepared();
+  }
+  else
+  {
+    if (unit->prepare(thd, result, SELECT_NO_UNLOCK | added_options,
+                      removed_options))
+      goto err;
+  }
+
+  DBUG_ASSERT(!lex->is_query_tables_locked());
+  /*
+    Locking of tables is done after preparation but before optimization.
+    This allows to do better partition pruning and avoid locking unused
+    partitions. As a consequence, in such a case, prepare stage can rely only
+    on metadata about tables used and not data from them.
+  */
+  if (lock_tables(thd, lex->query_tables, lex->table_count, 0))
+    goto err;
+
+  /*
+    Register query result in cache.
+    Tables must be locked before storing the query in the query cache.
+    Transactional engines must be signalled that the statement has started,
+    by calling external_lock().
+  */
+  query_cache.store_query(thd, lex->query_tables);
+
+  if (single_query)
+  {
+    if (select->optimize(thd))
+      goto err;
+
+    unit->set_optimized();
+  }
+  else
+  {
+    if (unit->optimize(thd))
+      goto err;
+  }
+
+  if (lex->is_explain())
+  {
+    if (explain_query(thd, unit))
+      goto err;     /* purecov: inspected */
+  }
+  else
+  {
+    if (single_query)
+    {
+      select->join->exec();
+      unit->set_executed();
+      if (thd->is_error())
+        goto err;
+    }
+    else
+    {
+      if (unit->execute(thd))
+        goto err;
+    }
+  }
+
+  DBUG_ASSERT(!thd->is_error());
+
+  THD_STAGE_INFO(thd, stage_end);
+
+  // Do partial cleanup (preserve plans for EXPLAIN).
+  res= unit->cleanup(false);
+
   DBUG_RETURN(res);
+
+err:
+  DBUG_ASSERT(thd->is_error() || thd->killed);
+  DBUG_PRINT("info",("report_error: %d", thd->is_error()));
+  THD_STAGE_INFO(thd, stage_end);
+
+  (void) unit->cleanup(false);
+
+  // Abort the result set (if it has been prepared).
+  result->abort_result_set();
+
+  DBUG_RETURN(thd->is_error());
 }
 
 
@@ -126,21 +235,24 @@ bool types_allow_materialization(Item *outer, Item *inner)
 
 {
   if (outer->result_type() != inner->result_type())
-    return FALSE;
+    return false;
   switch (outer->result_type()) {
+  case ROW_RESULT:
+    // Materialization of rows nested inside rows is not currently supported.
+    return false;
   case STRING_RESULT:
     if (outer->is_temporal_with_date() != inner->is_temporal_with_date())
-      return FALSE;
+      return false;
     if (!(outer->collation.collation == inner->collation.collation
         /*&& outer->max_length <= inner->max_length */))
-      return FALSE;
+      return false;
   /*case INT_RESULT:
     if (!(outer->unsigned_flag ^ inner->unsigned_flag))
-      return FALSE; */
+      return false; */
   default:
     ;                 /* suitable for materialization */
   }
-  return TRUE;
+  return true;
 }
 
 
@@ -205,8 +317,6 @@ static bool sj_table_is_included(JOIN *join, JOIN_TAB *join_tab)
   Setup the strategies to eliminate semi-join duplicates.
   
   @param join           Join to process
-  @param options        Join options (needed to see if join buffering will be 
-                        used or not)
   @param no_jbuf_after  Do not use join buffering after the table with this 
                         number
 
@@ -334,8 +444,7 @@ static bool sj_table_is_included(JOIN *join, JOIN_TAB *join_tab)
   setup_materialized_table().
 */
 
-static bool setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
-                                            uint no_jbuf_after)
+static bool setup_semijoin_dups_elimination(JOIN *join, uint no_jbuf_after)
 {
   uint tableno;
   THD *thd= join->thd;
@@ -522,7 +631,7 @@ static bool setup_semijoin_dups_elimination(JOIN *join, ulonglong options,
             last_tab->qep_tab= tab_in_range;
             last_tab->rowid_offset= jt_rowid_offset;
             jt_rowid_offset += tab_in_range->table()->file->ref_length;
-            if (tab_in_range->table()->maybe_null)
+            if (tab_in_range->table()->is_nullable())
             {
               last_tab->null_byte= jt_null_bits / 8;
               last_tab->null_bit= jt_null_bits++;
@@ -701,11 +810,11 @@ void JOIN::reset()
 
   unit->offset_limit_cnt= (ha_rows)(select_lex->offset_limit ?
                                     select_lex->offset_limit->val_uint() :
-                                    ULL(0));
+                                    0ULL);
 
   first_record= false;
   group_sent= false;
-  executed= false;
+  reset_executed();
 
   if (tmp_tables)
   {
@@ -756,7 +865,15 @@ void JOIN::reset()
       func->clear();
   }
 
-  init_ftfuncs(thd, select_lex);
+  if (select_lex->has_ft_funcs())
+  {
+#ifdef DBUG_OFF
+    (void)init_ftfuncs(thd, select_lex);
+#else
+    // Should not return an error on second execution
+    DBUG_ASSERT(!init_ftfuncs(thd, select_lex));
+#endif
+  }
 
   DBUG_VOID_RETURN;
 }
@@ -778,23 +895,28 @@ bool JOIN::prepare_result()
   DBUG_ENTER("JOIN::prepare_result");
 
   error= 0;
-  /* Create result tables for materialized views. */
-  if (!zero_result_cause &&
-      select_lex->handle_derived(thd->lex, &mysql_derived_create))
+  // Create result tables for materialized views/derived tables
+  if (select_lex->materialized_derived_table_count && !zero_result_cause)
+  {
+    for (TABLE_LIST *tl= select_lex->leaf_tables; tl; tl= tl->next_leaf)
+    {
+      if (tl->is_view_or_derived() && tl->create_derived(thd))
+        goto err;                 /* purecov: inspected */
+    }
+  }
+
+  if (select_lex->query_result()->prepare2())
     goto err;
 
-  if (result->prepare2())
-    goto err;
-
-  if ((select_lex->options & OPTION_SCHEMA_TABLE) &&
+  if ((select_lex->active_options() & OPTION_SCHEMA_TABLE) &&
       get_schema_tables_result(this, PROCESSED_BY_JOIN_EXEC))
     goto err;
 
-  DBUG_RETURN(FALSE);
+  DBUG_RETURN(false);
 
 err:
   error= 1;
-  DBUG_RETURN(TRUE);
+  DBUG_RETURN(true);
 }
 
 
@@ -870,197 +992,34 @@ void JOIN::cleanup_item_list(List<Item> &items) const
 
 
 /**
-  Prepare stage of mysql_select.
+  Optimize a query block and all inner query expressions
 
-  @param thd                  thread handler
-                              the top-level select_lex for this query
-  @param fields               list of items in SELECT list of the top-level
-                              select
-                              e.g. SELECT a, b, c FROM t1 will have Item_field
-                              for a, b and c in this list.
-  @param select_options       select options (BIG_RESULT, etc)
-  @param result               an instance of result set handling class.
-                              This object is responsible for send result
-                              set rows to the client or inserting them
-                              into a table.
-  @param select_lex           the only SELECT_LEX of this query
-  @param[out] free_join       Will be set to false if select_lex->join does
-                              not need to be freed.
-
-  @retval
-    false  success
-  @retval
-    true   an error
-
-  @note tables must be opened before calling mysql_prepare_select.
+  @param thd    thread handler
+  @returns false if success, true if error
 */
 
-static bool
-mysql_prepare_select(THD *thd,
-                     List<Item> &fields,
-                     ulonglong select_options,
-                     select_result *result,
-                     SELECT_LEX *select_lex, bool *free_join)
+bool SELECT_LEX::optimize(THD *thd)
 {
-  bool err= false;
-  JOIN *join;
-  DBUG_ENTER("mysql_prepare_select");
-  select_lex->context.resolve_in_select_list= TRUE;
-  if (select_lex->join != 0)
-  {
-    join= select_lex->join;
-    if (join->optimized)
-      DBUG_RETURN(false);
-    DBUG_ASSERT(!join->is_executed());
-    /*
-      is it single SELECT in derived table, called in derived table
-      creation
-    */
-    if (select_lex->linkage != DERIVED_TABLE_TYPE ||
-        (select_options & SELECT_DESCRIBE))
-    {
-      if (select_lex->linkage != GLOBAL_OPTIONS_TYPE)
-      {
-        /* Reset join before re-execution. */
-        Item_subselect *subselect= select_lex->master_unit()->item;
-        if (subselect && subselect->is_uncacheable() && join->is_executed())
-          join->reset();
-      }
-      else
-      {
-        err= select_lex->prepare(join);
-        if (err)
-          DBUG_RETURN(true);
-      }
-    }
-    *free_join= false;
-  }
-  else
-  {
-    if (!(join= new JOIN(thd, fields, select_options, result)))
-      DBUG_RETURN(TRUE); /* purecov: inspected */
-    THD_STAGE_INFO(thd, stage_init);
-    thd->lex->used_tables=0;                         // Updated by setup_fields
-    err= select_lex->prepare(join);
-    if (err)
-      DBUG_RETURN(true);
-  }
+  DBUG_ENTER("SELECT_LEX::optimize");
 
-  DBUG_RETURN(err);
-}
+  DBUG_ASSERT(join == NULL);
+  JOIN *const join_local= new JOIN(thd, this);
+  if (!join_local)
+    DBUG_RETURN(true);  /* purecov: inspected */
 
+  set_join(join_local);
 
-/**
-  Prepare and optimize single-unit select (a select without UNION).
-
-  @param thd                  thread handler
-  @param fields               list of items in SELECT list of the top-level
-                              select
-                              e.g. SELECT a, b, c FROM t1 will have Item_field
-                              for a, b and c in this list.
-  @param select_options       select options (BIG_RESULT, etc)
-  @param result               an instance of result set handling class.
-                              This object is responsible for send result
-                              set rows to the client or inserting them
-                              into a table.
-  @param select_lex           the only SELECT_LEX of this query
-  @param free_join [out]      whether the caller should free allocated JOIN
-
-  @retval
-    false  success
-  @retval
-    true   an error
-*/
-
-bool
-mysql_prepare_and_optimize_select(THD *thd, List<Item> &fields,
-                                  ulonglong select_options,
-                                  select_result *result,
-                                  SELECT_LEX *select_lex, bool *free_join)
-{
-  DBUG_ENTER("mysql_prepare_and_optimize_select");
-
-  if (mysql_prepare_select(thd, fields, select_options, result,
-                           select_lex, free_join))
+  if (join->optimize())
     DBUG_RETURN(true);
 
-  if (! thd->lex->is_query_tables_locked())
+  for (SELECT_LEX_UNIT *unit= first_inner_unit(); unit; unit= unit->next_unit())
   {
-    /*
-      If tables are not locked at this point, it means that we have delayed
-      this step until after prepare stage (i.e. this moment). This allows to
-      do better partition pruning and avoid locking unused partitions.
-      As a consequence, in such a case, prepare stage can rely only on
-      metadata about tables used and not data from them.
-      We need to lock tables now in order to proceed with the remaning
-      stages of query optimization and execution.
-    */
-    if (lock_tables(thd, thd->lex->query_tables, thd->lex->table_count, 0))
+    // Derived tables and const subqueries are already optimized
+    if (!unit->is_optimized() && unit->optimize(thd))
       DBUG_RETURN(true);
-
-    /*
-      Only register query in cache if it tables were locked above.
-
-      Tables must be locked before storing the query in the query cache.
-      Transactional engines must been signalled that the statement started,
-      which external_lock signals.
-    */
-    query_cache.store_query(thd, thd->lex->query_tables);
   }
-
-  if (select_lex->join->optimize() || thd->is_error())
-    DBUG_RETURN(true);
 
   DBUG_RETURN(false);
-}
-
-/**
-  An entry point to single-unit select (a select without UNION).
-
-  @param thd                  thread handler
-  @param fields               list of items in SELECT list of the top-level
-                              select
-                              e.g. SELECT a, b, c FROM t1 will have Item_field
-                              for a, b and c in this list.
-  @param select_options       select options (BIG_RESULT, etc)
-  @param result               an instance of result set handling class.
-                              This object is responsible for send result
-                              set rows to the client or inserting them
-                              into a table.
-  @param select_lex           the only SELECT_LEX of this query
-
-  @retval
-    false  success
-  @retval
-    true   an error
-*/
-
-bool
-mysql_select(THD *thd,
-             List<Item> &fields,
-             ulonglong select_options,
-             select_result *result,
-             SELECT_LEX *select_lex)
-{
-  bool free_join= true;
-  bool err;
-  DBUG_ENTER("mysql_select");
-  if ((err= (mysql_prepare_and_optimize_select(thd, fields,
-                                               select_options, result,
-                                               select_lex, &free_join)) ||
-       mysql_optimize_prepared_inner_units(thd, select_lex->master_unit(),
-                                           select_options)))
-    goto err;
-  DBUG_ASSERT(!(select_lex->join->select_options & SELECT_DESCRIBE));
-  select_lex->join->exec();
-
-err:
-  if (free_join)
-  {
-    THD_STAGE_INFO(thd, stage_end);
-    (void) select_lex->cleanup(false);
-  }
-  DBUG_RETURN(err);
 }
 
 /*****************************************************************************
@@ -1105,7 +1064,7 @@ void calc_used_field_length(THD *thd,
   }
   if (null_fields || uneven_bit_fields)
     rec_length+= (table->s->null_fields + 7) / 8;
-  if (table->maybe_null)
+  if (table->is_nullable())
     rec_length+= sizeof(my_bool);
   if (blobs)
   {
@@ -1306,7 +1265,7 @@ bool create_ref_for_key(JOIN *join, JOIN_TAB *j, Key_use *org_keyuse,
   j->ref().key_parts=keyparts;
   j->ref().key_length=length;
   j->ref().key=(int) key;
-  if (!(j->ref().key_buff= (uchar*) thd->calloc(ALIGN_SIZE(length)*2)) ||
+  if (!(j->ref().key_buff= (uchar*) thd->mem_calloc(ALIGN_SIZE(length)*2)) ||
       !(j->ref().key_copy= (store_key**) thd->alloc((sizeof(store_key*) *
                                                    (keyparts)))) ||
       !(j->ref().items=    (Item**) thd->alloc(sizeof(Item*)*keyparts)) ||
@@ -1430,13 +1389,11 @@ bool create_ref_for_key(JOIN *join, JOIN_TAB *j, Key_use *org_keyuse,
       have a 'normal' value or a NULL value.
     */
     j->set_type(JT_CONST);
-    j->set_rowcount(1);
     j->position()->rows_fetched= 1.0;
   }
   else
   {
     j->set_type(JT_EQ_REF);
-    j->set_rowcount(1);
     j->position()->rows_fetched= 1.0;
   }
 
@@ -1737,6 +1694,11 @@ void QEP_TAB::push_index_cond(const JOIN_TAB *join_tab,
       tbl->s->tmp_table != NO_TMP_TABLE &&
       tbl->s->tmp_table != TRANSACTIONAL_TMP_TABLE)
     DBUG_VOID_RETURN;
+
+  // TODO: Currently, index on virtual generated column doesn't support ICP
+  if (tbl->vfield && tbl->index_contains_some_virtual_gcol(keyno))
+    DBUG_VOID_RETURN;
+
   /*
     Fields of other non-const tables aren't allowed in following cases:
        type is:
@@ -1749,13 +1711,13 @@ void QEP_TAB::push_index_cond(const JOIN_TAB *join_tab,
        type() == JT_RANGE || type() ==  JT_INDEX_MERGE) &&
       join_tab->use_join_cache() == JOIN_CACHE::ALG_BNL);
 
-
   /*
     We will only attempt to push down an index condition when the
     following criteria are true:
     0. The table has a select condition
     1. The storage engine supports ICP.
-    2. The system variable for enabling ICP is ON.
+    2. The index_condition_pushdown switch is on and
+       the use of ICP is not disabled by the NO_ICP hint.
     3. The query is not a multi-table update or delete statement. The reason
        for this requirement is that the same handler will be used 
        both for doing the select/join and the update. The pushed index
@@ -1779,11 +1741,13 @@ void QEP_TAB::push_index_cond(const JOIN_TAB *join_tab,
        of pushing an index condition on a clustered key is much lower 
        than on a non-clustered key. This restriction should be 
        re-evaluated when WL#6061 is implemented.
+    7. The index on virtual generated columns is not supported for ICP.
   */
   if (condition() &&
       tbl->file->index_flags(keyno, 0, 1) &
       HA_DO_INDEX_COND_PUSHDOWN &&
-      join_->thd->optimizer_switch_flag(OPTIMIZER_SWITCH_INDEX_CONDITION_PUSHDOWN) &&
+      hint_key_state(join_->thd, tbl, keyno, ICP_HINT_ENUM,
+                     OPTIMIZER_SWITCH_INDEX_CONDITION_PUSHDOWN) &&
       join_->thd->lex->sql_command != SQLCOM_UPDATE_MULTI &&
       join_->thd->lex->sql_command != SQLCOM_DELETE_MULTI &&
       !has_guarded_conds() &&
@@ -1903,11 +1867,11 @@ void QEP_TAB::push_index_cond(const JOIN_TAB *join_tab,
   @return False if OK, True if error
 */
 
-bool JOIN::setup_materialized_table(JOIN_TAB *tab, uint tableno,
-                                    const POSITION *inner_pos,
-                                    POSITION *sjm_pos)
+bool JOIN::setup_semijoin_materialized_table(JOIN_TAB *tab, uint tableno,
+                                             const POSITION *inner_pos,
+                                             POSITION *sjm_pos)
 {
-  DBUG_ENTER("JOIN::setup_materialized_table");
+  DBUG_ENTER("JOIN::setup_semijoin_materialized_table");
   const TABLE_LIST *const emb_sj_nest= inner_pos->table->emb_sj_nest;
   Semijoin_mat_optimize *const sjm_opt= &emb_sj_nest->nested_join->sjm;
   Semijoin_mat_exec *const sjm_exec= tab->sj_mat_exec();
@@ -1917,7 +1881,8 @@ bool JOIN::setup_materialized_table(JOIN_TAB *tab, uint tableno,
               inner_pos->sj_strategy == SJ_OPT_MATERIALIZE_SCAN);
 
   /* 
-    Set up the table to write to, do as select_union::create_result_table does
+    Set up the table to write to, do as
+    Query_result_union::create_result_table does
   */
   sjm_exec->table_param= Temp_table_param();
   count_field_types(select_lex, &sjm_exec->table_param,
@@ -1951,6 +1916,15 @@ bool JOIN::setup_materialized_table(JOIN_TAB *tab, uint tableno,
   sj_tmp_tables.push_back(table);
   sjm_exec_list.push_back(sjm_exec);
 
+  /*
+    Hash_field is not applicable for MATERIALIZE_LOOKUP. If hash_field is
+    created for temporary table, semijoin_types_allow_materialization must
+    assure that MATERIALIZE_LOOKUP can't be chosen.
+  */
+  DBUG_ASSERT((inner_pos->sj_strategy == SJ_OPT_MATERIALIZE_LOOKUP &&
+              !table->hash_field) ||
+              inner_pos->sj_strategy == SJ_OPT_MATERIALIZE_SCAN);
+
   TABLE_LIST *tl;
   if (!(tl= (TABLE_LIST *) alloc_root(thd->mem_root, sizeof(TABLE_LIST))))
     DBUG_RETURN(true);            /* purecov: inspected */
@@ -1970,7 +1944,8 @@ bool JOIN::setup_materialized_table(JOIN_TAB *tab, uint tableno,
 
   for (uint fieldno= 0; fieldno < field_count; fieldno++)
   {
-    if (!(sjm_opt->mat_fields[fieldno]= new Item_field(table->field[fieldno])))
+    if (!(sjm_opt->mat_fields[fieldno]=
+          new Item_field(table->visible_field_ptr()[fieldno])))
       DBUG_RETURN(true);
   }
 
@@ -1979,8 +1954,8 @@ bool JOIN::setup_materialized_table(JOIN_TAB *tab, uint tableno,
   tab->set_position(sjm_pos);
 
   tab->worst_seeks= 1.0;
-  tab->set_rowcount((ha_rows)emb_sj_nest->nested_join->sjm.expected_rowcount);
-  tab->set_records(tab->rowcount());
+  tab->set_records((ha_rows)emb_sj_nest->nested_join->sjm.expected_rowcount);
+
   tab->found_records= tab->records();
   tab->read_time= (ha_rows)emb_sj_nest->nested_join->sjm.scan_cost.total_cost();
 
@@ -2024,7 +1999,7 @@ bool JOIN::setup_materialized_table(JOIN_TAB *tab, uint tableno,
   {
     sjm_pos->key= NULL; // No index use for MaterializeScan
     sjm_pos->read_cost= tab->read_time * fanout;
-    sjm_pos->rows_fetched= tab->records();
+    sjm_pos->rows_fetched= static_cast<double>(tab->records());
     tab->set_type(JT_ALL);
   }
   sjm_pos->set_prefix_join_cost((tab - join_tab), cost_model());
@@ -2103,8 +2078,6 @@ void QEP_TAB::init_join_cache(JOIN_TAB *join_tab)
   Plan refinement stage: do various setup things for the executor
 
   @param join          Join being processed
-  @param options       Join's options (checking for SELECT_DESCRIBE, 
-                       SELECT_NO_JOIN_CACHE)
   @param no_jbuf_after Don't use join buffering after table with this number.
 
   @return false if successful, true if error (Out of memory)
@@ -2118,9 +2091,9 @@ void QEP_TAB::init_join_cache(JOIN_TAB *join_tab)
 */
 
 bool
-make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
+make_join_readinfo(JOIN *join, uint no_jbuf_after)
 {
-  const bool statistics= !(join->select_options & SELECT_DESCRIBE);
+  const bool statistics= !join->thd->lex->is_explain();
   const bool prep_for_pos= join->need_tmp || join->select_distinct ||
                            join->group_list || join->order;
 
@@ -2131,8 +2104,9 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
   Opt_trace_object wrapper(trace);
   Opt_trace_array trace_refine_plan(trace, "refine_plan");
 
-  if (setup_semijoin_dups_elimination(join, options, no_jbuf_after))
+  if (setup_semijoin_dups_elimination(join, no_jbuf_after))
     DBUG_RETURN(TRUE); /* purecov: inspected */
+
 
   for (uint i= join->const_tables; i < join->tables; i++)
   {
@@ -2161,7 +2135,7 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
     qep_tab->read_record.unlock_row= rr_unlock_row;
 
     Opt_trace_object trace_refine_table(trace);
-    trace_refine_table.add_utf8_table(table);
+    trace_refine_table.add_utf8_table(qep_tab->table_ref);
 
     if (qep_tab->do_loosescan())
     {
@@ -2188,18 +2162,30 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
       join->thd->set_status_no_index_used();
       /* Fall through */
     case JT_INDEX_SCAN:
-      // Update number of rows
-      table->pos_in_table_list->fetch_number_of_rows();
+      if (tab->position()->filter_effect != COND_FILTER_STALE_NO_CONST &&
+          !tab->sj_mat_exec())
       {
-        double old= qep_tab->position()->rows_fetched;
         /*
-          "old" is # of rows which will be read by the access method, minus
-          those which will not pass the constant condition. It's useful inside
-          the planner, but obscure to the reader of EXPLAIN. Update it.
+          rows_w_const_cond is # of rows which will be read by the access
+          method, minus those which will not pass the constant condition;
+          that's how calculate_scan_cost() works. Such number is useful inside
+          the planner, but obscure to the reader of EXPLAIN; so we put the
+          real count of read rows into rows_fetched, and move the constant
+          condition's filter to filter_effect.
         */
-        qep_tab->position()->rows_fetched= table->file->stats.records;
-        // Constant condition moves to the filter effect:
-        qep_tab->position()->filter_effect*= old/table->file->stats.records;
+        double rows_w_const_cond= qep_tab->position()->rows_fetched;
+        table->pos_in_table_list->fetch_number_of_rows();
+        tab->position()->rows_fetched=
+          static_cast<double>(table->file->stats.records);
+        if (tab->position()->filter_effect != COND_FILTER_STALE)
+        {
+          // Constant condition moves to filter_effect:
+          if (tab->position()->rows_fetched == 0) // avoid division by zero
+            tab->position()->filter_effect= 0.0f;
+          else
+            tab->position()->filter_effect*=
+              static_cast<float>(rows_w_const_cond/tab->position()->rows_fetched);
+        }
       }
       if (tab->use_quick == QS_DYNAMIC_RANGE)
       {
@@ -2238,10 +2224,20 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
           qep_tab->push_index_cond(tab, qep_tab->quick()->index,
                                    &trace_refine_table);
       }
-      // Update number of rows
-      if (!tab->sj_mat_exec())
-        table->pos_in_table_list->fetch_number_of_rows();
-      tab->set_rowcount(table->file->stats.records);
+      if (tab->position()->filter_effect != COND_FILTER_STALE_NO_CONST)
+      {
+        double rows_w_const_cond= qep_tab->position()->rows_fetched;
+        qep_tab->position()->rows_fetched= rows2double(tab->quick()->records);
+        if (tab->position()->filter_effect != COND_FILTER_STALE)
+        {
+          // Constant condition moves to filter_effect:
+          if (tab->position()->rows_fetched == 0) // avoid division by zero
+            tab->position()->filter_effect= 0.0f;
+          else
+            tab->position()->filter_effect*=
+              static_cast<float>(rows_w_const_cond/tab->position()->rows_fetched);
+        }
+      }
       break;
     case JT_FT:
       if (tab->join()->fts_index_access(tab))
@@ -2254,6 +2250,23 @@ make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after)
       DBUG_PRINT("error",("Table type %d found",qep_tab->type())); /* purecov: deadcode */
       DBUG_ASSERT(0);
       break;					/* purecov: deadcode */
+    }
+
+    if (tab->position()->filter_effect <= COND_FILTER_STALE)
+    {
+      /*
+        Give a proper value for EXPLAIN.
+        For performance reasons, we do not recalculate the filter for
+        non-EXPLAIN queries; thus, EXPLAIN CONNECTION may show 100%
+        for a query.
+      */
+      tab->position()->filter_effect=
+        join->thd->lex->describe ?
+        calculate_condition_filter(tab,
+                                   (tab->ref().key != -1) ? tab->position()->key : NULL,
+                                   tab->prefix_tables() & ~tab->table_ref->map(),
+                                   tab->position()->rows_fetched,
+                                   false) : COND_FILTER_ALLPASS;
     }
 
     qep_tab->pick_table_access_method(tab);
@@ -2351,7 +2364,7 @@ void QEP_TAB::cleanup()
       delete tmp_table_param;
       tmp_table_param= NULL;
     }
-    op->free();
+    op->mem_free();
   }
 
   TRASH(this, sizeof(*this));
@@ -2499,7 +2512,7 @@ void JOIN::join_free()
     Unlock all tables. We may be in an INSERT .... SELECT statement.
   */
   if (can_unlock && lock && thd->lock && ! thd->locked_tables_mode &&
-      !(select_options & SELECT_NO_UNLOCK) &&
+      !(select_lex->active_options() & SELECT_NO_UNLOCK) &&
       !select_lex->subquery_in_having &&
       (select_lex == (thd->lex->unit->fake_select_lex ?
                       thd->lex->unit->fake_select_lex : thd->lex->select_lex)))
@@ -2766,7 +2779,7 @@ const_expression_in_where(Item *cond, Item *comp_item, Field *comp_field,
   create_tmp_table() and stores it in the Temp_table_param object. It
   also resets and calculates the quick_group property, which may have
   to be reverted if this function is called after deciding to use
-  ROLLUP (see JOIN::rollup_init()).
+  ROLLUP (see JOIN::optimize_rollup()).
 
   @param select_lex           SELECT_LEX of query
   @param param                Description of temp table
@@ -2885,7 +2898,7 @@ calc_group_buffer(JOIN *join,ORDER *group)
   uint key_length=0, parts=0, null_parts=0;
 
   if (group)
-    join->group= 1;
+    join->grouped= true;
   for (; group ; group=group->next)
   {
     Item *group_item= *group->item;
@@ -3004,7 +3017,7 @@ bool JOIN::alloc_func_list()
   }
 
   /* This must use calloc() as rollup_make_fields depends on this */
-  sum_funcs= (Item_sum**) thd->calloc(sizeof(Item_sum**) * (func_count+1) +
+  sum_funcs= (Item_sum**) thd->mem_calloc(sizeof(Item_sum**) * (func_count+1) +
 				           sizeof(Item_sum***) * (group_parts+1));
   sum_funcs_end= (Item_sum***) (sum_funcs + func_count + 1);
   DBUG_RETURN(sum_funcs == 0);
@@ -3273,9 +3286,13 @@ bool JOIN::rollup_make_fields(List<Item> &fields_arg, List<Item> &sel_fields,
 /**
   clear results if there are not rows found for group
   (end_send_group/end_write_group)
+  @retval
+    FALSE if OK
+  @retval
+    TRUE on error  
 */
 
-void JOIN::clear()
+bool JOIN::clear()
 {
   /* 
     must clear only the non-const tables, as const tables
@@ -3284,7 +3301,8 @@ void JOIN::clear()
   for (uint tableno= const_tables; tableno < primary_tables; tableno++)
     mark_as_null_row(qep_tab[tableno].table());  // All fields are NULL
 
-  copy_fields(&tmp_table_param);
+  if (copy_fields(&tmp_table_param, thd))
+    return true;
 
   if (sum_funcs)
   {
@@ -3292,38 +3310,43 @@ void JOIN::clear()
     while ((func= *(func_ptr++)))
       func->clear();
   }
+  return false;
 }
 
 
 /**
-  Change the select_result object of the JOIN.
+  Change the Query_result object of the query block.
 
   If old_result is not used, forward the call to the current
-  select_result in case it is a wrapper around old_result.
+  Query_result in case it is a wrapper around old_result.
 
-  Call prepare() and prepare2() on the new select_result if we decide
+  Call prepare() and prepare2() on the new Query_result if we decide
   to use it.
 
-  @param new_result New select_result object
-  @param old_result Old select_result object (NULL to force change)
+  @param new_result New Query_result object
+  @param old_result Old Query_result object (NULL to force change)
 
   @retval false Success
   @retval true  Error
 */
 
-bool JOIN::change_result(select_result *new_result, select_result *old_result)
+bool SELECT_LEX::change_query_result(Query_result_interceptor *new_result,
+                                     Query_result_interceptor *old_result)
 {
-  DBUG_ENTER("JOIN::change_result");
-  if (old_result == NULL || result == old_result)
+  DBUG_ENTER("SELECT_LEX::change_query_result");
+  if (old_result == NULL || query_result() == old_result)
   {
-    result= new_result;
-    if (result->prepare(fields_list, select_lex->master_unit()) ||
-        result->prepare2())
+    set_query_result(new_result);
+    if (query_result()->prepare(fields_list, master_unit()) ||
+        query_result()->prepare2())
       DBUG_RETURN(true); /* purecov: inspected */
     DBUG_RETURN(false);
   }
   else
-    DBUG_RETURN(result->change_result(new_result));
+  {
+    const bool ret= query_result()->change_query_result(new_result);
+    DBUG_RETURN(ret);
+  }
 }
 
 
@@ -3377,7 +3400,7 @@ bool JOIN::make_tmp_tables_info()
   */
   having_for_explain= having_cond;
 
-  const bool has_group_by= this->group;
+  const bool has_group_by= this->grouped;
 
   Opt_trace_context *const trace= &thd->opt_trace;
 
@@ -3467,7 +3490,7 @@ bool JOIN::make_tmp_tables_info()
 
     /* Change sum_fields reference to calculated fields in tmp_table */
     DBUG_ASSERT(items1.is_null());
-    items1= ref_ptr_array_slice(2);
+    items1= select_lex->ref_ptr_array_slice(2);
     if (sort_and_group || qep_tab[curr_tmp_table].table()->group ||
         tmp_table_param.precomputed_group_by)
     {
@@ -3582,7 +3605,7 @@ bool JOIN::make_tmp_tables_info()
       // No sum funcs anymore
       DBUG_ASSERT(items2.is_null());
 
-      items2= ref_ptr_array_slice(3);
+      items2= select_lex->ref_ptr_array_slice(3);
       if (change_to_use_tmp_fields(thd, items2,
                                    tmp_fields_list2, tmp_all_fields2, 
                                    fields_list.elements, tmp_all_fields1))
@@ -3623,7 +3646,7 @@ bool JOIN::make_tmp_tables_info()
 
     if (!group_optimized_away)
     {
-      group= false;
+      grouped= false;
     }
     else
     {
@@ -3638,7 +3661,7 @@ bool JOIN::make_tmp_tables_info()
         or end_write_group()) if JOIN::group is set to false.
       */
       // the temporary table was explicitly requested
-      DBUG_ASSERT(MY_TEST(select_options & OPTION_BUFFER_RESULT));
+      DBUG_ASSERT(select_lex->active_options() & OPTION_BUFFER_RESULT);
       // the temporary table does not have a grouping expression
       DBUG_ASSERT(!qep_tab[curr_tmp_table].table()->group);
     }
@@ -3647,7 +3670,7 @@ bool JOIN::make_tmp_tables_info()
                       false);
   }
 
-  if (group || implicit_grouping || tmp_table_param.sum_func_count)
+  if (grouped || implicit_grouping || tmp_table_param.sum_func_count)
   {
     if (make_group_fields(this, this))
       DBUG_RETURN(true);
@@ -3656,7 +3679,7 @@ bool JOIN::make_tmp_tables_info()
 
     if (items0.is_null())
       init_items_ref_array();
-    items3= ref_ptr_array_slice(4);
+    items3= select_lex->ref_ptr_array_slice(4);
     setup_copy_fields(thd, &tmp_table_param,
                       items3, tmp_fields_list3, tmp_all_fields3,
                       curr_fields_list->elements, *curr_all_fields);
@@ -3688,19 +3711,27 @@ bool JOIN::make_tmp_tables_info()
     /* If we have already done the group, add HAVING to sorted table */
     if (having_cond && !group_list && !sort_and_group)
     {
-      /*
-        Fields in HAVING condition may have been replaced with fields in an
-        internal temporary table. This table has map=1, hence we check that
-        we have no fields from other tables (outer references are fine).
-      */
       having_cond->update_used_tables();
       QEP_TAB *const curr_table= &qep_tab[curr_tmp_table];
-      DBUG_ASSERT(curr_table->table_ref ||
-                  !(having_cond->used_tables() &
-                    ~(1 | PSEUDO_TABLE_BITS)));
-      table_map used_tables= curr_table->table_ref ?
-                               curr_table->table_ref->map() :
-                               1; // Internal temporary table
+      table_map used_tables;
+
+      if (curr_table->table_ref)
+        used_tables= curr_table->table_ref->map();
+      else
+      {
+        /*
+          Pushing parts of HAVING to an internal temporary table.
+          Fields in HAVING condition may have been replaced with fields in an
+          internal temporary table. This table has map=1, hence we check that
+          we have no fields from other tables (outer references are fine).
+          Unfortunaly, update_used_tables() is not reliable for subquery
+          items, which could thus still have other tables in their
+          used_tables() information.
+        */
+        DBUG_ASSERT(having_cond->has_subquery() ||
+                    !(having_cond->used_tables() & ~(1 | PSEUDO_TABLE_BITS)));
+        used_tables= 1;
+      }
 
       Item* sort_table_cond= make_cond_for_table(having_cond, used_tables,
                                                  (table_map) 0, false);
@@ -3732,7 +3763,7 @@ bool JOIN::make_tmp_tables_info()
       }
     }
 
-    if (group)
+    if (grouped)
       m_select_limit= HA_POS_ERROR;
     else if (!need_tmp)
     {
@@ -3808,7 +3839,7 @@ bool JOIN::make_tmp_tables_info()
     qep_tab[primary_tables + tmp_tables - 1].next_select=
       get_end_select_func();
   }
-  group= has_group_by;
+  grouped= has_group_by;
 
   unplug_join_tabs();
 
@@ -3842,7 +3873,7 @@ JOIN::add_sorting_to_table(uint idx, ORDER_with_src *sort_order)
   explain_flags.set(sort_order->src, ESP_USING_FILESORT);
   QEP_TAB *const tab= &qep_tab[idx]; 
   tab->filesort=
-    new (thd->mem_root) Filesort(*sort_order, HA_POS_ERROR);
+    new (thd->mem_root) Filesort(tab, *sort_order, HA_POS_ERROR);
   if (!tab->filesort)
     return true;
   {
@@ -3942,9 +3973,10 @@ test_if_cheaper_ordering(const JOIN_TAB *tab, ORDER *order, TABLE *table,
   bool is_best_covering= FALSE;
   double fanout= 1;
   ha_rows table_records= table->file->stats.records;
-  bool group= join && join->group && order == join->group_list;
-  double refkey_rows_estimate= table->quick_condition_rows;
+  bool group= join && join->grouped && order == join->group_list;
+  double refkey_rows_estimate= static_cast<double>(table->quick_condition_rows);
   const bool has_limit= (select_limit != HA_POS_ERROR);
+  const join_type cur_access_method= tab ? tab->type() : JT_ALL;
 
   /*
     If not used with LIMIT, only use keys if the whole query can be
@@ -3985,10 +4017,10 @@ test_if_cheaper_ordering(const JOIN_TAB *tab, ORDER *order, TABLE *table,
     Calculate the selectivity of the ref_key for REF_ACCESS. For
     RANGE_ACCESS we use table->quick_condition_rows.
   */
-  if (ref_key >= 0 && tab->type() == JT_REF)
+  if (ref_key >= 0 && cur_access_method == JT_REF)
   {
     if (table->quick_keys.is_set(ref_key))
-      refkey_rows_estimate= table->quick_rows[ref_key];
+      refkey_rows_estimate= static_cast<double>(table->quick_rows[ref_key]);
     else
     {
       const KEY *ref_keyinfo= table->key_info + ref_key;
@@ -4105,9 +4137,18 @@ test_if_cheaper_ordering(const JOIN_TAB *tab, ORDER *order, TABLE *table,
         */
         const Cost_estimate table_scan_time= table->file->table_scan_cost();
         const double index_scan_time= select_limit / rec_per_key *
-          min<double>(rec_per_key, table_scan_time.total_cost());
-        if ((ref_key < 0 && is_covering) || 
-            (ref_key < 0 && (group || table->force_index)) ||
+          min<double>(table->cost_model()->page_read_cost(rec_per_key),
+                      table_scan_time.total_cost());
+
+        /*
+          Switch to index that gives order if its scan time is smaller than
+          read_time of current chosen access method. In addition, if the
+          current chosen access method is index scan or table scan, always
+          switch to the index that gives order when it is covering or when
+          force index or group by is present.
+        */
+        if (((cur_access_method == JT_ALL || cur_access_method == JT_INDEX_SCAN)
+             && (is_covering || group || table->force_index)) ||
             index_scan_time < read_time)
         {
           ha_rows quick_records= table_records;

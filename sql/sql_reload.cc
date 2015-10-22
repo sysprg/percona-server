@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,7 +14,6 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "sql_reload.h"
-#include "sql_priv.h"
 #include "mysqld.h"      // select_errors
 #include "sql_class.h"   // THD
 #include "auth_common.h" // acl_reload, grant_reload
@@ -27,9 +26,11 @@
 #include "rpl_slave.h"   // reset_slave
 #include "rpl_rli.h"     // rotate_relay_log
 #include "rpl_mi.h"
+#include "rpl_msr.h"     /* multisource replication */
 #include "debug_sync.h"
 #include "connection_handler_impl.h"
 #include "opt_costconstantcache.h"     // reload_optimizer_cost_constants
+#include "log.h"         // query_logger
 
 /**
   Reload/resets privileges and the different caches.
@@ -119,15 +120,8 @@ bool reload_acl_and_cache(THD *thd, unsigned long options,
   }
 
   if (options & REFRESH_ERROR_LOG)
-    if (flush_error_log())
-    {
-      /*
-        When flush_error_log() failed, my_error() has not been called.
-        So, we have to do it here to keep the protocol.
-      */
-      my_error(ER_UNKNOWN_ERROR, MYF(0));
+    if (reopen_error_log())
       result= 1;
-    }
 
   if ((options & REFRESH_SLOW_LOG) && opt_slow_log)
     query_logger.reopen_log_file(QUERY_LOG_SLOW);
@@ -162,29 +156,22 @@ bool reload_acl_and_cache(THD *thd, unsigned long options,
       tmp_write_to_binlog= 0;
       if (mysql_bin_log.is_open())
       {
-        if (mysql_bin_log.rotate_and_purge(true))
+        if (mysql_bin_log.rotate_and_purge(thd, true))
           *write_to_binlog= -1;
       }
     }
     if (options & REFRESH_RELAY_LOG)
     {
 #ifdef HAVE_REPLICATION
-      mysql_mutex_lock(&LOCK_active_mi);
-      if (active_mi != NULL)
-      {
-        mysql_mutex_lock(&active_mi->data_lock);
-        if (rotate_relay_log(active_mi))
-          *write_to_binlog= -1;
-        mysql_mutex_unlock(&active_mi->data_lock);
-      }
-      mysql_mutex_unlock(&LOCK_active_mi);
+      if (flush_relay_logs_cmd(thd))
+        *write_to_binlog= -1;
 #endif
     }
     if (tmp_thd)
     {
       delete tmp_thd;
       /* Remember that we don't have a THD */
-      my_pthread_set_THR_THD(NULL);
+      my_thread_set_THR_THD(NULL);
       thd= 0;
     }
   }
@@ -201,7 +188,8 @@ bool reload_acl_and_cache(THD *thd, unsigned long options,
   DBUG_ASSERT(!thd || thd->locked_tables_mode ||
               !thd->mdl_context.has_locks() ||
               thd->handler_tables_hash.records ||
-              thd->ull_hash.records ||
+              thd->mdl_context.has_locks(MDL_key::USER_LEVEL_LOCK) ||
+              thd->mdl_context.has_locks(MDL_key::LOCKING_SERVICE) ||
               thd->global_read_lock.is_acquired() ||
               thd->backup_tables_lock.is_acquired() ||
               thd->backup_binlog_lock.is_acquired());
@@ -343,18 +331,11 @@ bool reload_acl_and_cache(THD *thd, unsigned long options,
  if (options & REFRESH_SLAVE)
  {
    tmp_write_to_binlog= 0;
-   mysql_mutex_lock(&LOCK_active_mi);
-   if (active_mi != NULL && reset_slave(thd, active_mi))
+   if (reset_slave_cmd(thd))
    {
-     /* NOTE: my_error() has been already called by reset_slave(). */
+     /*NOTE: my_error() has been already called by reset_slave() */
      result= 1;
    }
-   else if (active_mi == NULL)
-   {
-     result= 1;
-     my_error(ER_SLAVE_CONFIGURATION, MYF(0));
-   }
-   mysql_mutex_unlock(&LOCK_active_mi);
  }
 #endif
   if (options & REFRESH_USER_RESOURCES)
@@ -543,8 +524,7 @@ bool flush_tables_with_read_lock(THD *thd, TABLE_LIST *all_tables)
     acquire SNW locks to ensure that they can be locked for
     read without further waiting.
   */
-  if (open_and_lock_tables(thd, all_tables, FALSE,
-                           MYSQL_OPEN_SKIP_SCOPED_MDL_LOCK,
+  if (open_and_lock_tables(thd, all_tables, MYSQL_OPEN_SKIP_SCOPED_MDL_LOCK,
                            &lock_tables_prelocking_strategy) ||
       thd->locked_tables_list.init_locked_tables(thd))
   {
@@ -608,8 +588,7 @@ bool flush_tables_for_export(THD *thd, TABLE_LIST *all_tables)
     for the same table possible, which creates race between
     creation/deletion of metadata file.
   */
-  if (open_and_lock_tables(thd, all_tables, false,
-                           MYSQL_OPEN_SKIP_SCOPED_MDL_LOCK,
+  if (open_and_lock_tables(thd, all_tables, MYSQL_OPEN_SKIP_SCOPED_MDL_LOCK,
                            &lock_tables_prelocking_strategy))
   {
     return true;

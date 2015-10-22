@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -20,7 +20,6 @@
 #include "my_global.h"
 #include "my_sys.h"
 #include "my_md5.h"
-#include "sql_class.h"
 #include "sql_lex.h"
 #include "sql_signal.h"
 #include "sql_get_diagnostics.h"
@@ -30,6 +29,7 @@
 
 /* Generated code */
 #include "sql_yacc.h"
+#define LEX_TOKEN_WITH_DEFINITION
 #include "lex_token.h"
 
 /* Name pollution from sql/sql_lex.h */
@@ -41,16 +41,22 @@
 
 #define SIZE_OF_A_TOKEN 2
 
+ulong max_digest_length= 0;
+ulong get_max_digest_length()
+{
+  return max_digest_length;
+}
+
 /**
   Read a single token from token array.
 */
-inline int read_token(const sql_digest_storage *digest_storage,
-                      int index, uint *tok)
+inline uint read_token(const sql_digest_storage *digest_storage,
+                       uint index, uint *tok)
 {
-  int safe_byte_count= digest_storage->m_byte_count;
+  size_t safe_byte_count= digest_storage->m_byte_count;
 
   if (index + SIZE_OF_A_TOKEN <= safe_byte_count &&
-      safe_byte_count <= MAX_DIGEST_STORAGE_SIZE)
+      safe_byte_count <= digest_storage->m_token_array_length)
   {
     const unsigned char *src= & digest_storage->m_token_array[index];
     *tok= src[0] | (src[1] << 8);
@@ -67,10 +73,9 @@ inline int read_token(const sql_digest_storage *digest_storage,
 */
 inline void store_token(sql_digest_storage* digest_storage, uint token)
 {
-  DBUG_ASSERT(digest_storage->m_byte_count >= 0);
-  DBUG_ASSERT(digest_storage->m_byte_count <= MAX_DIGEST_STORAGE_SIZE);
+  DBUG_ASSERT(digest_storage->m_byte_count <= digest_storage->m_token_array_length);
 
-  if (digest_storage->m_byte_count + SIZE_OF_A_TOKEN <= MAX_DIGEST_STORAGE_SIZE)
+  if (digest_storage->m_byte_count + SIZE_OF_A_TOKEN <= digest_storage->m_token_array_length)
   {
     unsigned char* dest= & digest_storage->m_token_array[digest_storage->m_byte_count];
     dest[0]= token & 0xff;
@@ -86,25 +91,42 @@ inline void store_token(sql_digest_storage* digest_storage, uint token)
 /**
   Read an identifier from token array.
 */
-inline int read_identifier(const sql_digest_storage* digest_storage,
-                           int index, char ** id_string, int *id_length)
+inline uint read_identifier(const sql_digest_storage* digest_storage,
+                            uint index, char ** id_string, int *id_length)
 {
-  int new_index;
-  DBUG_ASSERT(index <= digest_storage->m_byte_count);
-  DBUG_ASSERT(digest_storage->m_byte_count <= MAX_DIGEST_STORAGE_SIZE);
+  uint new_index;
+  uint safe_byte_count= digest_storage->m_byte_count;
+
+  DBUG_ASSERT(index <= safe_byte_count);
+  DBUG_ASSERT(safe_byte_count <= digest_storage->m_token_array_length);
 
   /*
     token + length + string are written in an atomic way,
     so we do always expect a length + string here
   */
-  const unsigned char *src= & digest_storage->m_token_array[index];
-  uint length= src[0] | (src[1] << 8);
-  *id_string= (char *) (src + 2);
-  *id_length= length;
 
-  new_index= index + SIZE_OF_A_TOKEN + length;
-  DBUG_ASSERT(new_index <= digest_storage->m_byte_count);
-  return new_index;
+  uint bytes_needed= SIZE_OF_A_TOKEN;
+  /* If we can read token and identifier length */
+  if ((index + bytes_needed) <= safe_byte_count)
+  {
+    const unsigned char *src= & digest_storage->m_token_array[index];
+    /* Read the length of identifier */
+    uint length= src[0] | (src[1] << 8);
+    bytes_needed+= length;
+    /* If we can read entire identifier from token array */
+    if ((index + bytes_needed) <= safe_byte_count)
+    {
+      *id_string= (char *) (src + 2);
+      *id_length= length;
+
+      new_index= index + bytes_needed;
+      DBUG_ASSERT(new_index <= safe_byte_count);
+      return new_index;
+    }
+  }
+
+  /* The input byte stream is exhausted. */
+  return MAX_DIGEST_STORAGE_SIZE + 1;
 }
 
 /**
@@ -114,11 +136,10 @@ inline void store_token_identifier(sql_digest_storage* digest_storage,
                                    uint token,
                                    size_t id_length, const char *id_name)
 {
-  DBUG_ASSERT(digest_storage->m_byte_count >= 0);
-  DBUG_ASSERT(digest_storage->m_byte_count <= MAX_DIGEST_STORAGE_SIZE);
+  DBUG_ASSERT(digest_storage->m_byte_count <= digest_storage->m_token_array_length);
 
   size_t bytes_needed= 2 * SIZE_OF_A_TOKEN + id_length;
-  if (digest_storage->m_byte_count + bytes_needed <= MAX_DIGEST_STORAGE_SIZE)
+  if (digest_storage->m_byte_count + bytes_needed <= (unsigned int)digest_storage->m_token_array_length)
   {
     unsigned char* dest= & digest_storage->m_token_array[digest_storage->m_byte_count];
     /* Write the token */
@@ -149,26 +170,21 @@ void compute_digest_md5(const sql_digest_storage *digest_storage, unsigned char 
   Iterate token array and updates digest_text.
 */
 void compute_digest_text(const sql_digest_storage* digest_storage,
-                         char* digest_text,
-                         size_t digest_text_length,
-                         bool *truncated_ptr)
+                         String *digest_text)
 {
   DBUG_ASSERT(digest_storage != NULL);
-  bool truncated= false;
-  int byte_count= digest_storage->m_byte_count;
-  char *digest_output= digest_text;
-  int bytes_needed= 0;
+  uint byte_count= digest_storage->m_byte_count;
+  String *digest_output= digest_text;
   uint tok= 0;
-  int current_byte= 0;
+  uint current_byte= 0;
   lex_token_string *tok_data;
 
-  /* -4 is to make sure extra space for '...' and a '\0' at the end. */
-  int bytes_available= digest_text_length - 4;
+  /* Reset existing data */
+  digest_output->length(0);
 
-  if (byte_count <= 0 || byte_count > MAX_DIGEST_STORAGE_SIZE)
+  if (byte_count > digest_storage->m_token_array_length)
   {
-    *digest_text= '\0';
-    *truncated_ptr= false;
+    digest_output->append("\0", 1);
     return;
   }
 
@@ -182,35 +198,22 @@ void compute_digest_text(const sql_digest_storage* digest_storage,
       Can happen, as we do dirty reads on digest_storage,
       which can be written to in another thread.
     */
-    *digest_text= '\0';
-    *truncated_ptr= false;
+    digest_output->append("\0", 1);
     return;
   }
 
-  /*
-     Max converted size is number of characters * max multibyte length of the
-     target charset, which is 4 for UTF8.
-   */
-  const uint max_converted_size= MAX_DIGEST_STORAGE_SIZE * 4;
-  char id_buffer[max_converted_size];
+  char id_buffer[NAME_LEN + 1]= {'\0'};
   char *id_string;
-  size_t  id_length;
+  size_t id_length;
   bool convert_text= !my_charset_same(from_cs, to_cs);
 
-  DBUG_ASSERT(byte_count <= MAX_DIGEST_STORAGE_SIZE);
-
-  while ((current_byte < byte_count) &&
-         (bytes_available > 0) &&
-         !truncated)
+  while (current_byte < byte_count)
   {
     current_byte= read_token(digest_storage, current_byte, &tok);
 
-    if (tok <= 0 || tok >= array_elements(lex_token_array))
-    {
-      *digest_text='\0';
-      *truncated_ptr= false;
+    if (tok <= 0 || tok >= array_elements(lex_token_array)
+        || current_byte > max_digest_length)
       return;
-    }
 
     tok_data= &lex_token_array[tok];
 
@@ -219,24 +222,28 @@ void compute_digest_text(const sql_digest_storage* digest_storage,
     /* All identifiers are printed with their name. */
     case IDENT:
     case IDENT_QUOTED:
+    case TOK_IDENT:
       {
-        char *id_ptr;
-        int id_len;
+        char *id_ptr= NULL;
+        int id_len= 0;
         uint err_cs= 0;
 
         /* Get the next identifier from the storage buffer. */
         current_byte= read_identifier(digest_storage, current_byte,
                                       &id_ptr, &id_len);
+        if (current_byte > max_digest_length)
+          return;
+
         if (convert_text)
         {
           /* Verify that the converted text will fit. */
-          if (to_cs->mbmaxlen*id_len > max_converted_size)
+          if (to_cs->mbmaxlen*id_len > NAME_LEN)
           {
-            truncated= true;
+            digest_output->append("...", 3);
             break;
           }
           /* Convert identifier string into the storage character set. */
-          id_length= my_convert(id_buffer, max_converted_size, to_cs,
+          id_length= my_convert(id_buffer, NAME_LEN, to_cs,
                                 id_ptr, id_len, from_cs, &err_cs);
           id_string= id_buffer;
         }
@@ -248,29 +255,13 @@ void compute_digest_text(const sql_digest_storage* digest_storage,
 
         if (id_length == 0 || err_cs != 0)
         {
-          truncated= true;
           break;
         }
         /* Copy the converted identifier into the digest string. */
-        bytes_needed= id_length + (tok == IDENT ? 1 : 3);
-        if (bytes_needed <= bytes_available)
-        {
-          if (tok == IDENT_QUOTED)
-            *digest_output++= '`';
-          if (id_length > 0)
-          {
-            memcpy(digest_output, id_string, id_length);
-            digest_output+= id_length;
-          }
-          if (tok == IDENT_QUOTED)
-            *digest_output++= '`';
-          *digest_output++= ' ';
-          bytes_available-= bytes_needed;
-        }
-        else
-        {
-          truncated= true;
-        }
+        digest_output->append("`", 1);
+        if (id_length > 0)
+          digest_output->append(id_string, id_length);
+        digest_output->append("` ", 2);
       }
       break;
 
@@ -281,43 +272,20 @@ void compute_digest_text(const sql_digest_storage* digest_storage,
         +1 is to make sure extra space for ' '.
       */
       int tok_length= tok_data->m_token_length;
-      bytes_needed= tok_length + 1;
 
-      if (bytes_needed <= bytes_available)
-      {
-        strncpy(digest_output, tok_data->m_token_string, tok_length);
-        digest_output+= tok_length;
-        if (tok_data->m_append_space)
-        {
-          *digest_output++= ' ';
-        }
-        bytes_available-= bytes_needed;
-      }
-      else
-      {
-        truncated= true;
-      }
+      digest_output->append(tok_data->m_token_string, tok_length);
+      if (tok_data->m_append_space)
+        digest_output->append(" ", 1);
       break;
     }
   }
-
-  /* Truncate digest text in case of long queries. */
-  if (digest_storage->m_full || truncated)
-  {
-    strcpy(digest_output, "...");
-    digest_output+= 3;
-  }
-
-  *truncated_ptr= truncated;
-  *digest_output= '\0';
 }
 
-static inline uint peek_token(const sql_digest_storage *digest, int index)
+static inline uint peek_token(const sql_digest_storage *digest, uint index)
 {
   uint token;
-  DBUG_ASSERT(index >= 0);
   DBUG_ASSERT(index + SIZE_OF_A_TOKEN <= digest->m_byte_count);
-  DBUG_ASSERT(digest->m_byte_count <=  MAX_DIGEST_STORAGE_SIZE);
+  DBUG_ASSERT(digest->m_byte_count <=  digest->m_token_array_length);
 
   token= ((digest->m_token_array[index + 1])<<8) | digest->m_token_array[index];
   return token;
@@ -328,20 +296,21 @@ static inline uint peek_token(const sql_digest_storage *digest, int index)
   is found, do not look for token before that.
 */
 static inline void peek_last_two_tokens(const sql_digest_storage* digest_storage,
-                                        int last_id_index, uint *t1, uint *t2)
+                                        uint last_id_index, uint *t1, uint *t2)
 {
-  int byte_count= digest_storage->m_byte_count;
-  int peek_index= byte_count - SIZE_OF_A_TOKEN;
+  uint byte_count= digest_storage->m_byte_count;
+  uint peek_index= byte_count;
 
-  if (last_id_index <= peek_index)
+  if (last_id_index + SIZE_OF_A_TOKEN <= peek_index)
   {
     /* Take last token. */
+    peek_index-= SIZE_OF_A_TOKEN;
     *t1= peek_token(digest_storage, peek_index);
 
-    peek_index-= SIZE_OF_A_TOKEN;
-    if (last_id_index <= peek_index)
+    if (last_id_index + SIZE_OF_A_TOKEN <= peek_index)
     {
       /* Take 2nd token from last. */
+      peek_index-= SIZE_OF_A_TOKEN;
       *t2= peek_token(digest_storage, peek_index);
     }
     else
@@ -353,6 +322,53 @@ static inline void peek_last_two_tokens(const sql_digest_storage* digest_storage
   {
     *t1= TOK_UNUSED;
     *t2= TOK_UNUSED;
+  }
+}
+
+/**
+  Function to read last three tokens from token array. If an identifier
+  is found, do not look for token before that.
+*/
+static inline void peek_last_three_tokens(const sql_digest_storage* digest_storage,
+                                          uint last_id_index, uint *t1, uint *t2, uint *t3)
+{
+  uint byte_count= digest_storage->m_byte_count;
+  uint peek_index= byte_count;
+
+  if (last_id_index + SIZE_OF_A_TOKEN <= peek_index)
+  {
+    /* Take last token. */
+    peek_index-= SIZE_OF_A_TOKEN;
+    *t1= peek_token(digest_storage, peek_index);
+
+    if (last_id_index + SIZE_OF_A_TOKEN <= peek_index)
+    {
+      /* Take 2nd token from last. */
+      peek_index-= SIZE_OF_A_TOKEN;
+      *t2= peek_token(digest_storage, peek_index);
+
+      if (last_id_index + SIZE_OF_A_TOKEN <= peek_index)
+      {
+        /* Take 3rd token from last. */
+        peek_index-= SIZE_OF_A_TOKEN;
+        *t3= peek_token(digest_storage, peek_index);
+      }
+      else
+      {
+        *t3= TOK_UNUSED;
+      }
+    }
+    else
+    {
+      *t2= TOK_UNUSED;
+      *t3= TOK_UNUSED;
+    }
+  }
+  else
+  {
+    *t1= TOK_UNUSED;
+    *t2= TOK_UNUSED;
+    *t3= TOK_UNUSED;
   }
 }
 
@@ -380,16 +396,66 @@ sql_digest_state* digest_add_token(sql_digest_state *state,
 
   switch (token)
   {
-    case BIN_NUM:
+    case NUM:
+    case LONG_NUM:
+    case ULONGLONG_NUM:
     case DECIMAL_NUM:
     case FLOAT_NUM:
+    case BIN_NUM:
     case HEX_NUM:
+    {
+      bool found_unary;
+      do
+      {
+        found_unary= false;
+        peek_last_two_tokens(digest_storage, state->m_last_id_index,
+                             &last_token, &last_token2);
+
+        if ((last_token == '-') || (last_token == '+'))
+        {
+          /*
+            We need to differentiate:
+            - a <unary minus> operator
+            - a <unary plus> operator
+            from
+            - a <binary minus> operator
+            - a <binary plus> operator
+            to only reduce "a = -1" to "a = ?", and not change "b - 1" to "b ?"
+
+            Binary operators are found inside an expression,
+            while unary operators are found at the beginning of an expression, or after operators.
+
+            To achieve this, every token that is followed by an <expr> expression
+            in the SQL grammar is flagged.
+            See sql/sql_yacc.yy
+            See sql/gen_lex_token.cc
+
+            For example,
+            "(-1)" is parsed as "(", "-", NUM, ")", and lex_token_array["("].m_start_expr is true,
+            so reduction of the "-" NUM is done, the result is "(?)".
+            "(a-1)" is parsed as "(", ID, "-", NUM, ")", and lex_token_array[ID].m_start_expr is false,
+            so the operator is binary, no reduction is done, and the result is "(a-?)".
+          */
+          if (lex_token_array[last_token2].m_start_expr)
+          {
+            /*
+              REDUCE:
+              TOK_GENERIC_VALUE := (UNARY_PLUS | UNARY_MINUS) (NUM | LOG_NUM | ... | FLOAT_NUM)
+
+              REDUCE:
+              TOK_GENERIC_VALUE := (UNARY_PLUS | UNARY_MINUS) TOK_GENERIC_VALUE
+            */
+            token= TOK_GENERIC_VALUE;
+            digest_storage->m_byte_count-= SIZE_OF_A_TOKEN;
+            found_unary= true;
+          }
+        }
+      } while (found_unary);
+    }
+    /* fall through, for case NULL_SYM below */
     case LEX_HOSTNAME:
-    case LONG_NUM:
-    case NUM:
     case TEXT_STRING:
     case NCHAR_STRING:
-    case ULONGLONG_NUM:
     case PARAM_MARKER:
     {
       /*
@@ -397,26 +463,22 @@ sql_digest_state* digest_add_token(sql_digest_state *state,
         TOK_GENERIC_VALUE := BIN_NUM | DECIMAL_NUM | ... | ULONGLONG_NUM
       */
       token= TOK_GENERIC_VALUE;
-    }
-    /* fall through */
-    case NULL_SYM:
-    {
+
       peek_last_two_tokens(digest_storage, state->m_last_id_index,
                            &last_token, &last_token2);
 
       if ((last_token2 == TOK_GENERIC_VALUE ||
-           last_token2 == TOK_GENERIC_VALUE_LIST ||
-           last_token2 == NULL_SYM) &&
+           last_token2 == TOK_GENERIC_VALUE_LIST) &&
           (last_token == ','))
       {
         /*
           REDUCE:
           TOK_GENERIC_VALUE_LIST :=
-            (TOK_GENERIC_VALUE|NULL_SYM) ',' (TOK_GENERIC_VALUE|NULL_SYM)
+            TOK_GENERIC_VALUE ',' TOK_GENERIC_VALUE
 
           REDUCE:
           TOK_GENERIC_VALUE_LIST :=
-            TOK_GENERIC_VALUE_LIST ',' (TOK_GENERIC_VALUE|NULL_SYM)
+            TOK_GENERIC_VALUE_LIST ',' TOK_GENERIC_VALUE
         */
         digest_storage->m_byte_count-= 2*SIZE_OF_A_TOKEN;
         token= TOK_GENERIC_VALUE_LIST;
@@ -509,6 +571,15 @@ sql_digest_state* digest_add_token(sql_digest_state *state,
       char *yytext= lex_token->lex_str.str;
       size_t yylen= lex_token->lex_str.length;
 
+      /*
+        REDUCE:
+          TOK_IDENT := IDENT | IDENT_QUOTED
+        The parser gives IDENT or IDENT_TOKEN for the same text,
+        depending on the character set used.
+        We unify both to always print the same digest text,
+        and always have the same digest hash.
+      */
+      token= TOK_IDENT;
       /* Add this token and identifier string to digest storage. */
       store_token_identifier(digest_storage, token, yylen, yytext);
 
@@ -522,6 +593,95 @@ sql_digest_state* digest_add_token(sql_digest_state *state,
       store_token(digest_storage, token);
       break;
     }
+  }
+
+  return state;
+}
+
+sql_digest_state* digest_reduce_token(sql_digest_state *state,
+                                      uint token_left, uint token_right)
+{
+  sql_digest_storage *digest_storage= NULL;
+
+  digest_storage= &state->m_digest_storage;
+
+  /*
+    Stop collecting further tokens if digest storage is full.
+  */
+  if (digest_storage->m_full)
+    return NULL;
+
+  uint last_token;
+  uint last_token2;
+  uint last_token3;
+  uint token_to_push= TOK_UNUSED;
+
+  peek_last_two_tokens(digest_storage, state->m_last_id_index,
+                       &last_token, &last_token2);
+
+  /*
+    There is only one caller of digest_reduce_token(),
+    see sql/sql_yacc.yy, rule literal := NULL_SYM.
+    REDUCE:
+      token_left := token_right
+    Used for:
+      TOK_GENERIC_VALUE := NULL_SYM
+  */
+
+  if (last_token == token_right)
+  {
+    /*
+      Current stream is like:
+        TOKEN_X TOKEN_RIGHT .
+      REDUCE to
+        TOKEN_X TOKEN_LEFT .
+    */
+    digest_storage->m_byte_count-= SIZE_OF_A_TOKEN;
+    store_token(digest_storage, token_left);
+  }
+  else
+  {
+    /*
+      Current stream is like:
+        TOKEN_X TOKEN_RIGHT TOKEN_Y .
+      Pop TOKEN_Y
+        TOKEN_X TOKEN_RIGHT . TOKEN_Y
+      REDUCE to
+        TOKEN_X TOKEN_LEFT . TOKEN_Y
+    */
+    DBUG_ASSERT(last_token2 == token_right);
+    digest_storage->m_byte_count-= 2 * SIZE_OF_A_TOKEN;
+    store_token(digest_storage, token_left);
+    token_to_push= last_token;
+  }
+
+  peek_last_three_tokens(digest_storage, state->m_last_id_index,
+                         &last_token, &last_token2, &last_token3);
+
+  if ((last_token3 == TOK_GENERIC_VALUE ||
+       last_token3 == TOK_GENERIC_VALUE_LIST) &&
+      (last_token2 == ',') &&
+      (last_token == TOK_GENERIC_VALUE))
+  {
+    /*
+      REDUCE:
+      TOK_GENERIC_VALUE_LIST :=
+        TOK_GENERIC_VALUE ',' TOK_GENERIC_VALUE
+
+      REDUCE:
+      TOK_GENERIC_VALUE_LIST :=
+        TOK_GENERIC_VALUE_LIST ',' TOK_GENERIC_VALUE
+    */
+    digest_storage->m_byte_count-= 3*SIZE_OF_A_TOKEN;
+    store_token(digest_storage, TOK_GENERIC_VALUE_LIST);
+  }
+
+  if (token_to_push != TOK_UNUSED)
+  {
+    /*
+      Push TOKEN_Y
+    */
+    store_token(digest_storage, token_to_push);
   }
 
   return state;

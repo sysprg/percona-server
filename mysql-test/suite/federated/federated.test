@@ -757,7 +757,6 @@ INSERT INTO federated.t1 VALUES (3,3,3),(1,1,1),(2,2,2),(4,4,4);
 
 connection slave;
 DROP TABLE IF EXISTS federated.t1;
-SET @@global.innodb_file_format='Barracuda';
 
 CREATE TABLE federated.t1 (i1 int, i2 int, i3 int, i4 int, i5 int, i6 int, i7 int, i8
 int, i9 int, i10 int, i11 int, i12 int, i13 int, i14 int, i15 int, i16 int, i17
@@ -885,7 +884,6 @@ int, i983 int, i984 int, i985 int, i986 int, i987 int, i988 int, i989 int, i990
 int, i991 int, i992 int, i993 int, i994 int, i995 int, i996 int, i997 int, i998
 int, i999 int, i1000 int, b varchar(256)) 
 row_format=dynamic;
-SET @@global.innodb_file_format='Antelope';
 connection master;
 
 DROP TABLE IF EXISTS federated.t1;
@@ -1998,10 +1996,51 @@ DROP TABLE federated.t1;
 connection slave;
 DROP TABLE federated.t1;
 
-connection default;
-
 
 --echo End of 5.1 tests
+
+--echo #
+--echo # BUG#11751864 - FEDERATED DOESN'T DISTINGUISH BETWEEN DELETE FROM
+--echo #                 T1 AND TRUNCATE T1 NOT NULL NOT SPECIFIED
+--echo # BUG#17564775 - FEDERATED DOES NOT SUPPORT DELETE IGNORE
+
+--enable_connect_log
+connection master;
+CREATE TABLE federated.t1 (a INT PRIMARY KEY, b varchar(64)) ENGINE=InnoDB;
+connection slave;
+--replace_result $MASTER_MYPORT MASTER_PORT
+eval CREATE TABLE federated.t2 (a INT PRIMARY KEY, b varchar(64))
+  ENGINE=FEDERATED
+  connection='mysql://root@127.0.0.1:$MASTER_MYPORT/federated/t1'
+  DEFAULT CHARSET=utf8;
+connection master;
+INSERT INTO federated.t1 VALUES (1,"Larry"), (2,"Curly"), (3,"Moe");
+CREATE TABLE federated.t1_child(a int);
+ALTER TABLE federated.t1_child ADD CONSTRAINT dc FOREIGN KEY (a) REFERENCES federated.t1(a);
+INSERT INTO federated.t1_child VALUES (1), (3);
+connection slave;
+SELECT * FROM federated.t2;
+--echo #We will use the error message returned from server to differentiate between DELETE and TRUNCATE
+--error ER_GET_ERRMSG
+DELETE FROM federated.t2;
+--error ER_GET_ERRMSG
+TRUNCATE TABLE federated.t2;
+SELECT * FROM federated.t2;
+DELETE IGNORE FROM federated.t2;
+SELECT * FROM federated.t2;
+DELETE IGNORE FROM federated.t2 where a>1;
+SELECT * FROM federated.t2;
+INSERT INTO federated.t2 VALUES (2,"Curly"),(6,"James");
+SELECT * FROM federated.t2;
+DELETE IGNORE federated.t2.* FROM federated.t2 where federated.t2.a<5;
+SELECT * FROM federated.t2;
+DROP TABLE federated.t2;
+connection master;
+DROP TABLE federated.t1_child;
+DROP TABLE federated.t1;
+--disable_connect_log
+
+connection default;
 SET @@GLOBAL.CONCURRENT_INSERT= @OLD_MASTER_CONCURRENT_INSERT;
 connection slave;
 SET @@GLOBAL.CONCURRENT_INSERT= @OLD_SLAVE_CONCURRENT_INSERT;

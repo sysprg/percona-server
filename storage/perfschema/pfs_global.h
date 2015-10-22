@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -26,10 +26,6 @@
 
 /** True when the performance schema is initialized. */
 extern bool pfs_initialized;
-/** Total memory allocated by the performance schema, in bytes. */
-extern size_t pfs_allocated_memory_size;
-/** Total memory allocated by the performance schema, in number of blocks. */
-extern size_t pfs_allocated_memory_count;
 
 #if defined(HAVE_POSIX_MEMALIGN) || defined(HAVE_MEMALIGN) || defined(HAVE_ALIGNED_MALLOC)
 #define PFS_ALIGNEMENT 64
@@ -77,20 +73,43 @@ struct PFS_cacheline_uint64
   {}
 };
 
-void *pfs_malloc(size_t size, myf flags);
+struct PFS_builtin_memory_class;
+
+/** Memory allocation for the performance schema. */
+void *pfs_malloc(PFS_builtin_memory_class *klass, size_t size, myf flags);
+
+/** Allocate an array of structures with overflow check. */
+void *pfs_malloc_array(PFS_builtin_memory_class *klass, size_t n, size_t size, myf flags);
 
 /**
   Helper, to allocate an array of structures.
-  @param n number of elements in the array.
-  @param T type of an element.
+  @param k memory class
+  @param n number of elements in the array
+  @param s size of array element
+  @param T type of an element
   @param f flags to use when allocating memory
 */
-#define PFS_MALLOC_ARRAY(n, T, f) \
-  reinterpret_cast<T*> (pfs_malloc((n) * sizeof(T), (f)))
+#define PFS_MALLOC_ARRAY(k, n, s, T, f) \
+  reinterpret_cast<T*>(pfs_malloc_array((k), (n), (s), (f)))
 
 /** Free memory allocated with @sa pfs_malloc. */
-void pfs_free(void *ptr);
+void pfs_free(PFS_builtin_memory_class *klass, size_t size, void *ptr);
 
+/** Free memory allocated with @sa pfs_malloc_array. */
+void pfs_free_array(PFS_builtin_memory_class *klass, size_t n, size_t size, void *ptr);
+
+/**
+  Helper, to free an array of structures.
+  @param k memory class
+  @param n number of elements in the array
+  @param s size of array element
+  @param p the array to free
+*/
+#define PFS_FREE_ARRAY(k, n, s, p) \
+  pfs_free_array((k), (n), (s), (p))
+
+/** Detect multiplication overflow. */
+bool is_overflow(size_t product, size_t n1, size_t n2);
 
 uint pfs_get_socket_address(char *host,
                             uint host_len,

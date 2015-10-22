@@ -1,7 +1,7 @@
 #ifndef ITEM_SUM_INCLUDED
 #define ITEM_SUM_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,8 +19,11 @@
 
 /* classes for sum functions */
 
-#include <my_tree.h>
-#include "sql_udf.h"                            /* udf_handler */
+#include "my_tree.h"        // TREE
+#include "item.h"           // Item_result_field
+#include "sql_alloc.h"      // Sql_alloc
+#include "sql_udf.h"        // udf_handler
+#include "mem_root_array.h"
 
 class Item_sum;
 class Aggregator_distinct;
@@ -462,7 +465,6 @@ public:
     aggregator_clear();
   }
   virtual void make_unique() { force_copy_fields= TRUE; }
-  Item *get_tmp_table_item(THD *thd);
   virtual Field *create_tmp_field(bool group, TABLE *table);
   bool walk(Item_processor processor, enum_walk walk, uchar *arg);
   virtual bool clean_up_after_removal(uchar *arg);
@@ -477,6 +479,8 @@ public:
   Item *get_arg(uint i) { return args[i]; }
   Item *set_arg(uint i, THD *thd, Item *new_val);
   uint get_arg_count() const { return arg_count; }
+  /// @todo delete this when we no longer support temporary transformations
+  Item **get_arg_ptr(uint i) { return &args[i]; }
 
   /* Initialization of distinct related members */
   void init_aggregator()
@@ -1086,6 +1090,7 @@ protected:
   bool get_time(MYSQL_TIME *ltime);
   void reset_field();
   String *val_str(String *);
+  bool val_json(Json_wrapper *wr);
   bool keep_field_type(void) const { return 1; }
   enum Item_result result_type () const { return hybrid_type; }
   enum enum_field_types field_type() const { return hybrid_field_type; }
@@ -1165,7 +1170,7 @@ public:
 class Item_sum_or :public Item_sum_bit
 {
 public:
-  Item_sum_or(const POS &pos, Item *item_par) :Item_sum_bit(pos, item_par,LL(0))
+  Item_sum_or(const POS &pos, Item *item_par) :Item_sum_bit(pos, item_par,0LL)
   {}
 
   Item_sum_or(THD *thd, Item_sum_or *item) :Item_sum_bit(thd, item) {}
@@ -1179,7 +1184,7 @@ class Item_sum_and :public Item_sum_bit
 {
   public:
   Item_sum_and(const POS &pos, Item *item_par)
-    :Item_sum_bit(pos, item_par, ULONGLONG_MAX)
+    :Item_sum_bit(pos, item_par, ULLONG_MAX)
   {}
 
   Item_sum_and(THD *thd, Item_sum_and *item) :Item_sum_bit(thd, item) {}
@@ -1192,7 +1197,7 @@ class Item_sum_xor :public Item_sum_bit
 {
   public:
   Item_sum_xor(const POS &pos, Item *item_par)
-    :Item_sum_bit(pos, item_par, LL(0))
+    :Item_sum_bit(pos, item_par, 0LL)
   {}
 
   Item_sum_xor(THD *thd, Item_sum_xor *item) :Item_sum_bit(thd, item) {}
@@ -1412,7 +1417,7 @@ class Item_func_group_concat : public Item_sum
    */
   Unique *unique_filter;
   TABLE *table;
-  ORDER **order;
+  Mem_root_array<ORDER , true> order_array;
   Name_resolution_context *context;
   /** The number of ORDER BY items. */
   uint arg_count_order;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,10 +14,12 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "my_static.h"
 #include "mysys_err.h"
 #include "m_string.h"
 #include "mysql/psi/mysql_stage.h"
+#include "mysql/psi/mysql_file.h"
 
 #ifdef HAVE_SYS_RESOURCE_H
 #include <sys/resource.h>
@@ -29,17 +31,17 @@
 /* WSAStartup needs winsock library*/
 #pragma comment(lib, "ws2_32")
 my_bool have_tcpip=0;
-static void my_win_init(void);
-static my_bool win32_init_tcp_ip();
-#else
-#define my_win_init()
+static void my_win_init();
 #endif
 
 #define SCALE_SEC       100
 #define SCALE_USEC      10000
 
-my_bool my_init_done= 0;
+my_bool my_init_done= FALSE;
 ulong  my_thread_stack_size= 65536;
+MYSQL_FILE *mysql_stdin= NULL;
+static MYSQL_FILE instrumented_stdin;
+
 
 static ulong atoi_octal(const char *str)
 {
@@ -52,52 +54,68 @@ static ulong atoi_octal(const char *str)
   return (ulong) tmp;
 }
 
-MYSQL_FILE *mysql_stdin= NULL;
-static MYSQL_FILE instrumented_stdin;
+
+#if defined(MY_MSCRT_DEBUG)
+int set_crt_report_leaks()
+{
+  HANDLE hLogFile;
+
+  _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF        // debug allocation on
+                 | _CRTDBG_LEAK_CHECK_DF     // leak checks on exit
+                 | _CRTDBG_CHECK_ALWAYS_DF   // memory check (slow)
+                 );
+
+  return ((
+    NULL == (hLogFile= GetStdHandle(STD_ERROR_HANDLE)) ||
+    -1 == _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE) ||
+    _CRTDBG_HFILE_ERROR == _CrtSetReportFile(_CRT_WARN, hLogFile) ||
+    -1 == _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE) ||
+    _CRTDBG_HFILE_ERROR == _CrtSetReportFile(_CRT_ERROR, hLogFile) ||
+    -1 == _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE) ||
+    _CRTDBG_HFILE_ERROR == _CrtSetReportFile(_CRT_ASSERT, hLogFile)) ? 1 : 0);
+}
+#endif
 
 
 /**
   Initialize my_sys functions, resources and variables
 
   @return Initialization result
-    @retval 0 Success
-    @retval 1 Error. Couldn't initialize environment
+    @retval FALSE Success
+    @retval TRUE  Error. Couldn't initialize environment
 */
-my_bool my_init(void)
+my_bool my_init()
 {
   char *str;
 
   if (my_init_done)
-    return 0;
+    return FALSE;
 
-  my_init_done= 1;
+  my_init_done= TRUE;
 
-  my_umask= 0660;                       /* Default umask for new files */
-  my_umask_dir= 0700;                   /* Default umask for new directories */
+#if defined(MY_MSCRT_DEBUG)
+  set_crt_report_leaks();
+#endif
+
+  my_umask= 0640;                       /* Default umask for new files */
+  my_umask_dir= 0750;                   /* Default umask for new directories */
 
   /* Default creation of new files */
   if ((str= getenv("UMASK")) != 0)
-    my_umask= (int) (atoi_octal(str) | 0600);
+    my_umask= (int) (atoi_octal(str) | 0640);
   /* Default creation of new dir's */
   if ((str= getenv("UMASK_DIR")) != 0)
-    my_umask_dir= (int) (atoi_octal(str) | 0700);
-
-  init_glob_errs();
+    my_umask_dir= (int) (atoi_octal(str) | 0750);
 
   instrumented_stdin.m_file= stdin;
   instrumented_stdin.m_psi= NULL;       /* not yet instrumented */
   mysql_stdin= & instrumented_stdin;
 
-#if defined(SAFE_MUTEX)
-  safe_mutex_global_init();		/* Must be called early */
-#endif
-
   if (my_thread_global_init())
-    return 1;
+    return TRUE;
 
-#if defined(MY_PTHREAD_FASTMUTEX) && !defined(SAFE_MUTEX)
-  fastmutex_global_init();              /* Must be called early */
-#endif
+  if (my_thread_init())
+    return TRUE;
 
   /* $HOME is needed early to parse configuration files located in ~/ */
   if ((home_dir= getenv("HOME")) != 0)
@@ -106,12 +124,11 @@ my_bool my_init(void)
   {
     DBUG_ENTER("my_init");
     DBUG_PROCESS((char*) (my_progname ? my_progname : "unknown"));
-    my_win_init();
-    DBUG_PRINT("exit", ("home: '%s'", home_dir));
 #ifdef _WIN32
-    win32_init_tcp_ip();
+    my_win_init();
 #endif
-    DBUG_RETURN(0);
+    DBUG_PRINT("exit", ("home: '%s'", home_dir));
+    DBUG_RETURN(FALSE);
   }
 } /* my_init */
 
@@ -121,29 +138,16 @@ my_bool my_init(void)
 void my_end(int infoflag)
 {
   /*
-    this code is suboptimal to workaround a bug in
-    Sun CC: Sun C++ 5.6 2004/06/02 for x86, and should not be
-    optimized until this compiler is not in use anymore
+    We do not use DBUG_ENTER here, as after cleanup DBUG is no longer
+    operational, so we cannot use DBUG_RETURN.
   */
-  FILE *info_file= DBUG_FILE;
-  my_bool print_info= (info_file != stderr);
+
+  FILE *info_file= (DBUG_FILE ? DBUG_FILE : stderr);
 
   if (!my_init_done)
     return;
 
-  /*
-    We do not use DBUG_ENTER here, as after cleanup DBUG is no longer
-    operational, so we cannot use DBUG_RETURN.
-  */
-  DBUG_PRINT("info",("Shutting down: infoflag: %d  print_info: %d",
-                     infoflag, print_info));
-  if (!info_file)
-  {
-    info_file= stderr;
-    print_info= 0;
-  }
-
-  if ((infoflag & MY_CHECK_ERROR) || print_info)
+  if ((infoflag & MY_CHECK_ERROR) || (info_file != stderr))
 
   {					/* Test if some file is left open */
     if (my_file_opened | my_stream_opened)
@@ -151,7 +155,7 @@ void my_end(int infoflag)
       char ebuff[512];
       my_snprintf(ebuff, sizeof(ebuff), EE(EE_OPEN_WARNING),
                   my_file_opened, my_stream_opened);
-      my_message_stderr(EE_OPEN_WARNING, ebuff, ME_BELL);
+      my_message_stderr(EE_OPEN_WARNING, ebuff, MYF(0));
       DBUG_PRINT("error", ("%s", ebuff));
       my_print_open_files();
     }
@@ -160,13 +164,13 @@ void my_end(int infoflag)
   my_error_unregister_all();
   my_once_free();
 
-  if ((infoflag & MY_GIVE_INFO) || print_info)
+  if ((infoflag & MY_GIVE_INFO) || (info_file != stderr))
   {
 #ifdef HAVE_GETRUSAGE
     struct rusage rus;
     if (!getrusage(RUSAGE_SELF, &rus))
       fprintf(info_file,"\n\
-User time %.2f, System time %.2f\n\
+User time %.2f, System time %.2f\n                              \
 Maximum resident set size %ld, Integral resident set size %ld\n\
 Non-physical pagefaults %ld, Physical pagefaults %ld, Swaps %ld\n\
 Blocks in %ld out %ld, Messages in %ld out %ld, Signals %ld\n\
@@ -181,7 +185,7 @@ Voluntary context switches %ld, Involuntary context switches %ld\n",
 	      rus.ru_msgsnd, rus.ru_msgrcv, rus.ru_nsignals,
 	      rus.ru_nvcsw, rus.ru_nivcsw);
 #endif
-#if defined(_WIN32) && defined(_MSC_VER)
+#if defined(_WIN32)
    _CrtSetReportMode( _CRT_WARN, _CRTDBG_MODE_FILE );
    _CrtSetReportFile( _CRT_WARN, _CRTDBG_FILE_STDERR );
    _CrtSetReportMode( _CRT_ERROR, _CRTDBG_MODE_FILE );
@@ -206,16 +210,14 @@ Voluntary context switches %ld, Involuntary context switches %ld\n",
     WSACleanup();
 #endif /* _WIN32 */
 
-  my_init_done=0;
+  my_init_done= FALSE;
 } /* my_end */
 
 
 #ifdef _WIN32
-
-
 /*
   my_parameter_handler
-  
+
   Invalid parameter handler we will use instead of the one "baked"
   into the CRT for MSC v8.  This one just prints out what invalid
   parameter was encountered.  By providing this routine, routines like
@@ -265,7 +267,7 @@ int handle_rtc_failure(int err_type, const char *file, int line,
 #define OFFSET_TO_EPOC ((__int64) 134774 * 24 * 60 * 60 * 1000 * 1000 * 10)
 #define MS 10000000
 
-static void win_init_time(void)
+static void win_init_time()
 {
   /* The following is used by time functions */
   FILETIME ft;
@@ -295,7 +297,7 @@ static void win_init_time(void)
   Open HKEY_LOCAL_MACHINE\SOFTWARE\MySQL and set any strings found
   there as environment variables
 */
-static void win_init_registry(void)
+static void win_init_registry()
 {
   HKEY key_handle;
 
@@ -346,32 +348,6 @@ static void win_init_registry(void)
 }
 
 
-static void my_win_init(void)
-{
-  DBUG_ENTER("my_win_init");
-
-#if defined(_MSC_VER)
-  /* this is required to make crt functions return -1 appropriately */
-  _set_invalid_parameter_handler(my_parameter_handler);
-#endif
-
-#ifdef __MSVC_RUNTIME_CHECKS
-  /*
-    Install handler to send RTC (Runtime Error Check) warnings
-    to log file
-  */
-  _RTC_SetErrorFunc(handle_rtc_failure);
-#endif
-
-  _tzset();
-
-  win_init_time();
-  win_init_registry();
-
-  DBUG_VOID_RETURN;
-}
-
-
 /*------------------------------------------------------------------
   Name: CheckForTcpip| Desc: checks if tcpip has been installed on system
   According to Microsoft Developers documentation the first registry
@@ -383,7 +359,7 @@ static void my_win_init(void)
 #define WINSOCK2KEY "SYSTEM\\CurrentControlSet\\Services\\Winsock2\\Parameters"
 #define WINSOCKKEY  "SYSTEM\\CurrentControlSet\\Services\\Winsock\\Parameters"
 
-static my_bool win32_have_tcpip(void)
+static my_bool win32_have_tcpip()
 {
   HKEY hTcpipRegKey;
   if (RegOpenKeyEx ( HKEY_LOCAL_MACHINE, TCPIPKEY, 0, KEY_READ,
@@ -434,6 +410,31 @@ static my_bool win32_init_tcp_ip()
   }
   return(0);
 }
+
+
+static void my_win_init()
+{
+  DBUG_ENTER("my_win_init");
+
+  /* this is required to make crt functions return -1 appropriately */
+  _set_invalid_parameter_handler(my_parameter_handler);
+
+#ifdef __MSVC_RUNTIME_CHECKS
+  /*
+    Install handler to send RTC (Runtime Error Check) warnings
+    to log file
+  */
+  _RTC_SetErrorFunc(handle_rtc_failure);
+#endif
+
+  _tzset();
+
+  win_init_time();
+  win_init_registry();
+  win32_init_tcp_ip();
+
+  DBUG_VOID_RETURN;
+}
 #endif /* _WIN32 */
 
 PSI_stage_info stage_waiting_for_table_level_lock=
@@ -443,7 +444,7 @@ PSI_stage_info stage_waiting_for_table_level_lock=
 
 PSI_mutex_key key_BITMAP_mutex, key_IO_CACHE_append_buffer_lock,
   key_IO_CACHE_SHARE_mutex, key_KEY_CACHE_cache_lock,
-  key_my_thread_var_mutex, key_THR_LOCK_charset, key_THR_LOCK_heap,
+  key_THR_LOCK_charset, key_THR_LOCK_heap,
   key_THR_LOCK_lock, key_THR_LOCK_malloc,
   key_THR_LOCK_mutex, key_THR_LOCK_myisam, key_THR_LOCK_net,
   key_THR_LOCK_open, key_THR_LOCK_threads,
@@ -455,7 +456,6 @@ static PSI_mutex_info all_mysys_mutexes[]=
   { &key_IO_CACHE_append_buffer_lock, "IO_CACHE::append_buffer_lock", 0},
   { &key_IO_CACHE_SHARE_mutex, "IO_CACHE::SHARE_mutex", 0},
   { &key_KEY_CACHE_cache_lock, "KEY_CACHE::cache_lock", 0},
-  { &key_my_thread_var_mutex, "my_thread_var::mutex", 0},
   { &key_THR_LOCK_charset, "THR_LOCK_charset", PSI_FLAG_GLOBAL},
   { &key_THR_LOCK_heap, "THR_LOCK_heap", PSI_FLAG_GLOBAL},
   { &key_THR_LOCK_lock, "THR_LOCK_lock", PSI_FLAG_GLOBAL},
@@ -516,7 +516,6 @@ static PSI_memory_info all_mysys_memory[]=
 #endif
 
   { &key_memory_max_alloca, "max_alloca", 0},
-  { &key_memory_array_buffer, "array_buffer", 0},
   { &key_memory_charset_file, "charset_file", 0},
   { &key_memory_charset_loader, "charset_loader", 0},
   { &key_memory_lf_node, "lf_node", 0},

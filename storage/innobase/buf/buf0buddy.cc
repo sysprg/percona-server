@@ -680,7 +680,6 @@ buf_buddy_relocate(
 
 /**********************************************************************//**
 Deallocate a block. */
-
 void
 buf_buddy_free_low(
 /*===============*/
@@ -783,7 +782,6 @@ to by the buffer pool
 @param[in]	size		block size, up to UNIV_PAGE_SIZE
 @retval true	if succeeded or if failed because the block was fixed
 @retval false	if failed because of no free blocks. */
-
 bool
 buf_buddy_realloc(
 	buf_pool_t*	buf_pool,
@@ -840,7 +838,6 @@ buf_buddy_realloc(
 
 /** Combine all pairs of free buddies.
 @param[in]	buf_pool	buffer pool instance */
-
 void
 buf_buddy_condense_free(
 	buf_pool_t*	buf_pool)

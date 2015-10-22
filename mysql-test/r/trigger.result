@@ -586,6 +586,8 @@ ERROR 42000: FUNCTION test.bug5893 does not exist
 drop trigger t1_bu;
 drop table t1;
 set sql_mode='ansi';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create table t1 ("t1 column" int);
 create trigger t1_bi before insert on t1 for each row set new."t1 column" = 5;
 set sql_mode="";
@@ -605,12 +607,18 @@ t1_bi	INSERT	t1	set new."t1 column" = 5	BEFORE	#	REAL_AS_FLOAT,PIPES_AS_CONCAT,A
 t1_af	INSERT	t1	set @a=10	AFTER	#		root@localhost	latin1	latin1_swedish_ci	latin1_swedish_ci
 drop table t1;
 set sql_mode="traditional";
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create table t1 (a date);
 insert into t1 values ('2004-01-00');
 ERROR 22007: Incorrect date value: '2004-01-00' for column 'a' at row 1
 set sql_mode="";
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create trigger t1_bi before insert on t1 for each row set new.a = '2004-01-00';
 set sql_mode="traditional";
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 insert into t1 values ('2004-01-01');
 select * from t1;
 a
@@ -1047,9 +1055,13 @@ DROP TABLE IF EXISTS t1;
 CREATE TABLE t1 (i1 INT);
 SET @save_sql_mode=@@sql_mode;
 SET SQL_MODE='';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE TRIGGER t1_ai AFTER INSERT ON t1 FOR EACH ROW
 SET @x = 5/0;
 SET SQL_MODE='traditional';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE TRIGGER t1_au AFTER UPDATE ON t1 FOR EACH ROW
 SET @x = 5/0;
 SET @x=1;
@@ -1059,11 +1071,12 @@ SELECT @x;
 NULL
 SET @x=2;
 UPDATE t1 SET i1 = @x;
-ERROR 22012: Division by 0
 SELECT @x;
 @x
-2
+NULL
 SET SQL_MODE='';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 SET @x=3;
 INSERT INTO t1 VALUES (@x);
 SELECT @x;
@@ -1071,11 +1084,12 @@ SELECT @x;
 NULL
 SET @x=4;
 UPDATE t1 SET i1 = @x;
-ERROR 22012: Division by 0
 SELECT @x;
 @x
-4
+NULL
 SET @@sql_mode=@save_sql_mode;
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 DROP TRIGGER t1_ai;
 DROP TRIGGER t1_au;
 DROP TABLE t1;
@@ -1151,9 +1165,9 @@ DROP TABLE IF EXISTS t1;
 DROP TABLE IF EXISTS t2;
 CREATE TABLE t1(c INT);
 CREATE TABLE t2(c INT);
-CREATE DEFINER=1234567890abcdefGHIKL@localhost
+CREATE DEFINER=1234567890abcdefGHIKL1234567890abcdefGHIKL@localhost
 TRIGGER t1_bi BEFORE INSERT ON t1 FOR EACH ROW SET @a = 1;
-ERROR HY000: String '1234567890abcdefGHIKL' is too long for user name (should be no longer than 16)
+ERROR HY000: String '1234567890abcdefGHIKL1234567890abcdefGHIKL' is too long for user name (should be no longer than 32)
 CREATE DEFINER=some_user_name@1234567890abcdefghij1234567890abcdefghij1234567890abcdefghijQWERTY
 TRIGGER t2_bi BEFORE INSERT ON t2 FOR EACH ROW SET @a = 2;
 ERROR HY000: String '1234567890abcdefghij1234567890abcdefghij1234567890abcdefghijQWERTY' is too long for host name (should be no longer than 60)
@@ -1182,7 +1196,6 @@ Warnings:
 Warning	1365	Division by 0
 create trigger t1_bi before insert on t1 for each row set @a:=1/0|
 insert into t1 values(20, 20)|
-ERROR 22012: Division by 0
 drop trigger t1_bi|
 create trigger t1_bi before insert on t1 for each row
 begin
@@ -1201,10 +1214,9 @@ set @a:=1/0;
 end|
 set @check=0, @t4_bi_called=0, @t4_bu_called=0|
 insert into t1 values(30, 30)|
-ERROR 22012: Division by 0
 select @check, @t4_bi_called, @t4_bu_called|
 @check	@t4_bi_called	@t4_bu_called
-1	1	1
+2	1	1
 SET @@sql_mode=@save_sql_mode;
 drop table t1;
 drop table t2;
@@ -1285,6 +1297,8 @@ a	b
 3	c
 drop table t1;
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE TABLE t1 (
 id int NOT NULL DEFAULT '0',
 a  varchar(10) NOT NULL,
@@ -2147,6 +2161,8 @@ DELETE FROM t1;
 DROP TABLE t1;
 DROP TEMPORARY TABLE t2;
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 DROP TRIGGER IF EXISTS trg1;
 DROP TABLE IF EXISTS t1;
 CREATE TABLE t1 (a INT);

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -113,6 +113,7 @@ int main(int argc, char **argv)
   if (argc > 2)
   {
     fprintf(stderr,"%s: Too many arguments\n",my_progname);
+    free_defaults(argv);
     exit(1);
   }
   mysql_init(&mysql);
@@ -168,6 +169,8 @@ int main(int argc, char **argv)
 #if defined (_WIN32) && !defined (EMBEDDED_LIBRARY)
   my_free(shared_memory_base_name);
 #endif
+  mysql_server_end();
+  free_defaults(argv);
   my_end(my_end_arg);
   exit(error ? 1 : 0);
   return 0;				/* No compiler warnings */
@@ -272,6 +275,7 @@ static void print_version(void)
 
 static void usage(void)
 {
+  struct my_option *optp;
   print_version();
   puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   puts("Shows the structure of a MySQL database (databases, tables, and columns).\n");
@@ -284,6 +288,19 @@ If no table is given, then all matching tables in database are shown.\n\
 If no column is given, then all matching columns and column types in table\n\
 are shown.");
   print_defaults("my",load_default_groups);
+  /*
+    Turn default for zombies off so that the help on how to 
+    turn them off text won't show up.
+    This is safe to do since it's followed by a call to exit().
+  */
+  for (optp= my_long_options; optp->name; optp++)
+  {
+    if (optp->id == OPT_SECURE_AUTH)
+    {
+      optp->def_value= 0;
+      break;
+    }
+  }
   my_print_help(my_long_options);
   my_print_variables(my_long_options);
 }
@@ -337,12 +354,14 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
     usage();
     exit(0);
   case OPT_SECURE_AUTH:
-    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
+    /* --secure-auth is a zombie option. */
     if (!opt_secure_auth)
     {
-      usage();
+      fprintf(stderr, "mysqlshow: [ERROR] --skip-secure-auth is not supported.\n");
       exit(1);
     }
+    else
+      CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
     break;
   }
   return 0;
@@ -523,7 +542,8 @@ list_tables(MYSQL *mysql,const char *db,const char *table)
       We just hijack the 'rows' variable for a bit to store the escaped
       table name
     */
-    mysql_real_escape_string(mysql, rows, table, (unsigned long)strlen(table));
+    mysql_real_escape_string_quote(mysql, rows, table,
+                                   (unsigned long)strlen(table), '\'');
     my_snprintf(query, sizeof(query), "show%s tables like '%s'",
                 opt_table_type ? " full" : "", rows);
   }
@@ -742,6 +762,7 @@ list_fields(MYSQL *mysql,const char *db,const char *table,
   while ((row=mysql_fetch_row(result)))
     print_res_row(result,row);
   print_res_top(result);
+  mysql_free_result(result);
   if (opt_show_keys)
   {
     my_snprintf(query, sizeof(query), "show keys from `%s`", table);
@@ -760,8 +781,8 @@ list_fields(MYSQL *mysql,const char *db,const char *table,
     }
     else
       puts("Table has no keys");
+    mysql_free_result(result);
   }
-  mysql_free_result(result);
   return 0;
 }
 

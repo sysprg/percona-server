@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -34,8 +34,8 @@ static my_bool password_provided= FALSE;
 static my_bool g_expire_password_on_exit= FALSE;
 static my_bool opt_use_default= FALSE;
 
-#ifdef HAVE_SMEM
-static char *shared_memory_base_name= 0;
+#if defined (_WIN32) && !defined (EMBEDDED_LIBRARY)
+static char *shared_memory_base_name= default_shared_memory_base_name;
 #endif
 
 #include "sslopt-vars.h"
@@ -66,7 +66,7 @@ static struct my_option my_connection_options[]=
   {"protocol", OPT_MYSQL_PROTOCOL,
    "The protocol to use for connection (tcp, socket, pipe, memory).",
    0, 0, 0, GET_STR,  REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-#ifdef HAVE_SMEM
+#if defined (_WIN32) && !defined (EMBEDDED_LIBRARY)
   {"shared-memory-base-name", OPT_SHARED_MEMORY_BASE_NAME,
    "Base name of shared memory.", &shared_memory_base_name,
    &shared_memory_base_name, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
@@ -75,7 +75,7 @@ static struct my_option my_connection_options[]=
    &opt_socket, &opt_socket, 0, GET_STR_ALLOC, REQUIRED_ARG,
    0, 0, 0, 0, 0, 0},
 #include "sslopt-longopts.h"
-  {"user", 'u', "User for login if not current user.", &opt_user,
+  {"user", 'u', "User for login if not root.", &opt_user,
    &opt_user, 0, GET_STR_ALLOC, REQUIRED_ARG, (longlong) "root", 0, 0, 0, 0, 0},
   {"use-default", 'D', "Execute with no user interactivity",
    &opt_use_default, &opt_use_default, 0, GET_BOOL, NO_ARG, 0, 0, 0,
@@ -96,9 +96,10 @@ static void usage()
 {
   print_version();
   fprintf(stdout, ORACLE_WELCOME_COPYRIGHT_NOTICE("2013"));
-  fprintf(stdout, "MySQL Configuration Utility.");
+  fprintf(stdout, "\nMySQL Configuration Utility.");
   fprintf(stdout, "Usage: %s [OPTIONS]\n", my_progname);
   my_print_help(my_connection_options);
+  print_defaults("my", load_default_groups);
   my_print_variables(my_connection_options);
 }
 
@@ -171,7 +172,7 @@ init_connection_options(MYSQL *mysql)
   if (opt_protocol)
     mysql_options(mysql, MYSQL_OPT_PROTOCOL, (char*) &opt_protocol);
 
-#ifdef HAVE_SMEM
+#if defined (_WIN32) && !defined (EMBEDDED_LIBRARY)
   if (shared_memory_base_name)
     mysql_options(mysql, MYSQL_SHARED_MEMORY_BASE_NAME, shared_memory_base_name);
 #endif
@@ -373,7 +374,7 @@ int install_password_validation_plugin()
 	                       MYF(MY_WME));
       end= my_stpcpy(query, "SET GLOBAL validate_password_policy = ");
       *end++ = '\'';
-      end+= mysql_real_escape_string(&mysql, end, strength, strength_length);
+      end+= mysql_real_escape_string_quote(&mysql, end, strength, strength_length, '\'');
       *end++ = '\'';
       if (!execute_query((const char **) &query,(unsigned int) (end-query)))
 	DBUG_PRINT("info", ("query success!"));
@@ -406,7 +407,7 @@ void estimate_password_strength(char *password_string)
                            MYF(MY_WME));
   end= my_stpcpy(query, "SELECT validate_password_strength(");
   *end++ = '\'';
-  end+= mysql_real_escape_string(&mysql, end, password_string, password_length);
+  end+= mysql_real_escape_string_quote(&mysql, end, password_string, password_length, '\'');
   *end++ = '\'';
   *end++ = ')';
   if (!execute_query((const char **) &query,(unsigned int) (end-query)))
@@ -441,10 +442,10 @@ my_bool mysql_set_password(MYSQL *mysql, char *password)
   size_t password_len= strlen(password);
   char *query, *end;
   query= (char *)my_malloc(PSI_NOT_INSTRUMENTED, password_len+50, MYF(MY_WME));
-  end= my_stpmov(query, "SET PASSWORD= PASSWORD('");
-  end += mysql_real_escape_string(mysql, end, password, password_len);
+  end= my_stpmov(query, "SET PASSWORD=");
   *end++ = '\'';
-  *end++ = ')';
+  end+= mysql_real_escape_string_quote(mysql, end, password, password_len, '\'');
+  *end++ = '\'';
   if (mysql_real_query(mysql, query, (unsigned int) (end - query)))
   {
     my_free(query);
@@ -485,7 +486,7 @@ my_bool mysql_expire_password(MYSQL *mysql)
 
 
 /**
-  Sets the root password with the string provided during the flow
+  Sets the user password with the string provided during the flow
   of the method. It checks for the strength of the password before
   changing it and displays the same to the user. The user can decide
   if he wants to continue with the password, or provide a new one,
@@ -495,7 +496,7 @@ my_bool mysql_expire_password(MYSQL *mysql)
                          0 if it is not.
 */
 
-static void set_root_password(int plugin_set)
+static void set_opt_user_password(int plugin_set)
 {
   char *password1= 0, *password2= 0;
   int reply= 0;
@@ -542,18 +543,17 @@ static void set_root_password(int plugin_set)
     if ((!plugin_set) || (reply == (int) 'y' || reply == (int) 'Y'))
     {
       char *query= NULL, *end;
-      int tmp= sizeof("SET PASSWORD=PASSWORD(") + 3;
+      int tmp= sizeof("SET PASSWORD=") + 3;
       /*
 	query string needs memory which is atleast the length of initial part
 	of query plus twice the size of variable being appended.
       */
       query= (char *)my_malloc(PSI_NOT_INSTRUMENTED,
 	                       (pass_length*2 + tmp)*sizeof(char), MYF(MY_WME));
-      end= my_stpcpy(query, "SET PASSWORD=PASSWORD(");
+      end= my_stpcpy(query, "SET PASSWORD=");
       *end++ = '\'';
-      end+= mysql_real_escape_string(&mysql, end, password1, pass_length);
+      end+= mysql_real_escape_string_quote(&mysql, end, password1, pass_length, '\'');
       *end++ = '\'';
-      *end++ = ')';
       my_free(password1);
       my_free(password2);
       password1= NULL;
@@ -570,13 +570,13 @@ static void set_root_password(int plugin_set)
 }
 
 /**
-  Takes the root password as an input from the user and checks its validity
+  Takes the opt_user's password as an input from the user and checks its validity
   by trying to connect to the server with it. The connection to the server
   is opened in this function.
 
   @return    Returns 1 if a password already exists and 0 if it doesn't.
 */
-int get_root_password()
+int get_opt_user_password()
 {
   my_bool using_temporary_password= FALSE;
   int res;
@@ -604,7 +604,6 @@ int get_root_password()
         the temporary password file.
       */
       char *temp_pass;
-      init_connection_options(&mysql);
       if (find_temporary_password(&temp_pass) == TRUE)
       {
         my_free(password);
@@ -613,10 +612,14 @@ int get_root_password()
       }
       else
       {
+        char prompt[128];
+        my_snprintf(prompt, sizeof(prompt) - 1,
+                    "Enter password for user %s: ", opt_user);
         // Request password from user
-        password= get_tty_password("Enter password for root user: ");
+        password= get_tty_password(prompt);
       }
     }
+    init_connection_options(&mysql);
   } // if !password_provided
 
   /*
@@ -661,9 +664,10 @@ int get_root_password()
           This path is only executed if no temporary password can be found and
           should only happen when manual interaction is possible.
         */
-        fprintf(stdout, "\nThe existing password for the user account has "
-	                "expired. Please set a new password.\n");
-        set_root_password(0);
+        fprintf(stdout, "\nThe existing password for the user account %s has "
+	                "expired. Please set a new password.\n",
+                        opt_user);
+        set_opt_user_password(0);
       }
     }
     else
@@ -705,11 +709,11 @@ void drop_users(MYSQL_RES *result)
 	                     sizeof(char), MYF(MY_WME));
     end= my_stpcpy(query, "DROP USER ");
     *end++ = '\'';
-    end+= mysql_real_escape_string(&mysql, end, user_tmp, user_length);
+    end+= mysql_real_escape_string_quote(&mysql, end, user_tmp, user_length, '\'');
     *end++ = '\'';
     *end++ = '@';
     *end++ = '\'';
-    end+= mysql_real_escape_string(&mysql, end, host_tmp, host_length);
+    end+= mysql_real_escape_string_quote(&mysql, end, host_tmp, host_length, '\'');
     *end++ = '\'';
     if (!execute_query((const char **) &query, (unsigned int) (end-query)))
       DBUG_PRINT("info", ("query success!"));
@@ -780,7 +784,7 @@ void remove_remote_root()
 }
 
 /**
-  Removes test database and deleteѕ the rows corresponding to them
+  Removes test database and deletes the rows corresponding to them
   from mysql.db table.
 */
 void remove_test_database()
@@ -934,7 +938,7 @@ int main(int argc,char *argv[])
 
   fprintf(stdout, "\nSecuring the MySQL server deployment.\n\n");
 
-  hadpass= get_root_password();
+  hadpass= get_opt_user_password();
 
   if (!validate_password_exists())
     plugin_set= install_password_validation_plugin();
@@ -949,21 +953,24 @@ int main(int argc,char *argv[])
 
   if (!hadpass)
   {
-    fprintf(stdout, "Please set the root password here.\n");
-    set_root_password(plugin_set);
+    fprintf(stdout, "Please set the password for %s here.\n", opt_user);
+    set_opt_user_password(plugin_set);
   }
   else if (opt_use_default == FALSE)
   {
-    fprintf(stdout, "Using existing root password.\n");
+    char prompt[256];
+    fprintf(stdout, "Using existing password for %s.\n", opt_user);
 
     if (plugin_set == 1)
       estimate_password_strength(password);
 
-    reply= get_response((const char *) "Change the root password? (Press y|Y "
-	                               "for Yes, any other key for No) : ", 'n');
+    my_snprintf(prompt, sizeof(prompt) - 1, 
+                "Change the password for %s ? ((Press y|Y "
+                "for Yes, any other key for No) : ", opt_user);
+    reply= get_response(prompt, 'n');
 
     if (reply == (int) 'y' || reply == (int) 'Y')
-      set_root_password(plugin_set);
+      set_opt_user_password(plugin_set);
     else
       fprintf(stdout, "\n ... skipping.\n");
   }

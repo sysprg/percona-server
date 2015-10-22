@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -49,7 +49,6 @@ ibool	buf_dblwr_being_created = FALSE;
 Determines if a page number is located inside the doublewrite buffer.
 @return TRUE if the location is inside the two blocks of the
 doublewrite buffer */
-
 ibool
 buf_dblwr_page_inside(
 /*==================*/
@@ -99,7 +98,6 @@ buf_dblwr_get(
 /********************************************************************//**
 Flush a batch of writes to the datafiles that have already been
 written to the dblwr buffer on disk. */
-
 void
 buf_dblwr_sync_datafiles()
 /*======================*/
@@ -139,7 +137,7 @@ buf_dblwr_init(
 	ut_a(srv_doublewrite_batch_size > 0
 	     && srv_doublewrite_batch_size < buf_size);
 
-	mutex_create("buf_dblwr", &buf_dblwr->mutex);
+	mutex_create(LATCH_ID_BUF_DBLWR, &buf_dblwr->mutex);
 
 	buf_dblwr->b_event = os_event_create("dblwr_batch_event");
 	buf_dblwr->s_event = os_event_create("dblwr_single_event");
@@ -210,7 +208,7 @@ start_again:
 
 	ib::info() << "Doublewrite buffer not found: creating new";
 
-	ulint min_doublewrite_size = 
+	ulint min_doublewrite_size =
 		( ( 2 * TRX_SYS_DOUBLEWRITE_BLOCK_SIZE
 		  + FSP_EXTENT_SIZE / 2
 		  + 100)
@@ -340,29 +338,29 @@ start_again:
 	goto start_again;
 }
 
-/****************************************************************//**
-At a database startup initializes the doublewrite buffer memory structure if
+/**
+At database startup initializes the doublewrite buffer memory structure if
 we already have a doublewrite buffer created in the data files. If we are
 upgrading to an InnoDB version which supports multiple tablespaces, then this
 function performs the necessary update operations. If we are in a crash
-recovery, this function loads the pages from double write buffer into memory. */
-
-void
+recovery, this function loads the pages from double write buffer into memory.
+@param[in]	file		File handle
+@param[in]	path		Path name of file
+@return DB_SUCCESS or error code */
+dberr_t
 buf_dblwr_init_or_load_pages(
-/*=========================*/
 	os_file_t	file,
 	const char*	path)
 {
 	byte*		buf;
-	byte*		read_buf;
-	byte*		unaligned_read_buf;
+	byte*		page;
 	ulint		block1;
 	ulint		block2;
-	byte*		page;
-	ibool		reset_space_ids = FALSE;
-	byte*		doublewrite;
 	ulint		space_id;
-	ulint		i;
+	byte*		read_buf;
+	byte*		doublewrite;
+	byte*		unaligned_read_buf;
+	ibool		reset_space_ids = FALSE;
 	recv_dblwr_t&	recv_dblwr = recv_sys->dblwr;
 
 	/* We do the file i/o past the buffer pool */
@@ -375,8 +373,26 @@ buf_dblwr_init_or_load_pages(
 
 	/* Read the trx sys header to check if we are using the doublewrite
 	buffer */
-	os_file_read(file, read_buf, TRX_SYS_PAGE_NO * UNIV_PAGE_SIZE,
-		     UNIV_PAGE_SIZE);
+	dberr_t		err;
+
+	IORequest	read_request(IORequest::READ);
+
+	read_request.disable_compression();
+
+	err = os_file_read(
+		read_request,
+		file, read_buf, TRX_SYS_PAGE_NO * UNIV_PAGE_SIZE,
+		UNIV_PAGE_SIZE);
+
+	if (err != DB_SUCCESS) {
+
+		ib::error()
+			<< "Failed to read the system tablespace header page";
+
+		ut_free(unaligned_read_buf);
+
+		return(err);
+	}
 
 	doublewrite = read_buf + TRX_SYS_DOUBLEWRITE;
 
@@ -392,7 +408,7 @@ buf_dblwr_init_or_load_pages(
 		buf = buf_dblwr->write_buf;
 	} else {
 		ut_free(unaligned_read_buf);
-		return;
+		return(DB_SUCCESS);
 	}
 
 	if (mach_read_from_4(doublewrite + TRX_SYS_DOUBLEWRITE_SPACE_ID_STORED)
@@ -410,20 +426,46 @@ buf_dblwr_init_or_load_pages(
 	}
 
 	/* Read the pages from the doublewrite buffer to memory */
-	os_file_read(file, buf, block1 * UNIV_PAGE_SIZE,
-		     TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE);
+	err = os_file_read(
+		read_request,
+		file, buf, block1 * UNIV_PAGE_SIZE,
+		TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE);
 
-	os_file_read(file,
-		     buf + TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE,
-		     block2 * UNIV_PAGE_SIZE,
-		     TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE);
+	if (err != DB_SUCCESS) {
+
+		ib::error()
+			<< "Failed to read the first double write buffer "
+			"extent";
+
+		ut_free(unaligned_read_buf);
+
+		return(err);
+	}
+
+	err = os_file_read(
+		read_request,
+		file,
+		buf + TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE,
+		block2 * UNIV_PAGE_SIZE,
+		TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE);
+
+	if (err != DB_SUCCESS) {
+
+		ib::error()
+			<< "Failed to read the second double write buffer "
+			"extent";
+
+		ut_free(unaligned_read_buf);
+
+		return(err);
+	}
 
 	/* Check if any of these pages is half-written in data files, in the
 	intended position */
 
 	page = buf;
 
-	for (i = 0; i < TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * 2; i++) {
+	for (ulint i = 0; i < TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * 2; i++) {
 		if (reset_space_ids) {
 			ulint source_page_no;
 
@@ -441,9 +483,28 @@ buf_dblwr_init_or_load_pages(
 					+ i - TRX_SYS_DOUBLEWRITE_BLOCK_SIZE;
 			}
 
-			os_file_write(path, file, page,
-				      source_page_no * UNIV_PAGE_SIZE,
-				      UNIV_PAGE_SIZE);
+			IORequest	write_request(IORequest::WRITE);
+
+			/* Recovered data file pages are written out
+			as uncompressed. */
+
+			write_request.disable_compression();
+
+			err = os_file_write(
+				write_request, path, file, page,
+				source_page_no * UNIV_PAGE_SIZE,
+				UNIV_PAGE_SIZE);
+
+			if (err != DB_SUCCESS) {
+
+				ib::error()
+					<< "Failed to write to the double write"
+					" buffer";
+
+				ut_free(unaligned_read_buf);
+
+				return(err);
+			}
 
 		} else {
 
@@ -458,10 +519,11 @@ buf_dblwr_init_or_load_pages(
 	}
 
 	ut_free(unaligned_read_buf);
+
+	return(DB_SUCCESS);
 }
 
 /** Process and remove the double write buffer pages for all tablespaces. */
-
 void
 buf_dblwr_process(void)
 {
@@ -484,31 +546,56 @@ buf_dblwr_process(void)
 		ulint		page_no		= page_get_page_no(page);
 		ulint		space_id	= page_get_space_id(page);
 
-		if (!fil_tablespace_exists_in_mem(space_id)) {
-			/* Maybe we have dropped the single-table tablespace
-			and this page once belonged to it: do nothing */
-		} else if (!fil_check_adress_in_tablespace(space_id,
-							   page_no)) {
-			/* Do not report the warning if the tablespace is
-			truncated as it's reasonable */
-			if (!srv_is_tablespace_truncated(space_id)) {
+		fil_space_t*	space = fil_space_get(space_id);
 
+		if (space == NULL) {
+			/* Maybe we have dropped the tablespace
+			and this page once belonged to it: do nothing */
+			continue;
+		}
+
+		fil_space_open_if_needed(space);
+
+		if (page_no >= space->size) {
+
+			/* Do not report the warning if the tablespace is
+			schedule for truncate or was truncated and we have live
+			MLOG_TRUNCATE record in redo. */
+			bool	skip_warning =
+				srv_is_tablespace_truncated(space_id)
+				|| srv_was_tablespace_truncated(space_id);
+
+			if (!skip_warning) {
 				ib::warn() << "Page " << page_no_dblwr
 					<< " in the doublewrite buffer is"
 					" not within space bounds: page "
 					<< page_id_t(space_id, page_no);
 			}
 		} else {
-			bool			found;
-			const page_size_t	page_size(
-				fil_space_get_page_size(space_id, &found));
+			const page_size_t	page_size(space->flags);
+			const page_id_t		page_id(space_id, page_no);
 
-			ut_ad(found);
+			/* We want to ensure that for partial reads the
+			unread portion of the page is NUL. */
+			memset(read_buf, 0x0, page_size.physical());
+
+			IORequest	request;
+
+			request.dblwr_recover();
 
 			/* Read in the actual page from the file */
-			fil_io(OS_FILE_READ, true,
-			       page_id_t(space_id, page_no), page_size,
-			       0, page_size.physical(), read_buf, NULL);
+			dberr_t	err = fil_io(
+				request, true,
+				page_id, page_size,
+				0, page_size.physical(), read_buf, NULL);
+
+			if (err != DB_SUCCESS) {
+
+				ib::warn()
+					<< "Double write buffer recovery: "
+					<< page_id << " read failed with "
+					<< "error: " << ut_strerr(err);
+			}
 
 			/* Check if the page is corrupt */
 			if (buf_page_is_corrupted(
@@ -517,7 +604,7 @@ buf_dblwr_process(void)
 
 				ib::warn() << "Database page corruption or"
 					<< " a failed file read of page "
-					<< page_id_t(space_id, page_no)
+					<< page_id
 					<< ". Trying to recover it from the"
 					<< " doublewrite buffer.";
 
@@ -553,19 +640,45 @@ buf_dblwr_process(void)
 				a valid copy is available in dblwr buffer. */
 
 			} else {
-				continue;
+
+				bool t1 = buf_page_is_zeroes(
+                                        read_buf, page_size);
+
+				bool t2 = buf_page_is_zeroes(page, page_size);
+
+				bool t3 = buf_page_is_corrupted(
+					true, page, page_size,
+					fsp_is_checksum_disabled(space_id));
+
+				if (t1 && !(t2 || t3)) {
+
+					/* Database page contained only
+					zeroes, while a valid copy is
+					available in dblwr buffer. */
+
+				} else {
+					continue;
+				}
 			}
+
+			/* Recovered data file pages are written out
+			as uncompressed. */
+
+			IORequest	write_request(IORequest::WRITE);
+
+			write_request.disable_compression();
 
 			/* Write the good page from the doublewrite
 			buffer to the intended position. */
 
-			const page_id_t	page_id(space_id, page_no);
+			fil_io(write_request, true,
+			       page_id, page_size,
+			       0, page_size.physical(),
+			       const_cast<byte*>(page), NULL);
 
-			fil_io(OS_FILE_WRITE, true, page_id, page_size, 0,
-			       page_size.physical(), const_cast<byte*>(page),
-			       NULL);
-
-			ib::info() << "Recovered page " << page_id
+			ib::info()
+				<< "Recovered page "
+				<< page_id
 				<< " from the doublewrite buffer.";
 		}
 	}
@@ -578,7 +691,6 @@ buf_dblwr_process(void)
 
 /****************************************************************//**
 Frees doublewrite buffer. */
-
 void
 buf_dblwr_free(void)
 /*================*/
@@ -606,7 +718,6 @@ buf_dblwr_free(void)
 
 /********************************************************************//**
 Updates the doublewrite buffer when an IO request is completed. */
-
 void
 buf_dblwr_update(
 /*=============*/
@@ -726,26 +837,49 @@ buf_dblwr_check_block(
 /*==================*/
 	const buf_block_t*	block)	/*!< in: block to check */
 {
-	if (buf_block_get_state(block) != BUF_BLOCK_FILE_PAGE
-	    || block->page.zip.data) {
-		/* No simple validate for compressed pages exists. */
+	ut_ad(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+
+	if (block->skip_flush_check) {
 		return;
 	}
 
-	buf_dblwr_check_page_lsn(block->frame);
-
-	if (!block->check_index_page_at_flush) {
-		return;
-	}
-
-	if (page_is_comp(block->frame)) {
-		if (!page_simple_validate_new(block->frame)) {
-			buf_dblwr_assert_on_corrupt_block(block);
+	switch (fil_page_get_type(block->frame)) {
+	case FIL_PAGE_INDEX:
+	case FIL_PAGE_RTREE:
+		if (page_is_comp(block->frame)) {
+			if (page_simple_validate_new(block->frame)) {
+				return;
+			}
+		} else if (page_simple_validate_old(block->frame)) {
+			return;
 		}
-	} else if (!page_simple_validate_old(block->frame)) {
-
-		buf_dblwr_assert_on_corrupt_block(block);
+		/* While it is possible that this is not an index page
+		but just happens to have wrongly set FIL_PAGE_TYPE,
+		such pages should never be modified to without also
+		adjusting the page type during page allocation or
+		buf_flush_init_for_writing() or fil_page_reset_type(). */
+		break;
+	case FIL_PAGE_TYPE_FSP_HDR:
+	case FIL_PAGE_IBUF_BITMAP:
+	case FIL_PAGE_TYPE_UNKNOWN:
+		/* Do not complain again, we already reset this field. */
+	case FIL_PAGE_UNDO_LOG:
+	case FIL_PAGE_INODE:
+	case FIL_PAGE_IBUF_FREE_LIST:
+	case FIL_PAGE_TYPE_SYS:
+	case FIL_PAGE_TYPE_TRX_SYS:
+	case FIL_PAGE_TYPE_XDES:
+	case FIL_PAGE_TYPE_BLOB:
+	case FIL_PAGE_TYPE_ZBLOB:
+	case FIL_PAGE_TYPE_ZBLOB2:
+		/* TODO: validate also non-index pages */
+		return;
+	case FIL_PAGE_TYPE_ALLOCATED:
+		/* empty pages should never be flushed */
+		break;
 	}
+
+	buf_dblwr_assert_on_corrupt_block(block);
 }
 
 /********************************************************************//**
@@ -759,32 +893,39 @@ buf_dblwr_write_block_to_datafile(
 	bool			sync)	/*!< in: true if sync IO
 					is requested */
 {
-	ut_a(bpage);
 	ut_a(buf_page_in_file(bpage));
 
-	const ulint	flags = sync
-		? OS_FILE_WRITE
-		: OS_FILE_WRITE | OS_AIO_SIMULATED_WAKE_LATER;
+	ulint	type = IORequest::WRITE;
+
+	if (sync) {
+		type |= IORequest::DO_NOT_WAKE;
+	}
+
+	IORequest	request(type);
 
 	if (bpage->zip.data != NULL) {
 		ut_ad(bpage->size.is_compressed());
 
-		fil_io(flags, sync, bpage->id, bpage->size, 0,
+		fil_io(request, sync, bpage->id, bpage->size, 0,
 		       bpage->size.physical(),
 		       (void*) bpage->zip.data,
 		       (void*) bpage);
+	} else {
+		ut_ad(!bpage->size.is_compressed());
 
-		return;
+		/* Our IO API is common for both reads and writes and is
+		therefore geared towards a non-const parameter. */
+
+		buf_block_t*	block = reinterpret_cast<buf_block_t*>(
+			const_cast<buf_page_t*>(bpage));
+
+		ut_a(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
+		buf_dblwr_check_page_lsn(block->frame);
+
+		fil_io(request,
+		       sync, bpage->id, bpage->size, 0, bpage->size.physical(),
+		       block->frame, block);
 	}
-
-	ut_ad(!bpage->size.is_compressed());
-
-	const buf_block_t*	block = (buf_block_t*) bpage;
-	ut_a(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
-	buf_dblwr_check_page_lsn(block->frame);
-
-	fil_io(flags, sync, bpage->id, bpage->size, 0, bpage->size.physical(),
-	       (void*) block->frame, (void*) block);
 }
 
 /********************************************************************//**
@@ -793,7 +934,6 @@ and also wakes up the aio thread if simulated aio is used. It is very
 important to call this function after a batch of writes has been posted,
 and also when we may have to wait for a page latch! Otherwise a deadlock
 of threads can occur. */
-
 void
 buf_dblwr_flush_buffered_writes(void)
 /*=================================*/
@@ -884,7 +1024,7 @@ try_again:
 	len = ut_min(TRX_SYS_DOUBLEWRITE_BLOCK_SIZE,
 		     buf_dblwr->first_free) * UNIV_PAGE_SIZE;
 
-	fil_io(OS_FILE_WRITE, true,
+	fil_io(IORequestWrite, true,
 	       page_id_t(TRX_SYS_SPACE, buf_dblwr->block1), univ_page_size,
 	       0, len, (void*) write_buf, NULL);
 
@@ -900,7 +1040,7 @@ try_again:
 	write_buf = buf_dblwr->write_buf
 		    + TRX_SYS_DOUBLEWRITE_BLOCK_SIZE * UNIV_PAGE_SIZE;
 
-	fil_io(OS_FILE_WRITE, true,
+	fil_io(IORequestWrite, true,
 	       page_id_t(TRX_SYS_SPACE, buf_dblwr->block2), univ_page_size,
 	       0, len, (void*) write_buf, NULL);
 
@@ -944,7 +1084,6 @@ flush:
 Posts a buffer page for writing. If the doublewrite memory buffer is
 full, calls buf_dblwr_flush_buffered_writes and waits for for free
 space to appear. */
-
 void
 buf_dblwr_add_to_batch(
 /*====================*/
@@ -1029,7 +1168,6 @@ flushes in the doublewrite buffer are in use we wait here for one to
 become free. We are guaranteed that a slot will become free because any
 thread that is using a slot must also release the slot before leaving
 this function. */
-
 void
 buf_dblwr_write_single_page(
 /*========================*/
@@ -1125,7 +1263,7 @@ retry:
 		       + bpage->size.physical(), 0x0,
 		       univ_page_size.physical() - bpage->size.physical());
 
-		fil_io(OS_FILE_WRITE, true,
+		fil_io(IORequestWrite, true,
 		       page_id_t(TRX_SYS_SPACE, offset), univ_page_size, 0,
 		       univ_page_size.physical(),
 		       (void*) (buf_dblwr->write_buf
@@ -1134,7 +1272,7 @@ retry:
 	} else {
 		/* It is a regular page. Write it directly to the
 		doublewrite buffer */
-		fil_io(OS_FILE_WRITE, true,
+		fil_io(IORequestWrite, true,
 		       page_id_t(TRX_SYS_SPACE, offset), univ_page_size, 0,
 		       univ_page_size.physical(),
 		       (void*) ((buf_block_t*) bpage)->frame,

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -67,7 +67,6 @@ static WinThreadMap	win_thread_map;
 /***************************************************************//**
 Compares two thread ids for equality.
 @return TRUE if equal */
-
 ibool
 os_thread_eq(
 /*=========*/
@@ -93,7 +92,6 @@ os_thread_eq(
 Converts an OS thread id to a ulint. It is NOT guaranteed that the ulint is
 unique for the thread though!
 @return thread identifier as a number */
-
 ulint
 os_thread_pf(
 /*=========*/
@@ -107,7 +105,6 @@ Returns the thread identifier of current thread. Currently the thread
 identifier in Unix is the thread handle itself. Note that in HP-UX
 pthread_t is a struct of 3 fields.
 @return current thread identifier */
-
 os_thread_id_t
 os_thread_get_curr_id(void)
 /*=======================*/
@@ -144,7 +141,6 @@ NOTE: We count the number of threads in os_thread_exit(). A created
 thread should always use that to exit so thatthe thread count will be
 decremented.
 We do not return an error code because if there is one, we crash here. */
-
 void
 os_thread_create_func(
 /*==================*/
@@ -156,6 +152,9 @@ os_thread_create_func(
 						thread, or NULL */
 {
 	os_thread_id_t	new_thread_id;
+
+	/* the new thread should look recent changes up here so far. */
+	os_wmb;
 
 #ifdef _WIN32
 	HANDLE		handle;
@@ -169,8 +168,7 @@ os_thread_create_func(
 
 	if (!handle) {
 		/* If we cannot start a new thread, life has no meaning. */
-		ib_logf(IB_LOG_LEVEL_FATAL,
-			"CreateThread returned %d", GetLastError());
+		ib::fatal() << "CreateThread returned " << GetLastError();
 	}
 
 	mutex_enter(&thread_mutex);
@@ -201,7 +199,7 @@ os_thread_create_func(
 	int	ret = pthread_create(&new_thread_id, &attr, func, arg);
 
 	if (ret != 0) {
-		ib_logf(IB_LOG_LEVEL_FATAL, "pthread_create returned %d", ret);
+		ib::fatal() << "pthread_create returned " << ret;
 	}
 
 	pthread_attr_destroy(&attr);
@@ -218,7 +216,6 @@ os_thread_create_func(
 
 /*****************************************************************//**
 Exits the current thread. */
-
 void
 os_thread_exit(
 /*===========*/
@@ -226,8 +223,8 @@ os_thread_exit(
 				is cast as a DWORD */
 {
 #ifdef UNIV_DEBUG_THREAD_CREATION
-	ib_logf(IB_LOG_LEVEL_INFO, "Thread exits, id %lu",
-		os_thread_pf(os_thread_get_curr_id()));
+	ib::info() << "Thread exits, id "
+		<< os_thread_pf(os_thread_get_curr_id());
 #endif
 
 #ifdef UNIV_PFS_THREAD
@@ -257,7 +254,6 @@ os_thread_exit(
 
 /*****************************************************************//**
 Advises the os to give up remainder of the thread's time slice. */
-
 void
 os_thread_yield(void)
 /*=================*/
@@ -272,7 +268,6 @@ os_thread_yield(void)
 
 /*****************************************************************//**
 The thread sleeps at least the time given in microseconds. */
-
 void
 os_thread_sleep(
 /*============*/
@@ -300,7 +295,6 @@ os_thread_sleep(
 /*****************************************************************//**
 Check if there are threads active.
 @return true if the thread count > 0. */
-
 bool
 os_thread_active()
 /*==============*/
@@ -324,24 +318,22 @@ os_thread_active()
 
 /**
 Initializes OS thread management data structures. */
-
 void
 os_thread_init()
 /*============*/
 {
-	mutex_create("thread_mutex", &thread_mutex);
+	mutex_create(LATCH_ID_THREAD_MUTEX, &thread_mutex);
 }
 
 /**
 Frees OS thread management data structures. */
-
 void
 os_thread_free()
 /*============*/
 {
 	if (os_thread_count != 0) {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Some (%lu) threads are still active", os_thread_count);
+		ib::warn() << "Some (" << os_thread_count << ") threads are"
+			" still active";
 	}
 
 	mutex_destroy(&thread_mutex);
@@ -363,11 +355,10 @@ os_thread_set_priority(
 #ifdef UNIV_LINUX
 	lint	thread_nice = 19 - relative_priority;
 	if (setpriority(PRIO_PROCESS, thread_id, thread_nice) == -1) {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Setting thread %lu nice to %ld failed, "
-			"current nice %d, errno %d",
-			os_thread_pf(thread_id), thread_nice,
-			getpriority(PRIO_PROCESS, thread_id), errno);
+		ib::warn() << "Setting thread " << os_thread_pf(thread_id)
+			   << " nice to " << thread_nice << " failed, current "
+			"nice " << getpriority(PRIO_PROCESS, thread_id)
+			   << ", errno " << errno;
 	}
 	return(19 - getpriority(PRIO_PROCESS, thread_id));
 #else

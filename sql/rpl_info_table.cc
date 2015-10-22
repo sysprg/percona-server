@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,8 +14,13 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "rpl_info_table.h"
-#include "rpl_utility.h"
-#include "log.h"
+
+#include "dynamic_ids.h"            // Server_ids
+#include "log.h"                    // sql_print_error
+#include "rpl_info_table_access.h"  // Rpl_info_table_access
+#include "rpl_info_values.h"        // Rpl_info_values
+#include "sql_class.h"              // THD
+
 
 Rpl_info_table::Rpl_info_table(uint nparam,
                                const char* param_schema,
@@ -71,7 +76,7 @@ int Rpl_info_table::do_init_info()
 
 int Rpl_info_table::do_init_info(uint instance)
 {
-  return do_init_info(FIND_SCAN, instance);
+  return do_init_info(FIND_KEY, instance);
 }
 
 int Rpl_info_table::do_init_info(enum_find_method method, uint instance)
@@ -157,6 +162,7 @@ int Rpl_info_table::do_flush_info(const bool force)
   sync_counter= 0;
   saved_mode= thd->variables.sql_mode;
   tmp_disable_binlog(thd);
+  thd->is_operating_substatement_implicitly= true;
 
   /*
     Opens and locks the rpl_info table before accessing it.
@@ -241,6 +247,7 @@ end:
     Unlocks and closes the rpl_info table.
   */
   access->close_table(thd, table, &backup, error);
+  thd->is_operating_substatement_implicitly= false;
   reenable_binlog(thd);
   thd->variables.sql_mode= saved_mode;
   access->drop_thd(thd);
@@ -302,23 +309,37 @@ end:
   DBUG_RETURN(error);
 }
 
+/**
+   Removes records belonging to the channel_name parameter's channel.
+
+   @param nparam             number of fields in the table
+   @param param_schema       schema name
+   @param param_table        table name
+   @param channel_name       channel name
+   @param channel_field_idx  channel name field index
+
+   @return 0   on success
+           1   when a failure happens
+*/
 int Rpl_info_table::do_reset_info(uint nparam,
                                   const char* param_schema,
-                                  const char *param_table)
+                                  const char *param_table,
+                                  const char *channel_name,
+                                  uint  channel_field_idx)
 {
-  int error= 1;
+  int error= 0;
   TABLE *table= NULL;
   sql_mode_t saved_mode;
   Open_tables_backup backup;
   Rpl_info_table *info= NULL;
   THD *thd= NULL;
-  enum enum_return_id scan_retval= FOUND_ID;
+  int handler_error= 0;
 
   DBUG_ENTER("Rpl_info_table::do_reset_info");
 
   if (!(info= new Rpl_info_table(nparam, param_schema,
                                  param_table)))
-    DBUG_RETURN(error);
+    DBUG_RETURN(1);
 
   thd= info->access->create_thd();
   saved_mode= thd->variables.sql_mode;
@@ -330,22 +351,69 @@ int Rpl_info_table::do_reset_info(uint nparam,
   if (info->access->open_table(thd, info->str_schema, info->str_table,
                                info->get_number_info(), TL_WRITE,
                                &table, &backup))
-    goto end;
-
-  /*
-    Delete all rows in the rpl_info table. We cannot use truncate() since it
-    is a non-transactional DDL operation.
-  */
-  while ((scan_retval= info->access->scan_info(table, 1)) == FOUND_ID)
   {
-    if ((error= table->file->ha_delete_row(table->record[0])))
-    {
-       table->file->print_error(error, MYF(0));
-       goto end;
-    }
+    error= 1;
+    goto end;
   }
-  error= (scan_retval == ERROR_ID);
 
+  if (!(handler_error= table->file->ha_index_init(0, 1)))
+  {
+    KEY *key_info= table->key_info;
+
+    /*
+      Currently this method is used only for Worker info table
+      resetting.
+      todo: for another table in future, consider to make use of the
+      passed parameter to locate the lookup key.
+    */
+    DBUG_ASSERT(strcmp(info->str_table.str, "slave_worker_info") == 0);
+
+    if (!key_info || key_info->user_defined_key_parts == 0 ||
+        key_info->key_part[0].field != table->field[channel_field_idx])
+    {
+      sql_print_error("Corrupted table %s.%s. Check out table definition.",
+                      info->str_schema.str, info->str_table.str);
+      error= 1;
+      table->file->ha_index_end();
+      goto end;
+    }
+
+    uint fieldnr= key_info->key_part[0].fieldnr - 1;
+    table->field[fieldnr]->store(channel_name,
+                                 strlen(channel_name),
+                                 &my_charset_bin);
+    uint key_len= key_info->key_part[0].store_length;
+    uchar *key_buf= table->field[fieldnr]->ptr;
+
+    if (!(handler_error= table->file->ha_index_read_map(table->record[0],
+                                                        key_buf,
+                                                        (key_part_map) 1,
+                                                        HA_READ_KEY_EXACT)))
+    {
+      do
+      {
+        if ((handler_error= table->file->ha_delete_row(table->record[0])))
+          break;
+      }
+      while (!(handler_error= table->file->ha_index_next_same(table->record[0],
+                                                           key_buf,
+                                                           key_len)));
+      if (handler_error != HA_ERR_END_OF_FILE)
+        error= 1;
+    }
+    else
+    {
+      /*
+        Being reset table can be even empty, and that's benign.
+      */
+      if (handler_error != HA_ERR_KEY_NOT_FOUND)
+        error= 1;
+    }
+
+    if (error)
+      table->file->print_error(handler_error, MYF(0));
+    table->file->ha_index_end();
+  }
 end:
   /*
     Unlocks and closes the rpl_info table.
@@ -608,7 +676,7 @@ bool Rpl_info_table::do_get_info(const int pos, uchar *value, const size_t size,
                                  const uchar *default_value __attribute__((unused)))
 {
   if (field_values->value[pos].length() == size)
-    return (!memcpy((char *) value, (char *)
+    return (!memcpy((char *) value,
             field_values->value[pos].c_ptr_safe(), size));
   return TRUE;
 }

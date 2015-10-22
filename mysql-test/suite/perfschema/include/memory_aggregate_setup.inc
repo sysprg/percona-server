@@ -52,15 +52,18 @@
 
 --source include/not_embedded.inc
 --source include/have_perfschema.inc
---source ../include/no_protocol.inc
+--source include/no_protocol.inc
 --source ../include/wait_for_pfs_thread_count.inc
 
 --disable_query_log
 
+set @orig_sql_mode= @@sql_mode;
+set sql_mode= (select replace(@@sql_mode,'NO_AUTO_CREATE_USER',''));
 grant ALL on *.* to user1@localhost;
 grant ALL on *.* to user2@localhost;
 grant ALL on *.* to user3@localhost;
 grant ALL on *.* to user4@localhost;
+set sql_mode= @orig_sql_mode;
 
 flush privileges;
 
@@ -199,6 +202,6 @@ prepare dump_accounts from
 --enable_query_log
 
 # Make sure all the instrumentation is present
-show status like "performance_schema_memory_classes_lost";
+show global status like "performance_schema_memory_classes_lost";
 
 

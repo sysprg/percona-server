@@ -12,6 +12,8 @@ insert into t2 values("first");
 create table t3(a varchar(100));
 insert into t3 values("first");
 SET sql_mode = 'ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create procedure p1() sql security definer
 begin
 declare b int;
@@ -86,7 +88,7 @@ root@localhost
 root@localhost
 select QUERY, length(TRACE), INSUFFICIENT_PRIVILEGES from information_schema.OPTIMIZER_TRACE;
 QUERY	length(TRACE)	INSUFFICIENT_PRIVILEGES
-select * from v1	644	0
+select * from v1	898	0
 select * from v1	2156	0
 set optimizer_trace_offset=0,optimizer_trace_limit=100;
 insert into t2 values(current_user());
@@ -289,7 +291,7 @@ user1@localhost
 user1@localhost
 select QUERY, length(TRACE), INSUFFICIENT_PRIVILEGES from information_schema.OPTIMIZER_TRACE;
 QUERY	length(TRACE)	INSUFFICIENT_PRIVILEGES
-select * from v1	644	0
+select * from v1	898	0
 select * from v1	2156	0
 set optimizer_trace_offset=2,optimizer_trace_limit=1;
 call p1();
@@ -493,7 +495,7 @@ user1@localhost
 user1@localhost
 select QUERY, length(TRACE), INSUFFICIENT_PRIVILEGES from information_schema.OPTIMIZER_TRACE;
 QUERY	length(TRACE)	INSUFFICIENT_PRIVILEGES
-select * from v1	644	0
+select * from v1	898	0
 select * from v1	2156	0
 # Trace exposed body of view, and content of t1, which we
 # could see anyway:
@@ -750,6 +752,8 @@ user()
 user1@localhost
 set optimizer_trace="enabled=on";
 SET sql_mode = 'ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create procedure p1() sql security definer
 begin
 declare b int;
@@ -926,7 +930,7 @@ user1@localhost
 user1@localhost
 select QUERY, length(TRACE), INSUFFICIENT_PRIVILEGES from information_schema.OPTIMIZER_TRACE;
 QUERY	length(TRACE)	INSUFFICIENT_PRIVILEGES
-select * from v1	644	0
+select * from v1	898	0
 select * from v1	2156	0
 # Trace exposed body of view, and content of t1, which we
 # could see anyway:
@@ -939,7 +943,7 @@ select QUERY, length(TRACE), INSUFFICIENT_PRIVILEGES from information_schema.OPT
 QUERY	length(TRACE)	INSUFFICIENT_PRIVILEGES
 insert into t2 values(current_user())	20	0
 insert into t2 values(current_user())	20	0
-insert into t3 select * from t3	2550	0
+insert into t3 select * from t3	2532	0
 # Trace exposed body of trigger, and content of t2/t3, which we
 # could see anyway:
 show create trigger trg2;
@@ -958,8 +962,8 @@ a
 first
 select QUERY, length(TRACE), INSUFFICIENT_PRIVILEGES from information_schema.OPTIMIZER_TRACE;
 QUERY	length(TRACE)	INSUFFICIENT_PRIVILEGES
-select a from (select a from t1 where a like "f%") as tt where a like "fi%"	559	0
-select a from (select a from t1 where a like "f%") as tt where a like "fi%"	7054	0
+select a from (select a from t1 where a like "f%") as tt where a like "fi%"	1061	0
+select a from (select a from t1 where a like "f%") as tt where a like "fi%"	3280	0
 
 # For routines, as they only use t1 and we added only one
 # privilege on t1, we have nothing to remove.
@@ -1119,6 +1123,8 @@ user1 cannot see view's body:
 show create view v1;
 ERROR 42000: SHOW VIEW command denied to user 'user1'@'localhost' for table 'v1'
 SET sql_mode = 'ONLY_FULL_GROUP_BY,NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 user1 creates a procedure
 create procedure proc() sql security definer
 begin

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,8 +17,13 @@
 #define _my_sys_h
 
 #include "my_global.h"                  /* C_MODE_START, C_MODE_END */
-#include "my_pthread.h"
 #include "m_ctype.h"                    /* for CHARSET_INFO */
+
+#include "my_thread.h"                  /* Needed for psi.h */
+#include "mysql/psi/psi.h"
+#include "mysql/service_mysql_alloc.h"
+#include "mysql/psi/mysql_memory.h"
+#include "mysql/psi/mysql_thread.h"
 
 #ifdef HAVE_ALLOCA_H
 #include <alloca.h>
@@ -94,22 +99,15 @@ C_MODE_START
 #define MY_THREADSAFE 2048      /* my_seek(): lock fd mutex */
 #define MY_SYNC       4096      /* my_copy(): sync dst file */
 
+#define MYF_RW MYF(MY_WME+MY_NABP)		/* For my_read & my_write */
+
 #define MY_CHECK_ERROR	1	/* Params to my_end; Check open-close */
 #define MY_GIVE_INFO	2	/* Give time info about process*/
 #define MY_DONT_FREE_DBUG 4     /* Do not call DBUG_END() in my_end() */
 
-#define ME_HIGHBYTE	8	/* Shift for colours */
-#define ME_NOCUR	1	/* Don't use curses message */
-#define ME_OLDWIN	2	/* Use old window */
-#define ME_BELL		4	/* Ring bell then printing message */
-#define ME_HOLDTANG	8	/* Don't delete last keys */
-#define ME_WAITTOT	16	/* Wait for errtime secs of for a action */
-#define ME_WAITTANG	32	/* Wait for a user action  */
-#define ME_NOREFRESH	64	/* Write the error message to error log */
-#define ME_NOINPUT	128	/* Dont use the input libary */
-#define ME_COLOUR1	((1 << ME_HIGHBYTE))	/* Possibly error-colours */
-#define ME_COLOUR2	((2 << ME_HIGHBYTE))
-#define ME_COLOUR3	((3 << ME_HIGHBYTE))
+/* Flags for my_error() */
+#define ME_BELL		4	/* DEPRECATED: Ring bell then printing message */
+#define ME_ERRORLOG	64	/* Write the error message to error log */
 #define ME_FATALERROR   1024    /* Fatal statement error */
 
 	/* Bits in last argument to fn_format */
@@ -152,10 +150,6 @@ C_MODE_START
 
 	/* defines when allocating data */
 extern void *my_multi_malloc(PSI_memory_key key, myf flags, ...);
-
-#include <mysql/psi/psi.h>
-#include <mysql/service_mysql_alloc.h>
-#include <mysql/psi/mysql_memory.h>
 
 /*
   Switch to my_malloc() if the memory block to be allocated is bigger than
@@ -212,7 +206,6 @@ extern uint    my_large_page_size;
 #endif /* HAVE_LINUX_LARGE_PAGES */
 
 #define my_alloca(SZ) alloca((size_t) (SZ))
-#define my_afree(PTR) {}
 
 #include <errno.h>			/* errno is a define */
 
@@ -227,8 +220,25 @@ extern void (*local_message_hook)(enum loglevel ll,
 extern uint my_file_limit;
 extern ulong my_thread_stack_size;
 
-extern void (*proc_info_hook)(void *, const PSI_stage_info *, PSI_stage_info *,
-                              const char *, const char *, const unsigned int);
+/*
+  Hooks for reporting execution stage information. The server implementation
+  of these will also set THD::current_cond/current_mutex.
+  By having hooks, we avoid direct dependencies on server code.
+*/
+extern void (*enter_cond_hook)(void *opaque_thd,
+                               mysql_cond_t *cond,
+                               mysql_mutex_t *mutex,
+                               const PSI_stage_info *stage,
+                               PSI_stage_info *old_stage,
+                               const char *src_function,
+                               const char *src_file,
+                               int src_line);
+
+extern void (*exit_cond_hook)(void *opaque_thd,
+                              const PSI_stage_info *stage,
+                              const char *src_function,
+                              const char *src_file,
+                              int src_line);
 
 /* charsets */
 #define MY_ALL_CHARSETS_SIZE 2048
@@ -292,6 +302,7 @@ typedef struct st_dynamic_array
   uint elements,max_element;
   uint alloc_increment;
   uint size_of_element;
+  PSI_memory_key m_psi_key;
 } DYNAMIC_ARRAY;
 
 typedef struct st_my_tmpdir
@@ -440,15 +451,6 @@ typedef struct st_io_cache		/* Used when cacheing files */
     somewhere else
   */
   my_bool alloced_buffer;
-  /* Store the transaction's commit sequence number when the IO cache is used
-     to store transaction to be flushed to binary log. */
-  int64 commit_seq_no;
-  /*
-    Offset of the space allotted for commit sequence number from the beginning
-    of the cache that will be used to update it when the transaction has
-    its commit sequence.
-   */
-  uint commit_seq_offset;
 } IO_CACHE;
 
 typedef int (*qsort2_cmp)(const void *, const void *, const void *);
@@ -601,8 +603,7 @@ extern HANDLE   my_get_osfhandle(File fd);
 extern void     my_osmaperr(unsigned long last_error);
 #endif
 
-extern void init_glob_errs(void);
-extern const char** get_global_errmsgs();
+extern const char* get_global_errmsg(int nr);
 extern void wait_for_free_space(const char *filename, int errors);
 extern FILE *my_fopen(const char *FileName,int Flags,myf MyFlags);
 extern FILE *my_fdopen(File Filedes,const char *name, int Flags,myf MyFlags);
@@ -623,9 +624,9 @@ extern void my_printf_error(uint my_err, const char *format,
   __attribute__((format(printf, 2, 4)));
 extern void my_printv_error(uint error, const char *format, myf MyFlags,
                             va_list ap);
-extern int my_error_register(const char** (*get_errmsgs) (),
+extern int my_error_register(const char* (*get_errmsg) (int),
                              int first, int last);
-extern const char **my_error_unregister(int first, int last);
+extern my_bool my_error_unregister(int first, int last);
 extern void my_message(uint my_err, const char *str,myf MyFlags);
 extern void my_message_stderr(uint my_err, const char *str, myf MyFlags);
 void my_message_local_stderr(enum loglevel ll,
@@ -688,7 +689,6 @@ extern void my_qsort(void *base_ptr, size_t total_elems, size_t size,
                      qsort_cmp cmp);
 extern void my_qsort2(void *base_ptr, size_t total_elems, size_t size,
                       qsort2_cmp cmp, const void *cmp_argument);
-extern qsort2_cmp get_ptr_compare(size_t);
 void my_store_ptr(uchar *buff, size_t pack_length, my_off_t pos);
 my_off_t my_get_ptr(uchar *ptr, size_t pack_length);
 extern int init_io_cache(IO_CACHE *info,File file,size_t cachesize,
@@ -731,30 +731,41 @@ extern my_bool real_open_cached_file(IO_CACHE *cache);
 extern void close_cached_file(IO_CACHE *cache);
 File create_temp_file(char *to, const char *dir, const char *pfx,
 		      int mode, myf MyFlags);
-#define my_init_dynamic_array(A,B,C,D) init_dynamic_array2(A,B,NULL,C,D)
-#define my_init_dynamic_array_ci(A,B,C,D) init_dynamic_array2(A,B,NULL,C,D)
-#define my_init_dynamic_array2(A,B,C,D,E) init_dynamic_array2(A,B,C,D,E)
-extern my_bool init_dynamic_array2(DYNAMIC_ARRAY *array, uint element_size,
-                                   void *init_buffer, uint init_alloc,
-                                   uint alloc_increment);
+
+// Use Prealloced_array or std::vector or something similar in C++
+#if defined(__cplusplus)
+
+#define init_dynamic_array please_use_an_appropriately_typed_container
+#define my_init_dynamic_array please_use_an_appropriately_typed_container
+
+#else
+
+extern my_bool my_init_dynamic_array(DYNAMIC_ARRAY *array,
+                                     PSI_memory_key key,
+                                     uint element_size,
+                                     void *init_buffer,
+                                     uint init_alloc,
+                                     uint alloc_increment);
 /* init_dynamic_array() function is deprecated */
 extern my_bool init_dynamic_array(DYNAMIC_ARRAY *array, uint element_size,
                                   uint init_alloc, uint alloc_increment);
+#define dynamic_element(array,array_index,type) \
+  ((type)((array)->buffer) +(array_index))
+
+#endif  /* __cplusplus */
+
+/* Some functions are still in use in C++, because HASH uses DYNAMIC_ARRAY */
 extern my_bool insert_dynamic(DYNAMIC_ARRAY *array, const void *element);
 extern void *alloc_dynamic(DYNAMIC_ARRAY *array);
 extern void *pop_dynamic(DYNAMIC_ARRAY*);
-extern my_bool set_dynamic(DYNAMIC_ARRAY *array, const void *element,
-                           uint array_index);
-extern my_bool allocate_dynamic(DYNAMIC_ARRAY *array, uint max_elements);
-extern void get_dynamic(DYNAMIC_ARRAY *array, void *element,
-                        uint array_index);
+extern void get_dynamic(DYNAMIC_ARRAY *array, void *element, uint array_index);
+extern void claim_dynamic(DYNAMIC_ARRAY *array);
 extern void delete_dynamic(DYNAMIC_ARRAY *array);
-extern void delete_dynamic_element(DYNAMIC_ARRAY *array, uint array_index);
 extern void freeze_size(DYNAMIC_ARRAY *array);
-#define dynamic_array_ptr(array,array_index) ((array)->buffer+(array_index)*(array)->size_of_element)
-#define dynamic_element(array,array_index,type) ((type)((array)->buffer) +(array_index))
-#define push_dynamic(A,B) insert_dynamic((A),(B))
-#define reset_dynamic(array) ((array)->elements= 0)
+static inline void reset_dynamic(DYNAMIC_ARRAY *array)
+{
+  array->elements= 0;
+}
 
 extern my_bool init_dynamic_string(DYNAMIC_STRING *str, const char *init_str,
 				   size_t init_alloc,size_t alloc_increment);
@@ -775,6 +786,7 @@ extern void init_alloc_root(PSI_memory_key key,
 			    size_t pre_alloc_size);
 extern void *alloc_root(MEM_ROOT *mem_root, size_t Size);
 extern void *multi_alloc_root(MEM_ROOT *mem_root, ...);
+extern void claim_root(MEM_ROOT *root);
 extern void free_root(MEM_ROOT *root, myf MyFLAGS);
 extern void reset_root_defaults(MEM_ROOT *mem_root, size_t block_size,
                                 size_t prealloc_size);
@@ -897,9 +909,8 @@ extern size_t escape_string_for_mysql(const CHARSET_INFO *charset_info,
 extern CHARSET_INFO *fs_character_set(void);
 #endif
 extern size_t escape_quotes_for_mysql(CHARSET_INFO *charset_info,
-                                      char *to, size_t to_length,
-                                      const char *from, size_t length);
-
+                                  char *to, size_t to_length,
+                                  const char *from, size_t length, char quote);
 #ifdef _WIN32
 extern my_bool have_tcpip;		/* Is set if tcpip is used */
 
@@ -920,8 +931,6 @@ void my_win_console_putc(const CHARSET_INFO *cs, int c);
 void my_win_console_vfprintf(const CHARSET_INFO *cs, const char *fmt, va_list args);
 int my_win_translate_command_line_args(const CHARSET_INFO *cs, int *ac, char ***av);
 #endif /* _WIN32 */
-
-#include <mysql/psi/psi.h>
 
 #ifdef HAVE_PSI_INTERFACE
 extern MYSQL_PLUGIN_IMPORT struct PSI_bootstrap *PSI_hook;

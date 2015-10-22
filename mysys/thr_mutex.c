@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,8 +13,8 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include <my_global.h>
-#include "my_pthread.h"
+#include "thr_mutex.h"
+#include "my_thread_local.h"
 
 #if defined(SAFE_MUTEX)
 /* This makes a wrapper for mutex handling to make it easier to debug mutex */
@@ -54,7 +54,7 @@ int safe_mutex_lock(my_mutex_t *mp, my_bool try_lock,
   if (!mp->file)
   {
     fprintf(stderr,
-	    "safe_mutex: Trying to lock unitialized mutex at %s, line %d\n",
+	    "safe_mutex: Trying to lock uninitialized mutex at %s, line %d\n",
 	    file, line);
     fflush(stderr);
     abort();
@@ -68,7 +68,7 @@ int safe_mutex_lock(my_mutex_t *mp, my_bool try_lock,
       native_mutex_unlock(&mp->global);
       return EBUSY;
     }
-    else if (pthread_equal(pthread_self(),mp->thread))
+    else if (my_thread_equal(my_thread_self(),mp->thread))
     {
       fprintf(stderr,
               "safe_mutex: Trying to lock mutex at %s, line %d, when the"
@@ -112,7 +112,7 @@ int safe_mutex_lock(my_mutex_t *mp, my_bool try_lock,
     fflush(stderr);
     abort();
   }
-  mp->thread= pthread_self();
+  mp->thread= my_thread_self();
   if (mp->count++)
   {
     fprintf(stderr,"safe_mutex: Error in thread libray: Got mutex at %s, \
@@ -138,7 +138,7 @@ int safe_mutex_unlock(my_mutex_t *mp, const char *file, uint line)
     fflush(stderr);
     abort();
   }
-  if (!pthread_equal(pthread_self(),mp->thread))
+  if (!my_thread_equal(my_thread_self(),mp->thread))
   {
     fprintf(stderr,"safe_mutex: Trying to unlock mutex at %s, line %d  that was locked by another thread at: %s, line: %d\n",
 	    file,line,mp->file,mp->line);
@@ -165,7 +165,7 @@ int safe_mutex_destroy(my_mutex_t *mp, const char *file, uint line)
   if (!mp->file)
   {
     fprintf(stderr,
-	    "safe_mutex: Trying to destroy unitialized mutex at %s, line %d\n",
+	    "safe_mutex: Trying to destroy uninitialized mutex at %s, line %d\n",
 	    file, line);
     fflush(stderr);
     abort();
@@ -185,88 +185,4 @@ int safe_mutex_destroy(my_mutex_t *mp, const char *file, uint line)
   return error;
 }
 
-#elif defined(MY_PTHREAD_FASTMUTEX)
-
-static ulong mutex_delay(ulong delayloops)
-{
-  ulong	i;
-  volatile ulong j;
-
-  j = 0;
-
-  for (i = 0; i < delayloops * 50; i++)
-    j += i;
-
-  return(j);
-}
-
-#define MY_PTHREAD_FASTMUTEX_SPINS 8
-#define MY_PTHREAD_FASTMUTEX_DELAY 4
-
-static int cpu_count= 0;
-
-int my_pthread_fastmutex_init(my_mutex_t *mp,
-                              const native_mutexattr_t *attr)
-{
-  if ((cpu_count > 1) && (attr == MY_MUTEX_INIT_FAST))
-    mp->spins= MY_PTHREAD_FASTMUTEX_SPINS; 
-  else
-    mp->spins= 0;
-  mp->rng_state= 1;
-  return native_mutex_init(&mp->mutex, attr); 
-}
-
-/**
-  Park-Miller random number generator. A simple linear congruential
-  generator that operates in multiplicative group of integers modulo n.
-
-  x_{k+1} = (x_k g) mod n
-
-  Popular pair of parameters: n = 2^32 − 5 = 4294967291 and g = 279470273.
-  The period of the generator is about 2^31.
-  Largest value that can be returned: 2147483646 (RAND_MAX)
-
-  Reference:
-
-  S. K. Park and K. W. Miller
-  "Random number generators: good ones are hard to find"
-  Commun. ACM, October 1988, Volume 31, No 10, pages 1192-1201.
-*/
-
-static double park_rng(my_mutex_t *mp)
-{
-  mp->rng_state= ((my_ulonglong)mp->rng_state * 279470273U) % 4294967291U;
-  return (mp->rng_state / 2147483647.0);
-}
-
-int my_pthread_fastmutex_lock(my_mutex_t *mp)
-{
-  int   res;
-  uint  i;
-  uint  maxdelay= MY_PTHREAD_FASTMUTEX_DELAY;
-
-  for (i= 0; i < mp->spins; i++)
-  {
-    res= native_mutex_trylock(&mp->mutex);
-
-    if (res == 0)
-      return 0;
-
-    if (res != EBUSY)
-      return res;
-
-    mutex_delay(maxdelay);
-    maxdelay += park_rng(mp) * MY_PTHREAD_FASTMUTEX_DELAY + 1;
-  }
-  return native_mutex_lock(&mp->mutex);
-}
-
-
-void fastmutex_global_init(void)
-{
-#ifdef _SC_NPROCESSORS_CONF
-  cpu_count= sysconf(_SC_NPROCESSORS_CONF);
-#endif
-}
-
-#endif /* defined(MY_PTHREAD_FASTMUTEX) && !defined(SAFE_MUTEX) */
+#endif /* SAFE_MUTEX */

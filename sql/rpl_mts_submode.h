@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,12 +15,29 @@
 #ifndef MTS_SUBMODE_H
 #define MTS_SUBMODE_H
 
-#include "log.h"
-#include "log_event.h"
-#include "rpl_rli.h"
+#include "my_global.h"
+#include "my_atomic.h"         // my_atomic_load64
+#include "my_thread.h"         // my_thread_id
+#include "prealloced_array.h"  // Prealloced_array
+#include "binlog_event.h"      // SEQ_UNINIT
 
+class Log_event;
 class Mts_submode_database;
 class Mts_submode_logical_clock;
+class Query_log_event;
+class Relay_log_info;
+class Slave_worker;
+class THD;
+struct TABLE;
+typedef Prealloced_array<Slave_worker*, 4> Slave_worker_array;
+
+
+enum enum_mts_parallel_type {
+  /* Parallel slave based on Database name */
+  MTS_PARALLEL_TYPE_DB_NAME= 0,
+  /* Parallel slave based on group information from Binlog group commit */
+  MTS_PARALLEL_TYPE_LOGICAL_CLOCK= 1
+};
 
 // Extend the following class as per requirement for each sub mode
 class Mts_submode
@@ -78,9 +95,9 @@ public:
   Slave_worker* get_least_occupied_worker(Relay_log_info* rli,
                                           Slave_worker_array *ws,
                                           Log_event *ev);
+  ~Mts_submode_database(){};
   int wait_for_workers_to_finish(Relay_log_info  *rli,
                                  Slave_worker *ignore= NULL);
-  ~Mts_submode_database(){}
 };
 
 /**
@@ -90,46 +107,39 @@ public:
 class Mts_submode_logical_clock: public Mts_submode
 {
 private:
-  uint worker_seq;
   bool first_event, force_new_group;
-  int64 mts_last_known_commit_parent;
-  /*
-     The following are used to check if the last group has been applied
-     completely, Here is how this works.
-
-     if (!is_new_group)
-     {
-       delegated_jobs++;
-       // schedule this group.
-     }
-     else
-     {
-       while (delegated_jobs > jobs_done)
-         mts check_point_routine()...
-      delegated_jobs = 1;
-      jobs_done= 0;
-      //schedule next event...
-     }
-
-     in mts_checkpoint routine
-     {
-       for every job completed by a worker,
-       job_done++;
-     }
-     Also since both these are being done by the coordinator, we
-     don't need any locks.
-   */
   bool is_new_group;
   uint delegated_jobs;
-  int64 commit_seq_no;
+  /* "instant" value of committed transactions low-water-mark */
+  longlong last_lwm_timestamp;
+  /* GAQ index corresponding to the min commit point */
+  ulong last_lwm_index;
+  longlong last_committed;
+  longlong sequence_number;
+
 public:
-  bool defer_new_group;
   uint jobs_done;
+  bool is_error;
+  /*
+    the logical timestamp of the olderst transaction that is being waited by
+    before to resume scheduling.
+  */
+  longlong min_waited_timestamp;
+  /*
+    Committed transactions and those that are waiting for their commit parents
+    comprise sequences whose items are identified as GAQ index.
+    An empty sequence is described by the following magic value which can't
+    be in the GAQ legitimate range.
+    todo: an alternative could be to pass a magic value to the constructor.
+    E.g GAQ.size as a good candidate being outside of the valid range.
+    That requires further wl6314 refactoring in activation/deactivation
+    of the scheduler.
+  */
+  static const ulong INDEX_UNDEF= (ulong) -1;
 
 protected:
   std::pair<uint, my_thread_id> get_server_and_thread_id(TABLE* table);
   Slave_worker* get_free_worker(Relay_log_info *rli);
-  bool assign_group(Relay_log_info* rli, Log_event* ev);
 public:
   Mts_submode_logical_clock();
   int schedule_next_event(Relay_log_info* rli, Log_event *ev);
@@ -141,10 +151,42 @@ public:
                                           Slave_worker_array *ws,
                                           Log_event *ev);
   /* Sets the force new group variable */
-  inline void start_new_group(){force_new_group= true;}
+  inline void start_new_group()
+  {
+    force_new_group= true;
+    first_event= true;
+  }
   int wait_for_workers_to_finish(Relay_log_info  *rli,
                                  Slave_worker *ignore= NULL);
-  ~Mts_submode_logical_clock(){}
+  bool wait_for_last_committed_trx(Relay_log_info* rli,
+                                   longlong last_committed_arg,
+                                   longlong lwm_estimate_arg);
+  /*
+    LEQ comparison of two logical timestamps follows regular rules for
+    integers. SEQ_UNINIT is regarded as the least value in the clock domain.
+
+    @param a  the lhs logical timestamp value
+    @param b  the rhs logical timestamp value
+
+    @return   true  when a "<=" b,
+              false otherwise
+  */
+  static bool clock_leq(longlong a, longlong b)
+  {
+    if (a == SEQ_UNINIT)
+      return true;
+    else if (b == SEQ_UNINIT)
+      return false;
+    else
+      return a <= b;
+  }
+
+  longlong get_lwm_timestamp(Relay_log_info *rli, bool need_lock);
+  longlong estimate_lwm_timestamp()
+  {
+    return my_atomic_load64(&last_lwm_timestamp);
+  };
+  ~Mts_submode_logical_clock() {}
 };
 
 #endif /*MTS_SUBMODE_H*/

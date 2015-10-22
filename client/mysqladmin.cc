@@ -1,5 +1,5 @@
-	/*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/*
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,7 +20,7 @@
 #include "client_priv.h"
 #include "my_default.h"
 #include <signal.h>
-#include <my_pthread.h>				/* because of signal()	*/
+#include <my_thread.h>				/* because of signal()	*/
 #include <sys/stat.h>
 #include <mysql.h>
 #include <sql_common.h>
@@ -306,9 +306,7 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
     error++;
     break;
   case OPT_CHARSETS_DIR:
-#if MYSQL_VERSION_ID > 32300
     charsets_dir = argument;
-#endif
     break;
   case OPT_MYSQL_PROTOCOL:
     opt_protocol= find_type_or_exit(argument, &sql_protocol_typelib,
@@ -318,12 +316,14 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
     using_opt_enable_cleartext_plugin= TRUE;
     break;
   case OPT_SECURE_AUTH:
-    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
+    /* --secure-auth is a zombie option. */
     if (!opt_secure_auth)
     {
-      usage();
+      fprintf(stderr, "mysqladmin: [ERROR] --skip-secure-auth is not supported.\n");
       exit(1);
     }
+    else
+      CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
     break;
   }
   if (error)
@@ -1015,10 +1015,12 @@ static int execute_commands(MYSQL *mysql,int argc, char **argv)
     }
     case ADMIN_PASSWORD:
     {
-      char buff[128],crypted_pw[64];
+      char buff[128];
       time_t start_time;
-      char *typed_password= NULL, *verified= NULL;
-      bool log_off= true, err= false;
+      char *typed_password= NULL, *verified= NULL, *tmp= NULL;
+      bool log_off= true, err= false, ssl_conn= false;
+      uint ssl_enforce= 0;
+      size_t password_len;
 
       /* Do initialization the same way as we do in mysqld */
       start_time=time((time_t*) 0);
@@ -1040,6 +1042,11 @@ static int execute_commands(MYSQL *mysql,int argc, char **argv)
           err= true;
           goto error;
         }
+        /* escape quotes if password has any special characters */
+        password_len= strlen(typed_password);
+        tmp= (char*) my_malloc(PSI_NOT_INSTRUMENTED, password_len*2+1, MYF(MY_WME));
+        mysql_real_escape_string(mysql, tmp, typed_password, password_len);
+        typed_password= tmp;
       }
       else
       {
@@ -1072,12 +1079,21 @@ static int execute_commands(MYSQL *mysql,int argc, char **argv)
           TODO: make sure this always uses SSL and then let the server
           calculate the scramble.
         */
-        make_scrambled_password(crypted_pw, typed_password);
       }
-      else
-	crypted_pw[0]=0;			/* No password */
 
-      sprintf(buff, "set password='%s'", crypted_pw);
+      /* Warn about password being set in non ssl connection */
+#if defined(HAVE_OPENSSL) && !defined(EMBEDDED_LIBRARY)
+      mysql_get_option(mysql, MYSQL_OPT_SSL_ENFORCE, &ssl_enforce);
+      if (opt_use_ssl && ssl_enforce)
+        ssl_conn= true;
+      if (!ssl_conn)
+      {
+        fprintf(stderr, "Warning: Since password will be sent to server in "
+                "plain text, use ssl connection to ensure password safety.\n");
+      }
+#endif
+      memset(buff, 0, sizeof(buff));
+      sprintf(buff, "ALTER USER USER() IDENTIFIED BY '%s'", typed_password);
 
       if (mysql_query(mysql,buff))
       {
@@ -1240,6 +1256,19 @@ static void usage(void)
   puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   puts("Administration program for the mysqld daemon.");
   printf("Usage: %s [OPTIONS] command command....\n", my_progname);
+  /*
+    Turn default for zombies off so that the help on how to 
+    turn them off text won't show up.
+    This is safe to do since it's followed by a call to exit().
+  */
+  for (struct my_option *optp= my_long_options; optp->name; optp++)
+  {
+    if (optp->id == OPT_SECURE_AUTH)
+    {
+      optp->def_value= 0;
+      break;
+    }
+  }
   my_print_help(my_long_options);
   my_print_variables(my_long_options);
   print_defaults("my",load_default_groups);
@@ -1255,11 +1284,9 @@ static void usage(void)
   flush-threads         Flush the thread cache\n\
   flush-privileges      Reload grant tables (same as reload)\n\
   kill id,id,...	Kill mysql threads");
-#if MYSQL_VERSION_ID >= 32200
   puts("\
   password [new-password] Change old password to new-password in current format\n\
   old-password [new-password] Change old password to new-password in old format");
-#endif
   puts("\
   ping			Check if mysqld is alive\n\
   processlist		Show list of active threads in server\n\

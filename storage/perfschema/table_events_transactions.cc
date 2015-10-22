@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,13 +19,16 @@
 */
 
 #include "my_global.h"
-#include "my_pthread.h"
+#include "my_thread.h"
 #include "table_events_transactions.h"
 #include "pfs_instr_class.h"
 #include "pfs_instr.h"
 #include "pfs_events_transactions.h"
 #include "pfs_timer.h"
 #include "table_helper.h"
+#include "pfs_buffer_container.h"
+#include "field.h"
+#include "xa.h"
 
 THR_LOCK table_events_transactions_current::m_table_lock;
 
@@ -67,8 +70,18 @@ static const TABLE_FIELD_TYPE field_types[]=
     { NULL, 0}
   },
   {
-    { C_STRING_WITH_LEN("XID") },
-    { C_STRING_WITH_LEN("varchar(132") },
+    { C_STRING_WITH_LEN("XID_FORMAT_ID") },
+    { C_STRING_WITH_LEN("int(11)") },
+    { NULL, 0}
+  },
+  {
+    { C_STRING_WITH_LEN("XID_GTRID") },
+    { C_STRING_WITH_LEN("varchar(130)") },
+    { NULL, 0}
+  },
+  {
+    { C_STRING_WITH_LEN("XID_BQUAL") },
+    { C_STRING_WITH_LEN("varchar(130)") },
     { NULL, 0}
   },
   {
@@ -145,7 +158,7 @@ static const TABLE_FIELD_TYPE field_types[]=
 
 TABLE_FIELD_DEF
 table_events_transactions_current::m_field_def=
-{22 , field_types };
+{24 , field_types };
 
 PFS_engine_table_share
 table_events_transactions_current::m_share=
@@ -159,7 +172,8 @@ table_events_transactions_current::m_share=
   sizeof(PFS_simple_index), /* ref length */
   &m_table_lock,
   &m_field_def,
-  false /* checked */
+  false, /* checked */
+  false  /* perpetual */
 };
 
 THR_LOCK table_events_transactions_history::m_table_lock;
@@ -176,7 +190,8 @@ table_events_transactions_history::m_share=
   sizeof(pos_events_transactions_history), /* ref length */
   &m_table_lock,
   &table_events_transactions_current::m_field_def,
-  false /* checked */
+  false, /* checked */
+  false  /* perpetual */
 };
 
 THR_LOCK table_events_transactions_history_long::m_table_lock;
@@ -193,7 +208,8 @@ table_events_transactions_history_long::m_share=
   sizeof(PFS_simple_index), /* ref length */
   &m_table_lock,
   &table_events_transactions_current::m_field_def,
-  false /* checked */
+  false, /* checked */
+  false  /* perpetual */
 };
 
 table_events_transactions_common::table_events_transactions_common
@@ -210,6 +226,7 @@ void table_events_transactions_common::make_row(PFS_events_transactions *transac
 {
   const char *base;
   const char *safe_source_file;
+  ulonglong timer_end;
 
   m_row_exists= false;
 
@@ -224,7 +241,16 @@ void table_events_transactions_common::make_row(PFS_events_transactions *transac
   m_row.m_nesting_event_id= transaction->m_nesting_event_id;
   m_row.m_nesting_event_type= transaction->m_nesting_event_type;
 
-  m_normalizer->to_pico(transaction->m_timer_start, transaction->m_timer_end,
+  if (m_row.m_end_event_id == 0)
+  {
+    timer_end= get_timer_raw_value(transaction_timer);
+  }
+  else
+  {
+    timer_end= transaction->m_timer_end;
+  }
+
+  m_normalizer->to_pico(transaction->m_timer_start, timer_end,
                         &m_row.m_timer_start, &m_row.m_timer_end, &m_row.m_timer_wait);
   m_row.m_name= klass->m_name;
   m_row.m_name_length= klass->m_name_length;
@@ -239,24 +265,32 @@ void table_events_transactions_common::make_row(PFS_events_transactions *transac
   if (m_row.m_source_length > sizeof(m_row.m_source))
     m_row.m_source_length= sizeof(m_row.m_source);
 
-  if (transaction->m_gtid_set)
-  {
-    /* A GTID consists of the SIDNO (source id) and GNO (transaction number).
-       The SIDNO is used internally. It maps to a UUID, here called SID.
-    */
-    rpl_sid *sid= &transaction->m_sid;
+  /* A GTID consists of the SID (source id) and GNO (transaction number).
+     The SID is stored in transaction->m_sid and the GNO is stored in
+     transaction->m_gtid_spec.gno.
 
-    /* The Gtid_specification contains the SIDNO, GNO and TYPE. Given a SID,
-       it can generate the textual representation of the GTID. Without
-       the SID, the Gtid_spec would first have to map the SIDNO to the SID,
-       which requires locking the global SID map. Fortunately, mapping
-       from SIDNO to SID was already done at the time of logging.
-    */
-    Gtid_specification *gtid_spec= &transaction->m_gtid_spec;
-    m_row.m_gtid_length= gtid_spec->to_string(sid, m_row.m_gtid);
-  }
-  else
-    m_row.m_gtid_length= 0;
+     On a master, the GTID is assigned when the transaction commit.
+     On a slave, the GTID is assigned before the transaction starts.
+     If GTID_MODE = OFF, all transactions have the special GTID
+     'ANONYMOUS'.
+
+     Therefore, a transaction can be in three different states wrt GTIDs:
+     - Before the GTID has been assigned, the state is 'AUTOMATIC'.
+       On a master, this is the state until the transaction commits.
+       On a slave, this state does not appear.
+     - If GTID_MODE = ON, and a GTID is assigned, the GTID is a string
+       of the form 'UUID:NUMBER'.
+     - If GTID_MODE = OFF, and a GTID is assigned, the GTID is a string
+       of the form 'ANONYMOUS'.
+
+     The Gtid_specification contains the GNO, as well as a type code
+     that specifies which of the three modes is currently in effect.
+     Given a SID, it can generate the textual representation of the
+     GTID.
+  */
+  rpl_sid *sid= &transaction->m_sid;
+  Gtid_specification *gtid_spec= &transaction->m_gtid_spec;
+  m_row.m_gtid_length= gtid_spec->to_string(sid, m_row.m_gtid);
 
   m_row.m_xid= transaction->m_xid;
   m_row.m_isolation_level= transaction->m_isolation_level;
@@ -273,41 +307,65 @@ void table_events_transactions_common::make_row(PFS_events_transactions *transac
   return;
 }
 
+/** Size of XID converted to null-terminated hex string prefixed with 0x. */
+static const ulong XID_BUFFER_SIZE= XIDDATASIZE*2 + 2 + 1;
+
 /**
   Convert the XID to HEX string prefixed by '0x'
-  @buf has to be at least (XIDDATASIZE*2+2+1) in size
+
+  @param[out] buf     output hex string buffer, null-terminated
+  @param buf_len size of buffer, must be at least @c XID_BUFFER_SIZE
+  @param xid     XID structure
+  @param offset  offset into XID.data[]
+  @param length  number of bytes to process
+  @return number of bytes in hex string
 */
-static uint xid_to_hex(char *buf, size_t buf_len, PSI_xid *xid)
+static uint xid_to_hex(char *buf, size_t buf_len, PSI_xid *xid, size_t offset, size_t length)
 {
+  DBUG_ASSERT(buf_len >= XID_BUFFER_SIZE);
+  DBUG_ASSERT(offset + length <= XIDDATASIZE);
   *buf++= '0';
   *buf++= 'x';
-  return bin_to_hex_str(buf, buf_len-2, (char*)&xid->data,
-                        xid->gtrid_length + xid->bqual_length) + 2;
+  return bin_to_hex_str(buf, buf_len-2, (char*)(xid->data + offset), length) + 2;
 }
 
 /**
   Store the XID in printable format if possible, otherwise convert
   to a string of hex digits.
+
+  @param  field   Record field
+  @param  xid     XID structure
+  @param  offset  offset into XID.data[]
+  @param  length  number of bytes to process
 */
-static void xid_store(Field *field, PSI_xid *xid)
+static void xid_store(Field *field, PSI_xid *xid, size_t offset, size_t length)
 {
-  if(xid_printable(xid))
+  DBUG_ASSERT(!xid->is_null());
+  if (xid_printable(xid, offset, length))
   {
-    field->store(xid->data, xid->gtrid_length + xid->bqual_length,
-                 &my_charset_bin);
+    field->store(xid->data + offset, length, &my_charset_bin);
   }
   else
   {
-    uint xid_str_len;
     /*
       xid_buf contains enough space for 0x followed by hex representation of
       the binary XID data and one null termination character.
     */
-    char xid_buf[XIDDATASIZE * 2 + 2 + 1];
+    char xid_buf[XID_BUFFER_SIZE];
 
-    xid_str_len= xid_to_hex(xid_buf, sizeof(xid_buf), xid);
+    size_t xid_str_len= xid_to_hex(xid_buf, sizeof(xid_buf), xid, offset, length);
     field->store(xid_buf, xid_str_len, &my_charset_bin);
   }
+}
+
+static void xid_store_bqual(Field *field, PSI_xid *xid)
+{
+  xid_store(field, xid, xid->gtrid_length, xid->bqual_length);
+}
+
+static void xid_store_gtrid(Field *field, PSI_xid *xid)
+{
+  xid_store(field, xid, 0, xid->gtrid_length);
 }
 
 int table_events_transactions_common::read_row_values(TABLE *table,
@@ -357,73 +415,82 @@ int table_events_transactions_common::read_row_values(TABLE *table,
           f->set_null();
         break;
       case 6: /* GTID */
-        if (m_row.m_gtid_length == 0)
-          f->set_null();
-        else
-          set_field_varchar_utf8(f, m_row.m_gtid, m_row.m_gtid_length);
+        set_field_varchar_utf8(f, m_row.m_gtid, m_row.m_gtid_length);
         break;
-      case 7: /* XID */
+      case 7: /* XID_FORMAT_ID */
         if (!m_row.m_xa || m_row.m_xid.is_null())
           f->set_null();
         else
-          xid_store(f, &m_row.m_xid);
+          set_field_long(f, m_row.m_xid.formatID);
         break;
-      case 8: /* XA STATE */
+      case 8: /* XID_GTRID */
+        if (!m_row.m_xa || m_row.m_xid.is_null() || m_row.m_xid.gtrid_length <= 0)
+          f->set_null();
+        else
+          xid_store_gtrid(f, &m_row.m_xid);
+        break;
+      case 9: /* XID_BQUAL */
+        if (!m_row.m_xa || m_row.m_xid.is_null() || m_row.m_xid.bqual_length <= 0)
+          f->set_null();
+        else
+          xid_store_bqual(f, &m_row.m_xid);
+        break;
+      case 10: /* XA STATE */
         if (!m_row.m_xa || m_row.m_xid.is_null())
           f->set_null();
         else
           set_field_xa_state(f, m_row.m_xa_state);
         break;
-      case 9: /* SOURCE */
+      case 11: /* SOURCE */
         set_field_varchar_utf8(f, m_row.m_source, m_row.m_source_length);
         break;
-      case 10: /* TIMER_START */
+      case 12: /* TIMER_START */
         if (m_row.m_timer_start != 0)
           set_field_ulonglong(f, m_row.m_timer_start);
         else
           f->set_null();
         break;
-      case 11: /* TIMER_END */
+      case 13: /* TIMER_END */
         if (m_row.m_timer_end != 0)
           set_field_ulonglong(f, m_row.m_timer_end);
         else
           f->set_null();
         break;
-      case 12: /* TIMER_WAIT */
+      case 14: /* TIMER_WAIT */
         if (m_row.m_timer_wait != 0)
           set_field_ulonglong(f, m_row.m_timer_wait);
         else
           f->set_null();
         break;
-      case 13: /* ACCESS_MODE */
+      case 15: /* ACCESS_MODE */
         set_field_enum(f, m_row.m_read_only ? TRANS_MODE_READ_ONLY
                                             : TRANS_MODE_READ_WRITE);
         break;
-      case 14: /* ISOLATION_LEVEL */
+      case 16: /* ISOLATION_LEVEL */
         set_field_isolation_level(f, m_row.m_isolation_level);
         break;
-      case 15: /* AUTOCOMMIT */
+      case 17: /* AUTOCOMMIT */
         set_field_enum(f, m_row.m_autocommit ? ENUM_YES : ENUM_NO);
         break;
-      case 16: /* NUMBER_OF_SAVEPOINTS */
+      case 18: /* NUMBER_OF_SAVEPOINTS */
         set_field_ulonglong(f, m_row.m_savepoint_count);
         break;
-      case 17: /* NUMBER_OF_ROLLBACK_TO_SAVEPOINT */
+      case 19: /* NUMBER_OF_ROLLBACK_TO_SAVEPOINT */
         set_field_ulonglong(f, m_row.m_rollback_to_savepoint_count);
         break;
-      case 18: /* NUMBER_OF_RELEASE_SAVEPOINT */
+      case 20: /* NUMBER_OF_RELEASE_SAVEPOINT */
         set_field_ulonglong(f, m_row.m_release_savepoint_count);
         break;
-      case 19: /* OBJECT_INSTANCE_BEGIN */
+      case 21: /* OBJECT_INSTANCE_BEGIN */
         f->set_null();
         break;
-      case 20: /* NESTING_EVENT_ID */
+      case 22: /* NESTING_EVENT_ID */
         if (m_row.m_nesting_event_id != 0)
           set_field_ulonglong(f, m_row.m_nesting_event_id);
         else
           f->set_null();
         break;
-      case 21: /* NESTING_EVENT_TYPE */
+      case 23: /* NESTING_EVENT_TYPE */
         if (m_row.m_nesting_event_id != 0)
           set_field_enum(f, m_row.m_nesting_event_type);
         else
@@ -463,24 +530,20 @@ int table_events_transactions_current::rnd_next(void)
 {
   PFS_thread *pfs_thread;
   PFS_events_transactions *transaction;
+  bool has_more_thread= true;
 
   for (m_pos.set_at(&m_next_pos);
-       m_pos.m_index < thread_max;
+       has_more_thread;
        m_pos.next())
   {
-    pfs_thread= &thread_array[m_pos.m_index];
-
-    if (!pfs_thread->m_lock.is_populated())
+    pfs_thread= global_thread_container.get(m_pos.m_index, & has_more_thread);
+    if (pfs_thread != NULL)
     {
-      /* This thread does not exist */
-      continue;
+      transaction= &pfs_thread->m_transaction_current;
+      make_row(transaction);
+      m_next_pos.set_after(&m_pos);
+      return 0;
     }
-
-    transaction= &pfs_thread->m_transaction_current;
-
-    make_row(transaction);
-    m_next_pos.set_after(&m_pos);
-    return 0;
   }
 
   return HA_ERR_END_OF_FILE;
@@ -492,19 +555,19 @@ int table_events_transactions_current::rnd_pos(const void *pos)
   PFS_events_transactions *transaction;
 
   set_position(pos);
-  DBUG_ASSERT(m_pos.m_index < thread_max);
-  pfs_thread= &thread_array[m_pos.m_index];
 
-  if (!pfs_thread->m_lock.is_populated())
-    return HA_ERR_RECORD_DELETED;
+  pfs_thread= global_thread_container.get(m_pos.m_index);
+  if (pfs_thread != NULL)
+  {
+    transaction= &pfs_thread->m_transaction_current;
+    if (transaction->m_class != NULL)
+    {
+      make_row(transaction);
+      return 0;
+    }
+  }
 
-  transaction= &pfs_thread->m_transaction_current;
-
-  if (transaction->m_class == NULL)
-    return HA_ERR_RECORD_DELETED;
-
-  make_row(transaction);
-  return 0;
+  return HA_ERR_RECORD_DELETED;
 }
 
 int table_events_transactions_current::delete_all_rows(void)
@@ -516,7 +579,7 @@ int table_events_transactions_current::delete_all_rows(void)
 ha_rows
 table_events_transactions_current::get_row_count(void)
 {
-  return thread_max;
+  return global_thread_container.get_row_count();
 }
 
 PFS_engine_table* table_events_transactions_history::create(void)
@@ -545,43 +608,39 @@ int table_events_transactions_history::rnd_next(void)
 {
   PFS_thread *pfs_thread;
   PFS_events_transactions *transaction;
+  bool has_more_thread= true;
 
   if (events_transactions_history_per_thread == 0)
     return HA_ERR_END_OF_FILE;
 
   for (m_pos.set_at(&m_next_pos);
-       m_pos.m_index_1 < thread_max;
+       has_more_thread;
        m_pos.next_thread())
   {
-    pfs_thread= &thread_array[m_pos.m_index_1];
-
-    if (! pfs_thread->m_lock.is_populated())
+    pfs_thread= global_thread_container.get(m_pos.m_index_1, & has_more_thread);
+    if (pfs_thread != NULL)
     {
-      /* This thread does not exist */
-      continue;
-    }
+      if (m_pos.m_index_2 >= events_transactions_history_per_thread)
+      {
+        /* This thread does not have more (full) history */
+        continue;
+      }
 
-    if (m_pos.m_index_2 >= events_transactions_history_per_thread)
-    {
-      /* This thread does not have more (full) history */
-      continue;
-    }
+      if ( ! pfs_thread->m_transactions_history_full &&
+          (m_pos.m_index_2 >= pfs_thread->m_transactions_history_index))
+      {
+        /* This thread does not have more (not full) history */
+        continue;
+      }
 
-    if ( ! pfs_thread->m_transactions_history_full &&
-        (m_pos.m_index_2 >= pfs_thread->m_transactions_history_index))
-    {
-      /* This thread does not have more (not full) history */
-      continue;
-    }
-
-    transaction= &pfs_thread->m_transactions_history[m_pos.m_index_2];
-
-    if (transaction->m_class != NULL)
-    {
-      make_row(transaction);
-      /* Next iteration, look for the next history in this thread */
-      m_next_pos.set_after(&m_pos);
-      return 0;
+      transaction= &pfs_thread->m_transactions_history[m_pos.m_index_2];
+      if (transaction->m_class != NULL)
+      {
+        make_row(transaction);
+        /* Next iteration, look for the next history in this thread */
+        m_next_pos.set_after(&m_pos);
+        return 0;
+      }
     }
   }
 
@@ -595,25 +654,25 @@ int table_events_transactions_history::rnd_pos(const void *pos)
 
   DBUG_ASSERT(events_transactions_history_per_thread != 0);
   set_position(pos);
-  DBUG_ASSERT(m_pos.m_index_1 < thread_max);
-  pfs_thread= &thread_array[m_pos.m_index_1];
-
-  if (! pfs_thread->m_lock.is_populated())
-    return HA_ERR_RECORD_DELETED;
 
   DBUG_ASSERT(m_pos.m_index_2 < events_transactions_history_per_thread);
 
-  if ( ! pfs_thread->m_transactions_history_full &&
-      (m_pos.m_index_2 >= pfs_thread->m_transactions_history_index))
-    return HA_ERR_RECORD_DELETED;
+  pfs_thread= global_thread_container.get(m_pos.m_index_1);
+  if (pfs_thread != NULL)
+  {
+    if ( ! pfs_thread->m_transactions_history_full &&
+        (m_pos.m_index_2 >= pfs_thread->m_transactions_history_index))
+      return HA_ERR_RECORD_DELETED;
 
-  transaction= &pfs_thread->m_transactions_history[m_pos.m_index_2];
+    transaction= &pfs_thread->m_transactions_history[m_pos.m_index_2];
+    if (transaction->m_class != NULL)
+    {
+      make_row(transaction);
+      return 0;
+    }
+  }
 
-  if (transaction->m_class == NULL)
-    return HA_ERR_RECORD_DELETED;
-
-  make_row(transaction);
-  return 0;
+  return HA_ERR_RECORD_DELETED;
 }
 
 int table_events_transactions_history::delete_all_rows(void)
@@ -625,7 +684,7 @@ int table_events_transactions_history::delete_all_rows(void)
 ha_rows
 table_events_transactions_history::get_row_count(void)
 {
-  return events_transactions_history_per_thread * thread_max;
+  return events_transactions_history_per_thread * global_thread_container.get_row_count();
 }
 
 PFS_engine_table* table_events_transactions_history_long::create(void)

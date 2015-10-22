@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,9 +14,11 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include <my_dir.h>
 #include "mysys_err.h"
 #include "m_string.h"
+#include "my_thread_local.h"
 #undef my_rename
 
 	/* On unix rename deletes to file if it exists */
@@ -41,7 +43,7 @@ int my_rename(const char *from, const char *to, myf MyFlags)
     if (MyFlags & (MY_FAE+MY_WME))
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(EE_LINK, MYF(ME_BELL+ME_WAITTANG), from, to,
+      my_error(EE_LINK, MYF(0), from, to,
                my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     }
   }

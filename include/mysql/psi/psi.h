@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -55,6 +55,9 @@ typedef int opaque_mdl_duration;
 
 /** @sa MDL_wait::enum_wait_status. */
 typedef int opaque_mdl_status;
+
+/** @sa enum_vio_type. */
+typedef int opaque_vio_type;
 
 struct TABLE_SHARE;
 
@@ -212,6 +215,58 @@ struct PSI_stage_progress
   ulonglong m_work_estimated;
 };
 typedef struct PSI_stage_progress PSI_stage_progress;
+
+/** IO operation performed on an instrumented table. */
+enum PSI_table_io_operation
+{
+  /** Row fetch. */
+  PSI_TABLE_FETCH_ROW= 0,
+  /** Row write. */
+  PSI_TABLE_WRITE_ROW= 1,
+  /** Row update. */
+  PSI_TABLE_UPDATE_ROW= 2,
+  /** Row delete. */
+  PSI_TABLE_DELETE_ROW= 3
+};
+typedef enum PSI_table_io_operation PSI_table_io_operation;
+
+/**
+  State data storage for @c start_table_io_wait_v1_t,
+  @c start_table_lock_wait_v1_t.
+  This structure provide temporary storage to a table locker.
+  The content of this structure is considered opaque,
+  the fields are only hints of what an implementation
+  of the psi interface can use.
+  This memory is provided by the instrumented code for performance reasons.
+  @sa start_table_io_wait_v1_t
+  @sa start_table_lock_wait_v1_t
+*/
+struct PSI_table_locker_state
+{
+  /** Internal state. */
+  uint m_flags;
+  /** Current io operation. */
+  enum PSI_table_io_operation m_io_operation;
+  /** Current table handle. */
+  struct PSI_table *m_table;
+  /** Current table share. */
+  struct PSI_table_share *m_table_share;
+  /** Current thread. */
+  struct PSI_thread *m_thread;
+  /** Timer start. */
+  ulonglong m_timer_start;
+  /** Timer function. */
+  ulonglong (*m_timer)(void);
+  /** Internal data. */
+  void *m_wait;
+  /**
+    Implementation specific.
+    For table io, the table io index.
+    For table lock, the lock type.
+  */
+  uint m_index;
+};
+typedef struct PSI_table_locker_state PSI_table_locker_state;
 
 /** Entry point for the performance schema interface. */
 struct PSI_bootstrap
@@ -646,20 +701,6 @@ enum PSI_file_operation
   PSI_FILE_SYNC= 16
 };
 typedef enum PSI_file_operation PSI_file_operation;
-
-/** IO operation performed on an instrumented table. */
-enum PSI_table_io_operation
-{
-  /** Row fetch. */
-  PSI_TABLE_FETCH_ROW= 0,
-  /** Row write. */
-  PSI_TABLE_WRITE_ROW= 1,
-  /** Row update. */
-  PSI_TABLE_UPDATE_ROW= 2,
-  /** Row delete. */
-  PSI_TABLE_DELETE_ROW= 3
-};
-typedef enum PSI_table_io_operation PSI_table_io_operation;
 
 /** Lock operation performed on an instrumented table. */
 enum PSI_table_lock_operation
@@ -1102,44 +1143,6 @@ struct PSI_file_locker_state_v1
 typedef struct PSI_file_locker_state_v1 PSI_file_locker_state_v1;
 
 /**
-  State data storage for @c start_table_io_wait_v1_t,
-  @c start_table_lock_wait_v1_t.
-  This structure provide temporary storage to a table locker.
-  The content of this structure is considered opaque,
-  the fields are only hints of what an implementation
-  of the psi interface can use.
-  This memory is provided by the instrumented code for performance reasons.
-  @sa start_table_io_wait_v1_t
-  @sa start_table_lock_wait_v1_t
-*/
-struct PSI_table_locker_state_v1
-{
-  /** Internal state. */
-  uint m_flags;
-  /** Current io operation. */
-  enum PSI_table_io_operation m_io_operation;
-  /** Current table handle. */
-  struct PSI_table *m_table;
-  /** Current table share. */
-  struct PSI_table_share *m_table_share;
-  /** Current thread. */
-  struct PSI_thread *m_thread;
-  /** Timer start. */
-  ulonglong m_timer_start;
-  /** Timer function. */
-  ulonglong (*m_timer)(void);
-  /** Internal data. */
-  void *m_wait;
-  /**
-    Implementation specific.
-    For table io, the table io index.
-    For table lock, the lock type.
-  */
-  uint m_index;
-};
-typedef struct PSI_table_locker_state_v1 PSI_table_locker_state_v1;
-
-/**
   State data storage for @c start_metadata_wait_v1_t.
   This structure provide temporary storage to a metadata locker.
   The content of this structure is considered opaque,
@@ -1523,7 +1526,8 @@ typedef PSI_table* (*rebind_table_v1_t)
   Note that the table handle is invalid after this call.
   @param table the table handle to close
 */
-typedef void (*close_table_v1_t)(struct PSI_table *table);
+typedef void (*close_table_v1_t)(struct TABLE_SHARE *server_share,
+                                 struct PSI_table *table);
 
 /**
   Create a file instrumentation for a created file.
@@ -1546,8 +1550,8 @@ typedef void (*create_file_v1_t)(PSI_file_key key, const char *name,
   @param arg the thread start routine argument
 */
 typedef int (*spawn_thread_v1_t)(PSI_thread_key key,
-                                 pthread_t *thread,
-                                 const pthread_attr_t *attr,
+                                 my_thread_handle *thread,
+                                 const my_thread_attr_t *attr,
                                  void *(*start_routine)(void*), void *arg);
 
 /**
@@ -1613,6 +1617,13 @@ typedef void (*set_thread_db_v1_t)(const char* db, int db_len);
   @param command the current command
 */
 typedef void (*set_thread_command_v1_t)(int command);
+
+/**
+  Assign a connection type to the instrumented thread.
+  @param conn_type the connection type
+*/
+typedef void (*set_connection_type_v1_t)(opaque_vio_type conn_type);
+
 
 /**
   Assign a start time to the instrumented thread.
@@ -1819,7 +1830,7 @@ typedef void (*end_cond_wait_v1_t)
   @param line the source line number
 */
 typedef struct PSI_table_locker* (*start_table_io_wait_v1_t)
-  (struct PSI_table_locker_state_v1 *state,
+  (struct PSI_table_locker_state *state,
    struct PSI_table *table,
    enum PSI_table_io_operation op,
    uint index,
@@ -1841,7 +1852,7 @@ typedef void (*end_table_io_wait_v1_t)
   @param line the source line number
 */
 typedef struct PSI_table_locker* (*start_table_lock_wait_v1_t)
-  (struct PSI_table_locker_state_v1 *state,
+  (struct PSI_table_locker_state *state,
    struct PSI_table *table,
    enum PSI_table_lock_operation op,
    ulong flags,
@@ -2460,6 +2471,8 @@ struct PSI_v1
   set_thread_db_v1_t set_thread_db;
   /** @sa set_thread_command_v1_t. */
   set_thread_command_v1_t set_thread_command;
+  /** @sa set_connection_type_v1_t. */
+  set_connection_type_v1_t set_connection_type;
   /** @sa set_thread_start_time_v1_t. */
   set_thread_start_time_v1_t set_thread_start_time;
   /** @sa set_thread_state_v1_t. */
@@ -2637,6 +2650,8 @@ struct PSI_v1
   memory_alloc_v1_t memory_alloc;
   /** @sa memory_realloc_v1_t. */
   memory_realloc_v1_t memory_realloc;
+  /** @sa memory_claim_v1_t. */
+  memory_claim_v1_t memory_claim;
   /** @sa memory_free_v1_t. */
   memory_free_v1_t memory_free;
 
@@ -2770,13 +2785,6 @@ struct PSI_file_locker_state_v2
 };
 
 /** Placeholder */
-struct PSI_table_locker_state_v2
-{
-  /** Placeholder */
-  int placeholder;
-};
-
-/** Placeholder */
 struct PSI_statement_locker_state_v2
 {
   /** Placeholder */
@@ -2854,7 +2862,6 @@ typedef struct PSI_mutex_locker_state_v1 PSI_mutex_locker_state;
 typedef struct PSI_rwlock_locker_state_v1 PSI_rwlock_locker_state;
 typedef struct PSI_cond_locker_state_v1 PSI_cond_locker_state;
 typedef struct PSI_file_locker_state_v1 PSI_file_locker_state;
-typedef struct PSI_table_locker_state_v1 PSI_table_locker_state;
 typedef struct PSI_statement_locker_state_v1 PSI_statement_locker_state;
 typedef struct PSI_transaction_locker_state_v1 PSI_transaction_locker_state;
 typedef struct PSI_socket_locker_state_v1 PSI_socket_locker_state;
@@ -2878,7 +2885,6 @@ typedef struct PSI_mutex_locker_state_v2 PSI_mutex_locker_state;
 typedef struct PSI_rwlock_locker_state_v2 PSI_rwlock_locker_state;
 typedef struct PSI_cond_locker_state_v2 PSI_cond_locker_state;
 typedef struct PSI_file_locker_state_v2 PSI_file_locker_state;
-typedef struct PSI_table_locker_state_v2 PSI_table_locker_state;
 typedef struct PSI_statement_locker_state_v2 PSI_statement_locker_state;
 typedef struct PSI_transaction_locker_state_v2 PSI_transaction_locker_state;
 typedef struct PSI_socket_locker_state_v2 PSI_socket_locker_state;

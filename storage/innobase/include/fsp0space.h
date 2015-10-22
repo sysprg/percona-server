@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2013, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2013, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -76,7 +76,7 @@ public:
 	Tablespace& operator=(const Tablespace&);
 
 	/** Set tablespace name
-	@param name	Tablespace name */
+	@param[in]	name	tablespace name */
 	void set_name(const char* name)
 	{
 		ut_ad(m_name == NULL);
@@ -92,14 +92,22 @@ public:
 	}
 
 	/** Set tablespace path and filename members.
-	@param path	where tablespace file(s) resides */
-	void set_path(const char* path)
+	@param[in]	path	where tablespace file(s) resides
+	@param[in]	len	length of the file path */
+	void set_path(const char* path, size_t len)
 	{
 		ut_ad(m_path == NULL);
-		m_path = mem_strdup(path);
+		m_path = mem_strdupl(path, len);
 		ut_ad(m_path != NULL);
 
 		os_normalize_path_for_win(m_path);
+	}
+
+	/** Set tablespace path and filename members.
+	@param[in]	path	where tablespace file(s) resides */
+	void set_path(const char* path)
+	{
+		set_path(path, strlen(path));
 	}
 
 	/** Get tablespace path
@@ -110,7 +118,7 @@ public:
 	}
 
 	/** Set the space id of the tablespace
-	@param space_id	 Tablespace ID to set */
+	@param[in]	space_id	 tablespace ID to set */
 	void set_space_id(ulint space_id)
 	{
 		ut_ad(m_space_id == ULINT_UNDEFINED);
@@ -125,7 +133,7 @@ public:
 	}
 
 	/** Set the tablespace flags
-	@param fsp_flags	Tablespace flags */
+	@param[in]	fsp_flags	tablespace flags */
 	void set_flags(ulint fsp_flags)
 	{
 		ut_ad(fsp_flags_is_valid(fsp_flags));
@@ -140,7 +148,7 @@ public:
 	}
 
 	/** Set Ignore Read Only Status for tablespace.
-	@param[in]      read_only_status        read only status indicator */
+	@param[in]	read_only_status	read only status indicator */
 	void set_ignore_read_only(bool read_only_status)
 	{
 		m_ignore_read_only = read_only_status;
@@ -163,15 +171,27 @@ public:
 	void delete_files();
 
 	/** Check if two tablespaces have common data file names.
-	@param other_space	Tablespace to check against this.
+	@param[in]	other_space	Tablespace to check against this.
 	@return true if they have the same data filenames and paths */
 	bool intersection(const Tablespace* other_space);
+
+	/** Use the ADD DATAFILE path to create a Datafile object and add
+	it to the front of m_files. Parse the datafile path into a path
+	and a basename with extension 'ibd'. This datafile_path provided
+	may be an absolute or relative path, but it must end with the
+	extension .ibd and have a basename of at least 1 byte.
+
+	Set tablespace m_path member and add a Datafile with the filename.
+	@param[in]	datafile_path	full path of the tablespace file. */
+	dberr_t add_datafile(
+		const char*	datafile_path);
 
 	/* Return a pointer to the first Datafile for this Tablespace
 	@return pointer to the first Datafile for this Tablespace*/
 	Datafile* first_datafile()
 	{
-		return &(m_files.front());
+		ut_a(!m_files.empty());
+		return(&m_files.front());
 	}
 
 	/** Check if undo tablespace.
@@ -179,12 +199,12 @@ public:
 	static bool is_undo_tablespace(ulint id);
 private:
 	/**
-	@param filename	Name to lookup in the data files.
+	@param[in]	filename	Name to lookup in the data files.
 	@return true if the filename exists in the data files */
 	bool find(const char* filename);
 
 	/** Note that the data file was found.
-	@param file	data file object */
+	@param[in]	file	data file object */
 	void file_found(Datafile& file);
 
 	/* DATA MEMBERS */
@@ -203,7 +223,7 @@ private:
 
 protected:
 	/** Ignore server read only configuration for this tablespace. */
-	bool            m_ignore_read_only;
+	bool		m_ignore_read_only;
 };
 
 #endif /* fsp0space_h */

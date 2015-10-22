@@ -1,5 +1,5 @@
 /* Copyright (C) 2007 Google Inc.
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -20,10 +20,9 @@
 
 #define MYSQL_SERVER
 #define HAVE_REPLICATION
-#include <sql_priv.h>
-#include "unireg.h"
+
 #include <my_global.h>
-#include <my_pthread.h>
+#include <my_thread.h>
 #include <mysql/plugin.h>
 #include <replication.h>
 #include "log.h"                                /* sql_print_information */

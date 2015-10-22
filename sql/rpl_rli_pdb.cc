@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,15 +13,13 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "my_global.h"                          /* NO_EMBEDDED_ACCESS_CHECKS */
-#include "sql_priv.h"
-#include "unireg.h"
 #include "rpl_rli_pdb.h"
-#include "rpl_slave.h"
-#include "sql_string.h"
-#include <hash.h>
-#include "rpl_mts_submode.h"
-#include "rpl_slave_commit_order_manager.h"
+
+#include "log.h"                            // sql_print_error
+#include "rpl_slave_commit_order_manager.h" // Commit_order_manager
+
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
 
 #ifndef DBUG_OFF
   ulong w_rr= 0;
@@ -31,6 +29,107 @@
 #define HASH_DYNAMIC_INIT 4
 
 using std::min;
+using std::max;
+
+/**
+   This function is called by both coordinator and workers.
+
+   Upon receiving the STOP command, the workers will identify a
+   maximum group index already executed (or under execution).
+
+   All groups whose index are below or equal to the maximum
+   group index will be applied by the workers before stopping.
+
+   The workers with groups above the maximum group index will
+   exit without applying these groups by setting their running
+   status to "STOP_ACCEPTED".
+
+   @param worker    a pointer to the waiting Worker struct
+   @param job_item  a pointer to struct carrying a reference to an event
+
+   @return true if STOP command gets accepted otherwise false is returned.
+*/
+bool handle_slave_worker_stop(Slave_worker *worker,
+                              Slave_job_item *job_item)
+{
+  ulonglong group_index= 0;
+  Relay_log_info *rli= worker->c_rli;
+  mysql_mutex_lock(&rli->exit_count_lock);
+  /*
+    First, W calculates a group-"at-hands" index which is
+    either the currently read ev group index, or the last executed
+    group's one when the  queue is empty.
+  */
+  group_index= (job_item->data)?
+    rli->gaq->get_job_group(job_item->data->mts_group_idx)->total_seqno:
+    worker->last_groups_assigned_index;
+
+  /*
+    The max updated index is being updated as long as
+    exit_counter permits. That's stopped with the final W's
+    increment of it.
+  */
+  if (!worker->exit_incremented)
+  {
+    if (rli->exit_counter < rli->slave_parallel_workers)
+      rli->max_updated_index = max(rli->max_updated_index, group_index);
+
+    ++rli->exit_counter;
+    worker->exit_incremented= true;
+    DBUG_ASSERT(!is_mts_worker(current_thd));
+  }
+#ifndef DBUG_OFF
+  else
+    DBUG_ASSERT(is_mts_worker(current_thd));
+#endif
+
+  /*
+    Now let's decide about the deferred exit to consider
+    the empty queue and the counter value reached
+    slave_parallel_workers.
+  */
+  if (!job_item->data)
+  {
+    worker->running_status= Slave_worker::STOP_ACCEPTED;
+    mysql_cond_signal(&worker->jobs_cond);
+    mysql_mutex_unlock(&rli->exit_count_lock);
+    return(true);
+  }
+  else if (rli->exit_counter == rli->slave_parallel_workers)
+  {
+    //over steppers should exit with accepting STOP
+    if (group_index > rli->max_updated_index)
+    {
+      worker->running_status= Slave_worker::STOP_ACCEPTED;
+      mysql_cond_signal(&worker->jobs_cond);
+      mysql_mutex_unlock(&rli->exit_count_lock);
+      return(true);
+    }
+  }
+  mysql_mutex_unlock(&rli->exit_count_lock);
+  return(false);
+}
+
+/**
+   This function is called by both coordinator and workers.
+   Both coordinator and workers contribute to max_updated_index.
+
+   @param worker    a pointer to the waiting Worker struct
+   @param job_item  a pointer to struct carrying a reference to an event
+
+   @return true if STOP command gets accepted otherwise false is returned.
+*/
+bool set_max_updated_index_on_stop(Slave_worker *worker,
+                                   Slave_job_item *job_item)
+{
+  head_queue(&worker->jobs, job_item);
+  if (worker->running_status == Slave_worker::STOP)
+  {
+    if (handle_slave_worker_stop(worker, job_item))
+      return true;
+  }
+  return false;
+}
 
 /*
   Please every time you add a new field to the worker slave info, update
@@ -72,7 +171,11 @@ const char *info_slave_worker_fields []=
   /*
     Bitmap used to identify what jobs were processed by a worker.
   */
-  "checkpoint_group_bitmap"
+  "checkpoint_group_bitmap",
+  /*
+    Channel on which this workers are acting
+  */
+  "channel_name"
 };
 
 /*
@@ -80,7 +183,7 @@ const char *info_slave_worker_fields []=
   entries with zero usage are tolerated so could be quickly
   recycled.
 */
-ulong mts_partition_hash_soft_max= 16;
+const ulong mts_partition_hash_soft_max= 16;
 
 Slave_worker::Slave_worker(Relay_log_info *rli
 #ifdef HAVE_PSI_INTERFACE
@@ -93,7 +196,7 @@ Slave_worker::Slave_worker(Relay_log_info *rli
                            PSI_mutex_key *param_key_info_stop_cond,
                            PSI_mutex_key *param_key_info_sleep_cond
 #endif
-                           , uint param_id
+                           , uint param_id, const char *param_channel
                           )
   : Relay_log_info(FALSE
 #ifdef HAVE_PSI_INTERFACE
@@ -102,13 +205,13 @@ Slave_worker::Slave_worker(Relay_log_info *rli
                    param_key_info_data_cond, param_key_info_start_cond,
                    param_key_info_stop_cond, param_key_info_sleep_cond
 #endif
-                   , param_id + 1, true
+                   , param_id + 1, param_channel, true
                   ),
     c_rli(rli),
     curr_group_exec_parts(key_memory_db_worker_hash_entry),
     id(param_id),
     checkpoint_relay_log_pos(0), checkpoint_master_log_pos(0),
-    checkpoint_seqno(0), running_status(NOT_RUNNING)
+    checkpoint_seqno(0), running_status(NOT_RUNNING), exit_incremented(false)
 {
   /*
     In the future, it would be great if we use only one identifier.
@@ -121,6 +224,7 @@ Slave_worker::Slave_worker(Relay_log_info *rli
   mysql_mutex_init(key_mutex_slave_parallel_worker, &jobs_lock,
                    MY_MUTEX_INIT_FAST);
   mysql_cond_init(key_cond_slave_parallel_worker, &jobs_cond);
+  mysql_cond_init(key_cond_mts_gaq, &logical_clock_cond);
 }
 
 Slave_worker::~Slave_worker()
@@ -133,6 +237,7 @@ Slave_worker::~Slave_worker()
   }
   mysql_mutex_destroy(&jobs_lock);
   mysql_cond_destroy(&jobs_cond);
+  mysql_cond_destroy(&logical_clock_cond);
   mysql_mutex_lock(&info_thd_lock);
   info_thd= NULL;
   mysql_mutex_unlock(&info_thd_lock);
@@ -170,11 +275,11 @@ int Slave_worker::init_worker(Relay_log_info * rli, ulong i)
   master_log_change_notified= false;// W learns master log during 1st group exec
   bitmap_shifted= 0;
   workers= c_rli->workers; // shallow copying is sufficient
-  wq_size_waits_cnt= groups_done= events_done= curr_jobs= 0;
+  wq_empty_waits= wq_size_waits_cnt= groups_done= events_done= curr_jobs= 0;
   usage_partition= 0;
   end_group_sets_max_dbs= false;
   gaq_index= last_group_done_index= c_rli->gaq->size; // out of range
-
+  last_groups_assigned_index=0;
   DBUG_ASSERT(!jobs.inited_queue);
   jobs.avail= 0;
   jobs.len= 0;
@@ -183,7 +288,9 @@ int Slave_worker::init_worker(Relay_log_info * rli, ulong i)
   jobs.entry= jobs.size= c_rli->mts_slave_worker_queue_len_max;
   jobs.inited_queue= true;
   curr_group_seen_begin= curr_group_seen_gtid= false;
-
+#ifndef DBUG_OFF
+  curr_group_seen_sequence_number= false;
+#endif
   jobs.m_Q.resize(jobs.size, empty);
   DBUG_ASSERT(jobs.m_Q.size() == jobs.size);
 
@@ -198,6 +305,7 @@ int Slave_worker::init_worker(Relay_log_info * rli, ulong i)
        (Mts_submode*) new Mts_submode_database():
        (Mts_submode*) new Mts_submode_logical_clock();
 
+  m_order_commit_deadlock= false;
   DBUG_RETURN(0);
 }
 
@@ -337,32 +445,34 @@ bool Slave_worker::read_info(Rpl_info_handler *from)
   if (from->prepare_info_for_read())
     DBUG_RETURN(TRUE);
 
-  if (from->get_info((int *) &temp_internal_id, (int) 0) ||
+  if (from->get_info(&temp_internal_id, 0) ||
       from->get_info(group_relay_log_name,
                      sizeof(group_relay_log_name),
                      (char *) "") ||
-      from->get_info((ulong *) &temp_group_relay_log_pos,
-                     (ulong) 0) ||
+      from->get_info(&temp_group_relay_log_pos,
+                     0UL) ||
       from->get_info(temp_group_master_log_name,
                      sizeof(temp_group_master_log_name),
                      (char *) "") ||
-      from->get_info((ulong *) &temp_group_master_log_pos,
-                     (ulong) 0) ||
+      from->get_info(&temp_group_master_log_pos,
+                     0UL) ||
       from->get_info(checkpoint_relay_log_name,
                      sizeof(checkpoint_relay_log_name),
                      (char *) "") ||
-      from->get_info((ulong *) &temp_checkpoint_relay_log_pos,
-                     (ulong) 0) ||
+      from->get_info(&temp_checkpoint_relay_log_pos,
+                     0UL) ||
       from->get_info(checkpoint_master_log_name,
                      sizeof(checkpoint_master_log_name),
                      (char *) "") ||
-      from->get_info((ulong *) &temp_checkpoint_master_log_pos,
-                     (ulong) 0) ||
-      from->get_info((ulong *) &temp_checkpoint_seqno,
-                     (ulong) 0) ||
-      from->get_info(&nbytes, (ulong) 0) ||
+      from->get_info(&temp_checkpoint_master_log_pos,
+                     0UL) ||
+      from->get_info(&temp_checkpoint_seqno,
+                     0UL) ||
+      from->get_info(&nbytes, 0UL) ||
       from->get_info(buffer, (size_t) nbytes,
-                     (uchar *) 0))
+                     (uchar *) 0) ||
+      /* default is empty string */
+      from->get_info(channel, sizeof(channel),(char*)""))
     DBUG_RETURN(TRUE);
 
   DBUG_ASSERT(nbytes <= no_bytes_in_map(&group_executed));
@@ -397,6 +507,17 @@ void Slave_worker::copy_values_for_PFS(ulong worker_id,
   currently_executing_gtid= gtid;
 }
 
+bool Slave_worker::set_info_search_keys(Rpl_info_handler *to)
+{
+  DBUG_ENTER("Slave_worker::set_info_search_keys");
+
+  /* primary keys are Id and channel_name */
+  if(to->set_info(0, (int)internal_id ) || to->set_info(LINE_FOR_CHANNEL, channel))
+    DBUG_RETURN(TRUE);
+
+  DBUG_RETURN(FALSE);
+}
+
 bool Slave_worker::write_info(Rpl_info_handler *to)
 {
   DBUG_ENTER("Master_info::write_info");
@@ -417,7 +538,8 @@ bool Slave_worker::write_info(Rpl_info_handler *to)
       to->set_info((ulong) checkpoint_master_log_pos) ||
       to->set_info((ulong) checkpoint_seqno) ||
       to->set_info(nbytes) ||
-      to->set_info(buffer, (size_t) nbytes))
+      to->set_info(buffer, (size_t) nbytes)||
+      to->set_info(channel))
     DBUG_RETURN(TRUE);
 
   DBUG_RETURN(FALSE);
@@ -548,7 +670,7 @@ bool Slave_worker::commit_positions(Log_event *ev, Slave_job_group* ptr_g, bool 
   bitmap_set_bit(&group_executed, ptr_g->checkpoint_seqno);
   checkpoint_seqno= ptr_g->checkpoint_seqno;
   group_relay_log_pos= ev->future_event_relay_log_pos;
-  set_group_master_log_pos(ev->log_pos);
+  set_group_master_log_pos(ev->common_header->log_pos);
 
   /*
     Directly accessing c_rli->get_group_master_log_name() does not
@@ -585,18 +707,6 @@ void Slave_worker::rollback_positions(Slave_job_group* ptr_g)
     flush_info(false);
   }
 }
-
-HASH mapping_db_to_worker;
-static bool inited_hash_workers= FALSE;
-
-#ifdef HAVE_PSI_INTERFACE
-PSI_mutex_key key_mutex_slave_worker_hash;
-PSI_cond_key key_cond_slave_worker_hash;
-#endif
-
-mysql_mutex_t slave_worker_hash_lock;
-mysql_cond_t slave_worker_hash_cond;
-
 
 extern "C" uchar *get_key(const uchar *record, size_t *length,
                           my_bool not_used __attribute__((unused)))
@@ -639,39 +749,34 @@ static void free_entry(db_worker_hash_entry *entry)
   DBUG_VOID_RETURN;
 }
 
-bool init_hash_workers(ulong slave_parallel_workers)
+bool init_hash_workers(Relay_log_info *rli)
 {
   DBUG_ENTER("init_hash_workers");
 
-  inited_hash_workers=
-    (my_hash_init(&mapping_db_to_worker, &my_charset_bin,
+  rli->inited_hash_workers=
+    (my_hash_init(&rli->mapping_db_to_worker, &my_charset_bin,
                  0, 0, 0, get_key,
-                 (my_hash_free_key) free_entry, 0) == 0);
-  if (inited_hash_workers)
+                 (my_hash_free_key) free_entry, 0,
+                 key_memory_db_worker_hash_entry) == 0);
+  if (rli->inited_hash_workers)
   {
-#ifdef HAVE_PSI_INTERFACE
-    mysql_mutex_init(key_mutex_slave_worker_hash, &slave_worker_hash_lock,
+    mysql_mutex_init(key_mutex_slave_worker_hash, &rli->slave_worker_hash_lock,
                      MY_MUTEX_INIT_FAST);
-    mysql_cond_init(key_cond_slave_worker_hash, &slave_worker_hash_cond);
-#else
-    mysql_mutex_init(NULL, &slave_worker_hash_lock,
-                     MY_MUTEX_INIT_FAST);
-    mysql_cond_init(NULL, &slave_worker_hash_cond);
-#endif
+    mysql_cond_init(key_cond_slave_worker_hash, &rli->slave_worker_hash_cond);
   }
 
-  DBUG_RETURN (!inited_hash_workers);
+  DBUG_RETURN (!rli->inited_hash_workers);
 }
 
 void destroy_hash_workers(Relay_log_info *rli)
 {
   DBUG_ENTER("destroy_hash_workers");
-  if (inited_hash_workers)
+  if (rli->inited_hash_workers)
   {
-    my_hash_free(&mapping_db_to_worker);
-    mysql_mutex_destroy(&slave_worker_hash_lock);
-    mysql_cond_destroy(&slave_worker_hash_cond);
-    inited_hash_workers= false;
+    my_hash_free(&rli->mapping_db_to_worker);
+    mysql_mutex_destroy(&rli->slave_worker_hash_lock);
+    mysql_cond_destroy(&rli->slave_worker_hash_cond);
+    rli->inited_hash_workers= false;
   }
 
   DBUG_VOID_RETURN;
@@ -844,13 +949,13 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
 
   THD *thd= rli->info_thd;
 
-  DBUG_ENTER("get_slave_worker");
+  DBUG_ENTER("map_db_to_worker");
 
   DBUG_ASSERT(!rli->last_assigned_worker ||
               rli->last_assigned_worker == last_worker);
   DBUG_ASSERT(is_mts_db_partitioned(rli));
 
-  if (!inited_hash_workers)
+  if (!rli->inited_hash_workers)
     DBUG_RETURN(NULL);
 
   db_worker_hash_entry *entry= NULL;
@@ -875,13 +980,13 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
 
   DBUG_PRINT("info", ("Searching for %s, %zu", dbname, dblength));
 
-  hash_value= my_calc_hash(&mapping_db_to_worker, (uchar*) dbname,
+  hash_value= my_calc_hash(&rli->mapping_db_to_worker, (uchar*) dbname,
                            dblength);
 
-  mysql_mutex_lock(&slave_worker_hash_lock);
+  mysql_mutex_lock(&rli->slave_worker_hash_lock);
 
   entry= (db_worker_hash_entry *)
-    my_hash_search_using_hash_value(&mapping_db_to_worker, hash_value,
+    my_hash_search_using_hash_value(&rli->mapping_db_to_worker, hash_value,
                                     (uchar*) dbname, dblength);
   if (!entry)
   {
@@ -894,7 +999,7 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
     my_bool ret;
     char *db= NULL;
 
-    mysql_mutex_unlock(&slave_worker_hash_lock);
+    mysql_mutex_unlock(&rli->slave_worker_hash_lock);
 
     DBUG_PRINT("info", ("Inserting %s, %zu", dbname, dblength));
     /*
@@ -920,12 +1025,12 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
       Unless \exists the last assigned Worker, get a free worker based
       on a policy described in the function get_least_occupied_worker().
     */
-    mysql_mutex_lock(&slave_worker_hash_lock);
+    mysql_mutex_lock(&rli->slave_worker_hash_lock);
 
     entry->worker= (!last_worker) ?
       get_least_occupied_worker(rli, workers, NULL) : last_worker;
     entry->worker->usage_partition++;
-    if (mapping_db_to_worker.records > mts_partition_hash_soft_max)
+    if (rli->mapping_db_to_worker.records > mts_partition_hash_soft_max)
     {
       /*
         A dynamic array to store the mapping_db_to_worker hash elements
@@ -939,13 +1044,13 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
         Store the element of the hash in a dynamic array after checking whether
         the usage of the hash entry is 0 or not. We later free it from the HASH.
       */
-      for (uint i= 0; i < mapping_db_to_worker.records; i++)
+      for (uint i= 0; i < rli->mapping_db_to_worker.records; i++)
       {
         DBUG_ASSERT(!entry->temporary_tables || !entry->temporary_tables->prev);
         DBUG_ASSERT(!thd->temporary_tables || !thd->temporary_tables->prev);
 
         db_worker_hash_entry *entry=
-          (db_worker_hash_entry*) my_hash_element(&mapping_db_to_worker, i);
+          (db_worker_hash_entry*) my_hash_element(&rli->mapping_db_to_worker, i);
 
         if (entry->usage == 0)
         {
@@ -961,11 +1066,11 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
       for (size_t i=0 ; i < hash_element.size(); i++)
       {
         db_worker_hash_entry *temp_entry= hash_element[i];
-        my_hash_delete(&mapping_db_to_worker, (uchar*) temp_entry);
+        my_hash_delete(&rli->mapping_db_to_worker, (uchar*) temp_entry);
       }
     }
 
-    ret= my_hash_insert(&mapping_db_to_worker, (uchar*) entry);
+    ret= my_hash_insert(&rli->mapping_db_to_worker, (uchar*) entry);
 
     if (ret)
     {
@@ -1008,20 +1113,21 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
       // loop while a user thread is stopping Coordinator gracefully
       do
       {
-        thd->ENTER_COND(&slave_worker_hash_cond,
-                                   &slave_worker_hash_lock,
+        thd->ENTER_COND(&rli->slave_worker_hash_cond,
+                                   &rli->slave_worker_hash_lock,
                                    &stage_slave_waiting_worker_to_release_partition,
                                    &old_stage);
-        mysql_cond_wait(&slave_worker_hash_cond, &slave_worker_hash_lock);
+        mysql_cond_wait(&rli->slave_worker_hash_cond, &rli->slave_worker_hash_lock);
       } while (entry->usage != 0 && !thd->killed);
 
+      mysql_mutex_unlock(&rli->slave_worker_hash_lock);
       thd->EXIT_COND(&old_stage);
       if (thd->killed)
       {
         entry= NULL;
         goto err;
       }
-      mysql_mutex_lock(&slave_worker_hash_lock);
+      mysql_mutex_lock(&rli->slave_worker_hash_lock);
       entry->usage= 1;
       entry->worker->usage_partition++;
     }
@@ -1056,7 +1162,7 @@ Slave_worker *map_db_to_worker(const char *dbname, Relay_log_info *rli,
     }
 #endif
   }
-  mysql_mutex_unlock(&slave_worker_hash_lock);
+  mysql_mutex_unlock(&rli->slave_worker_hash_lock);
 
   DBUG_ASSERT(entry);
 
@@ -1099,10 +1205,11 @@ Slave_worker *get_least_occupied_worker(Relay_log_info *rli,
 void Slave_worker::slave_worker_ends_group(Log_event* ev, int error)
 {
   DBUG_ENTER("Slave_worker::slave_worker_ends_group");
+  Slave_job_group *ptr_g= NULL;
 
   if (!error)
   {
-    Slave_job_group *ptr_g= c_rli->gaq->get_job_group(gaq_index);
+    ptr_g= c_rli->gaq->get_job_group(gaq_index);
 
     DBUG_ASSERT(gaq_index == ev->mts_group_idx);
     /*
@@ -1118,7 +1225,7 @@ void Slave_worker::slave_worker_ends_group(Log_event* ev, int error)
                 ptr_g->group_relay_log_name != NULL);
     DBUG_ASSERT(ptr_g->worker_id == id);
 
-    if (ev->get_type_code() != XID_EVENT)
+    if (ev->get_type_code() != binary_log::XID_EVENT)
     {
       commit_positions(ev, ptr_g, false);
       DBUG_EXECUTE_IF("crash_after_commit_and_update_pos",
@@ -1130,39 +1237,43 @@ void Slave_worker::slave_worker_ends_group(Log_event* ev, int error)
 
     ptr_g->group_master_log_pos= get_group_master_log_pos();
     ptr_g->group_relay_log_pos= group_relay_log_pos;
-
-    ptr_g->done= 1;    // GAQ index is available to C now
-
+    my_atomic_store32(&ptr_g->done, 1);
     last_group_done_index= gaq_index;
+    last_groups_assigned_index= ptr_g->total_seqno;
     reset_gaq_index();
     groups_done++;
 
   }
   else
   {
-    // tagging as exiting so Coordinator won't be able synchronize with it
-    mysql_mutex_lock(&jobs_lock);
-    running_status= ERROR_LEAVING;
-    mysql_mutex_unlock(&jobs_lock);
+    if (running_status != STOP_ACCEPTED)
+    {
+      // tagging as exiting so Coordinator won't be able synchronize with it
+      mysql_mutex_lock(&jobs_lock);
+      running_status= ERROR_LEAVING;
+      mysql_mutex_unlock(&jobs_lock);
 
-    /* Fatal error happens, it notifies the following transaction to rollback */
-    if (get_commit_order_manager())
-      get_commit_order_manager()->report_rollback(this);
+      /* Fatal error happens, it notifies the following transaction to rollback */
+      if (get_commit_order_manager())
+        get_commit_order_manager()->report_rollback(this);
 
-    // Killing Coordinator to indicate eventual consistency error
-    mysql_mutex_lock(&c_rli->info_thd->LOCK_thd_data);
-    c_rli->info_thd->awake(THD::KILL_QUERY);
-    mysql_mutex_unlock(&c_rli->info_thd->LOCK_thd_data);
+      // Killing Coordinator to indicate eventual consistency error
+      mysql_mutex_lock(&c_rli->info_thd->LOCK_thd_data);
+      c_rli->info_thd->awake(THD::KILL_QUERY);
+      mysql_mutex_unlock(&c_rli->info_thd->LOCK_thd_data);
+    }
   }
 
   /*
     Cleanup relating to the last executed group regardless of error.
   */
+  if (current_mts_submode->get_type() == MTS_PARALLEL_TYPE_DB_NAME)
+  {
   for (size_t i= 0; i < curr_group_exec_parts.size(); i++)
   {
     db_worker_hash_entry *entry= curr_group_exec_parts[i];
 
-    mysql_mutex_lock(&slave_worker_hash_lock);
+    mysql_mutex_lock(&c_rli->slave_worker_hash_lock);
 
     DBUG_ASSERT(entry);
 
@@ -1191,13 +1302,13 @@ void Slave_worker::slave_worker_ends_group(Log_event* ev, int error)
         DBUG_PRINT("info",
                    ("Notifying entry %p release by worker %lu", entry, this->id));
 
-        mysql_cond_signal(&slave_worker_hash_cond);
+        mysql_cond_signal(&c_rli->slave_worker_hash_cond);
       }
     }
     else
       DBUG_ASSERT(usage_partition != 0);
 
-    mysql_mutex_unlock(&slave_worker_hash_lock);
+    mysql_mutex_unlock(&c_rli->slave_worker_hash_lock);
   }
 
   curr_group_exec_parts.clear();
@@ -1206,10 +1317,59 @@ void Slave_worker::slave_worker_ends_group(Log_event* ev, int error)
   if (error)
   {
     // Awakening Coordinator that could be waiting for entry release
-    mysql_mutex_lock(&slave_worker_hash_lock);
-    mysql_cond_signal(&slave_worker_hash_cond);
-    mysql_mutex_unlock(&slave_worker_hash_lock);
+    mysql_mutex_lock(&c_rli->slave_worker_hash_lock);
+    mysql_cond_signal(&c_rli->slave_worker_hash_cond);
+    mysql_mutex_unlock(&c_rli->slave_worker_hash_lock);
   }
+  }
+  else // not DB-type scheduler
+  {
+    DBUG_ASSERT(current_mts_submode->get_type() ==
+                MTS_PARALLEL_TYPE_LOGICAL_CLOCK);
+    /*
+      Check if there're any waiter. If there're try incrementing lwm and
+      signal to those who've got sasfied with the waiting condition.
+
+      In a "good" "likely" execution branch the waiter set is expected
+      to be empty. LWM is advanced by Coordinator asynchronously.
+      Also lwm is advanced by a dependent Worker when it inserts its waiting
+      request into the waiting list.
+    */
+    Mts_submode_logical_clock* mts_submode=
+      static_cast<Mts_submode_logical_clock*>(c_rli->current_mts_submode);
+    int64 min_child_waited_logical_ts=
+      my_atomic_load64(&mts_submode->min_waited_timestamp);
+
+    if (error)
+    {
+      mysql_mutex_lock(&c_rli->mts_gaq_LOCK);
+      mts_submode->is_error= true;
+      if (mts_submode->min_waited_timestamp != SEQ_UNINIT)
+        mysql_cond_signal(&c_rli->logical_clock_cond);
+      mysql_mutex_unlock(&c_rli->mts_gaq_LOCK);
+    }
+    else if (min_child_waited_logical_ts != SEQ_UNINIT)
+    {
+      mysql_mutex_lock(&c_rli->mts_gaq_LOCK);
+      longlong curr_lwm= mts_submode->get_lwm_timestamp(c_rli, true);
+      min_child_waited_logical_ts=
+        my_atomic_load64(&mts_submode->min_waited_timestamp);
+      if (min_child_waited_logical_ts != SEQ_UNINIT &&
+          mts_submode->clock_leq(mts_submode->min_waited_timestamp,
+                                 curr_lwm))
+      {
+        /*
+          There's a transaction that depends on the current.
+        */
+        mysql_cond_signal(&c_rli->logical_clock_cond);
+      }
+      mysql_mutex_unlock(&c_rli->mts_gaq_LOCK);
+    }
+#ifndef DBUG_OFF
+    curr_group_seen_sequence_number= false;
+#endif
+  }
+  curr_group_seen_gtid= curr_group_seen_begin= false;
 
   DBUG_VOID_RETURN;
 }
@@ -1329,7 +1489,7 @@ bool Slave_committed_queue::count_done(Relay_log_info* rli)
 
     ptr_g= &m_Q[i];
 
-    if (ptr_g->worker_id != (ulong) -1 && ptr_g->done)
+    if (ptr_g->worker_id != MTS_WORKER_UNDEF && ptr_g->done)
       cnt++;
   }
 
@@ -1389,7 +1549,8 @@ ulong Slave_committed_queue::move_queue_head(Slave_worker_array *ws)
       The current job has not been processed or it was not
       even assigned, this means there is a gap.
     */
-    if (ptr_g->worker_id == MTS_WORKER_UNDEF || !ptr_g->done)
+    if (ptr_g->worker_id == MTS_WORKER_UNDEF ||
+        my_atomic_load32(&ptr_g->done) == 0)
       break; /* gap at i'th */
 
     /* Worker-id domain guard */
@@ -1457,6 +1618,62 @@ ulong Slave_committed_queue::move_queue_head(Slave_worker_array *ws)
 }
 
 /**
+   Finds low-water mark of committed jobs in GAQ.
+   That is an index below which all jobs are marked as done.
+
+   Notice the first available index is returned when the queue
+   does not have any incomplete jobs. That includes cases of
+   the empty and the full of complete jobs queue.
+   A mutex protecting from concurrent LWM change by
+   move_queue_head() (by Coordinator) should be taken by the caller.
+
+   @param arg_g [out]  a double pointer to Slave job descriptor item
+                       last marked with done-as-true boolean.
+   @param start_index  a GAQ index to start/resume searching.
+                       Caller is to make sure the index points into
+                       assigned (occupied) range of circular buffer of GAQ.
+   @return             GAQ index of the last consecutive done job, or the GAQ
+                       size when none is found.
+*/
+ulong Slave_committed_queue::find_lwm(Slave_job_group** arg_g,
+                                      ulong start_index)
+{
+  Slave_job_group *ptr_g= NULL;
+  ulong i, k, cnt;
+
+  DBUG_ASSERT(start_index <= size);
+
+  if (empty())
+    return size;
+
+  /*
+    Loop continuation condition relies on
+    (TODO: assert it)
+    the start_index being in the running range:
+
+       start_index \in [entry, avail - 1].
+
+    It satisfies any queue size including 1.
+    It does not satisfy the empty queue case which is bailed out earlier above.
+  */
+  for (i= start_index, cnt= 0; cnt < len - (start_index + size - entry) % size;
+       i= (i + 1) % size, cnt++)
+  {
+    ptr_g= &m_Q[i];
+    if (my_atomic_load32(&ptr_g->done) == 0)
+    {
+      if (cnt == 0)
+        return size;             // the first node of the queue is not done
+      break;
+    }
+  }
+  ptr_g= &m_Q[k= (i + size - 1) % size];
+  *arg_g= ptr_g;
+
+  return k;
+}
+
+/**
    Method should be executed at slave system stop to
    cleanup dynamically allocated items that remained as unprocessed
    by Coordinator and Workers in their regular execution course.
@@ -1499,16 +1716,7 @@ void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
   const Gtid_specification *gtid_next= &info_thd->variables.gtid_next;
   THD *thd= info_thd;
 
-  if (gtid_next->type == GTID_GROUP)
-  {
-    global_sid_lock->rdlock();
-    gtid_next->to_string(global_sid_map, buff_gtid);
-    global_sid_lock->unlock();
-  }
-  else
-  {
-    buff_gtid[0]= 0;
-  }
+  gtid_next->to_string(global_sid_map, buff_gtid, true);
 
   if (level == ERROR_LEVEL && (!has_temporary_error(thd, err_code) ||
       thd->get_transaction()->cannot_safely_rollback(Transaction_ctx::SESSION)))
@@ -1520,7 +1728,7 @@ void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
             "The most recent failure being: Worker %lu failed executing "
             "transaction '%s' at master log %s, end_log_pos %llu. "
             "See error log and/or "
-            "performance_schema.replication_execute_status_by_worker table for "
+            "performance_schema.replication_applier_status_by_worker table for "
             "more details about this failure or others, if any.",
             id, buff_gtid, log_name, log_pos);
 
@@ -1547,6 +1755,63 @@ void Slave_worker::do_report(loglevel level, int err_code, const char *msg,
   this->va_report(level, err_code, buff_coord, msg, args);
 }
 
+#ifndef DBUG_OFF
+static bool may_have_timestamp(Log_event *ev)
+{
+  bool res= false;
+
+  switch (ev->get_type_code())
+  {
+  case binary_log::QUERY_EVENT:
+    res= true;
+    break;
+
+  case binary_log::GTID_LOG_EVENT:
+    res= true;
+    break;
+
+  default:
+    break;
+  }
+
+  return res;
+}
+
+static int64 get_last_committed(Log_event *ev)
+{
+  int64 res= SEQ_UNINIT;
+
+  switch (ev->get_type_code())
+  {
+  case binary_log::GTID_LOG_EVENT:
+    res= static_cast<Gtid_log_event*>(ev)->last_committed;
+    break;
+
+  default:
+    break;
+  }
+
+  return res;
+}
+
+static int64 get_sequence_number(Log_event *ev)
+{
+  int64 res= SEQ_UNINIT;
+
+  switch (ev->get_type_code())
+  {
+  case binary_log::GTID_LOG_EVENT:
+    res= static_cast<Gtid_log_event*>(ev)->sequence_number;
+    break;
+
+  default:
+    break;
+  }
+
+  return res;
+}
+#endif
+
 /**
   MTS worker main routine.
   The worker thread loops in waiting for an event, executing it and
@@ -1563,16 +1828,51 @@ int Slave_worker::slave_worker_exec_event(Log_event *ev)
 {
   Relay_log_info *rli= c_rli;
   THD *thd= info_thd;
+  int ret= 0;
 
   DBUG_ENTER("slave_worker_exec_event");
 
   thd->server_id = ev->server_id;
   thd->set_time();
   thd->lex->set_current_select(0);
-  if (!ev->when.tv_sec)
-    ev->when.tv_sec= my_time(0);
+  if (!ev->common_header->when.tv_sec)
+    ev->common_header->when.tv_sec= static_cast<long>(my_time(0));
   ev->thd= thd; // todo: assert because up to this point, ev->thd == 0
   ev->worker= this;
+
+#ifndef DBUG_OFF
+  if (!is_mts_db_partitioned(rli) && may_have_timestamp(ev) &&
+      !curr_group_seen_sequence_number)
+  {
+    curr_group_seen_sequence_number= true;
+
+    longlong lwm_estimate= static_cast<Mts_submode_logical_clock*>
+      (rli->current_mts_submode)->estimate_lwm_timestamp();
+    int64 last_committed= get_last_committed(ev);
+    int64 sequence_number= get_sequence_number(ev);
+    /*
+      The commit timestamp waiting condition:
+
+        lwm_estimate < last_committed  <=>  last_committed  \not <= lwm_estimate
+
+      must have been satisfied by Coordinator.
+      The first scheduled transaction does not have to wait for anybody.
+    */
+    DBUG_ASSERT(rli->gaq->entry == ev->mts_group_idx ||
+                Mts_submode_logical_clock::clock_leq(last_committed,
+                                                     lwm_estimate));
+    DBUG_ASSERT(lwm_estimate != SEQ_UNINIT || rli->gaq->entry == ev->mts_group_idx);
+    /*
+      The current transaction's timestamp can't be less that lwm.
+    */
+    DBUG_ASSERT(sequence_number == SEQ_UNINIT ||
+                !Mts_submode_logical_clock::
+                clock_leq(sequence_number,
+                          static_cast<Mts_submode_logical_clock*>
+                          (rli->current_mts_submode)->
+                          estimate_lwm_timestamp()));
+  }
+#endif
 
   // Address partioning only in database mode
   if (!is_gtid_event(ev) && is_mts_db_partitioned(rli))
@@ -1610,9 +1910,10 @@ int Slave_worker::slave_worker_exec_event(Log_event *ev)
   }
 
   set_future_event_relay_log_pos(ev->future_event_relay_log_pos);
-  set_master_log_pos(ev->log_pos);
+  set_master_log_pos(static_cast<ulong>(ev->common_header->log_pos));
   set_gaq_index(ev->mts_group_idx);
-  DBUG_RETURN(ev->do_apply_event_worker(this));
+  ret= ev->do_apply_event_worker(this);
+  DBUG_RETURN(ret);
 }
 
 /**
@@ -1643,6 +1944,7 @@ bool Slave_worker::worker_sleep(ulong seconds)
       break;
   }
 
+  mysql_mutex_unlock(lock);
   info_thd->EXIT_COND(NULL);
   return ret;
 }
@@ -1678,7 +1980,13 @@ bool Slave_worker::retry_transaction(uint start_relay_number,
 
   do
   {
-    if (!has_temporary_error(thd, 0, &silent) ||
+    /* Simulate a lock deadlock error */
+    uint error= 0;
+
+    if (found_order_commit_deadlock())
+      error= ER_LOCK_DEADLOCK;
+
+    if (!has_temporary_error(thd, error, &silent) ||
         thd->get_transaction()->cannot_safely_rollback(Transaction_ctx::SESSION))
       DBUG_RETURN(true);
 
@@ -1700,6 +2008,7 @@ bool Slave_worker::retry_transaction(uint start_relay_number,
     mysql_mutex_unlock(&c_rli->data_lock);
 
     cleanup_context(thd, 1);
+    reset_order_commit_deadlock();
     worker_sleep(min<ulong>(trans_retries, MAX_SLAVE_RETRY_PAUSE));
 
   } while (read_and_apply_events(start_relay_number, start_relay_pos,
@@ -1767,7 +2076,8 @@ bool Slave_worker::read_and_apply_events(uint start_relay_number,
     if (ev != NULL)
     {
       /* It is a event belongs to the transaction */
-      if (!ev->is_mts_sequential_exec())
+      if (!ev->is_mts_sequential_exec(rli->current_mts_submode->get_type() ==
+                                      MTS_PARALLEL_TYPE_DB_NAME))
       {
         int ret= 0;
 
@@ -1839,22 +2149,23 @@ end:
 /*
   Find database entry from map_db_to_worker hash table.
  */
-static db_worker_hash_entry *find_entry_from_db_map(const char *dbname)
+static db_worker_hash_entry *find_entry_from_db_map(const char *dbname,
+                                                    Relay_log_info *rli)
 {
   db_worker_hash_entry *entry= NULL;
   my_hash_value_type hash_value;
   uchar dblength= (uint) strlen(dbname);
 
-  hash_value= my_calc_hash(&mapping_db_to_worker, (const uchar*) dbname,
+  hash_value= my_calc_hash(&rli->mapping_db_to_worker, (const uchar*) dbname,
                            dblength);
 
-  mysql_mutex_lock(&slave_worker_hash_lock);
+  mysql_mutex_lock(&rli->slave_worker_hash_lock);
 
   entry= (db_worker_hash_entry *)
-    my_hash_search_using_hash_value(&mapping_db_to_worker, hash_value,
+    my_hash_search_using_hash_value(&rli->mapping_db_to_worker, hash_value,
                                     (uchar*) dbname, dblength);
 
-  mysql_mutex_unlock(&slave_worker_hash_lock);
+  mysql_mutex_unlock(&rli->slave_worker_hash_lock);
   return entry;
 }
 
@@ -1870,10 +2181,11 @@ void Slave_worker::assign_partition_db(Log_event *ev)
   ev->get_mts_dbs(&mts_dbs);
 
   if (mts_dbs.num == OVER_MAX_DBS_IN_EVENT_MTS)
-    ev->mts_assigned_partitions[0]= find_entry_from_db_map("");
+    ev->mts_assigned_partitions[0]= find_entry_from_db_map("", c_rli);
   else
     for (i= 0; i < mts_dbs.num; i++)
-      ev->mts_assigned_partitions[i]= find_entry_from_db_map(mts_dbs.name[i]);
+      ev->mts_assigned_partitions[i]= find_entry_from_db_map(mts_dbs.name[i],
+                                                             c_rli);
 }
 
 // returns the next available! (TODO: incompatible to circurla_buff method!!!)
@@ -1908,7 +2220,7 @@ static int en_queue(Slave_jobs_queue *jobs, Slave_job_item *item)
 /**
    return the value of @c data member of the head of the queue.
 */
-static void * head_queue(Slave_jobs_queue *jobs, Slave_job_item *ret)
+void * head_queue(Slave_jobs_queue *jobs, Slave_job_item *ret)
 {
   if (jobs->entry == jobs->size)
   {
@@ -1970,7 +2282,7 @@ bool append_item_to_jobs(slave_job_item *job_item,
 {
   THD *thd= rli->info_thd;
   int ret= -1;
-  size_t ev_size= ((Log_event*) (job_item->data))->data_written;
+  size_t ev_size= job_item->data->common_header->data_written;
   ulonglong new_pend_size;
   PSI_stage_info old_stage;
 
@@ -1982,7 +2294,7 @@ bool append_item_to_jobs(slave_job_item *job_item,
     char llbuff[22];
     llstr(rli->get_event_relay_log_pos(), llbuff);
     my_error(ER_MTS_EVENT_BIGGER_PENDING_JOBS_SIZE_MAX, MYF(0),
-             ((Log_event*) (job_item->data))->get_type_str(),
+             job_item->data->get_type_str(),
              rli->get_event_relay_log_name(), llbuff, ev_size,
              rli->mts_pending_jobs_size_max);
     /* Waiting in slave_stop_workers() avoidance */
@@ -2000,6 +2312,7 @@ bool append_item_to_jobs(slave_job_item *job_item,
     thd->ENTER_COND(&rli->pending_jobs_cond, &rli->pending_jobs_lock,
                     &stage_slave_waiting_worker_to_free_events, &old_stage);
     mysql_cond_wait(&rli->pending_jobs_cond, &rli->pending_jobs_lock);
+    mysql_mutex_unlock(&rli->pending_jobs_lock);
     thd->EXIT_COND(&old_stage);
     if (thd->killed)
       return true;
@@ -2060,6 +2373,7 @@ bool append_item_to_jobs(slave_job_item *job_item,
     worker->jobs.waited_overfill++;
     rli->mts_wq_overfill_cnt++;
     mysql_cond_wait(&worker->jobs_cond, &worker->jobs_lock);
+    mysql_mutex_unlock(&worker->jobs_lock);
     thd->EXIT_COND(&old_stage);
 
     mysql_mutex_lock(&worker->jobs_lock);
@@ -2096,7 +2410,7 @@ bool append_item_to_jobs(slave_job_item *job_item,
 static void remove_item_from_jobs(slave_job_item *job_item,
                                   Slave_worker *worker, Relay_log_info *rli)
 {
-  Log_event *ev= static_cast<Log_event *>(job_item->data);
+  Log_event *ev= job_item->data;
 
   mysql_mutex_lock(&worker->jobs_lock);
   de_queue(&worker->jobs, job_item);
@@ -2116,7 +2430,7 @@ static void remove_item_from_jobs(slave_job_item *job_item,
   mysql_mutex_lock(&rli->pending_jobs_lock);
 
   rli->pending_jobs--;
-  rli->mts_pending_jobs_size-= ev->data_written;
+  rli->mts_pending_jobs_size-= ev->common_header->data_written;
   DBUG_ASSERT(rli->mts_pending_jobs_size < rli->mts_pending_jobs_size_max);
 
   /*
@@ -2194,7 +2508,8 @@ static void remove_item_from_jobs(slave_job_item *job_item,
    @return NULL failure or
            a-pointer to an item.
 */
-struct slave_job_item* pop_jobs_item(Slave_worker *worker, Slave_job_item *job_item)
+struct slave_job_item* pop_jobs_item(Slave_worker *worker,
+                                     Slave_job_item *job_item)
 {
   THD *thd= worker->info_thd;
 
@@ -2202,11 +2517,13 @@ struct slave_job_item* pop_jobs_item(Slave_worker *worker, Slave_job_item *job_i
 
   job_item->data= NULL;
   while (!job_item->data && !thd->killed &&
-         worker->running_status == Slave_worker::RUNNING)
+         (worker->running_status == Slave_worker::RUNNING ||
+          worker->running_status == Slave_worker::STOP))
   {
     PSI_stage_info old_stage;
 
-    head_queue(&worker->jobs, job_item);
+    if (set_max_updated_index_on_stop(worker, job_item))
+      break;
     if (job_item->data == NULL)
     {
       worker->wq_empty_waits++;
@@ -2214,6 +2531,7 @@ struct slave_job_item* pop_jobs_item(Slave_worker *worker, Slave_job_item *job_i
                                &stage_slave_waiting_event_from_coordinator,
                                &old_stage);
       mysql_cond_wait(&worker->jobs_cond, &worker->jobs_lock);
+      mysql_mutex_unlock(&worker->jobs_lock);
       thd->EXIT_COND(&old_stage);
       mysql_mutex_lock(&worker->jobs_lock);
     }
@@ -2244,6 +2562,7 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli)
   struct slave_job_item item= {NULL, 0, 0};
   struct slave_job_item *job_item= &item;
   THD *thd= worker->info_thd;
+  bool seen_gtid= false;
   bool seen_begin= false;
   int error= 0;
   Log_event *ev= NULL;
@@ -2261,33 +2580,59 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli)
 
   while (1)
   {
-    if (unlikely(thd->killed || worker->running_status != Slave_worker::RUNNING))
+    if (unlikely(thd->killed || worker->running_status == Slave_worker::STOP_ACCEPTED))
     {
+      DBUG_ASSERT(worker->running_status != Slave_worker::ERROR_LEAVING);
       // de-queueing and decrement counters is in the caller's exit branch
       error= -1;
       goto err;
     }
 
-    ev= static_cast<Log_event*>(job_item->data);
+    ev= job_item->data;
     DBUG_ASSERT(ev != NULL);
     DBUG_PRINT("info", ("W_%lu <- job item: %p data: %p thd: %p",
                         worker->id, job_item, ev, thd));
-
+    if (is_gtid_event(ev))
+      seen_gtid= true;
     if (!seen_begin && ev->starts_group())
     {
       seen_begin= true; // The current group is started with B-event
       worker->end_group_sets_max_dbs= true;
     }
+    set_timespec_nsec(&worker->ts_exec[0], 0); // pre-exec
+    worker->stats_read_time += diff_timespec(&worker->ts_exec[0],
+                                             &worker->ts_exec[1]);
 
     error= worker->slave_worker_exec_event(ev);
 
-    if (error &&
-        worker->retry_transaction(start_relay_number, start_relay_pos,
-                                  job_item->relay_number, job_item->relay_pos))
-      goto err;
+    set_timespec_nsec(&worker->ts_exec[1], 0); // pre-exec
+    worker->stats_exec_time += diff_timespec(&worker->ts_exec[1],
+                                             &worker->ts_exec[0]);
+    if (error || worker->found_order_commit_deadlock())
+    {
+      error= worker->retry_transaction(start_relay_number, start_relay_pos,
+                                       job_item->relay_number,
+                                       job_item->relay_pos);
+      if (error)
+        goto err;
+    }
+    /*
+      p-event or any other event of B-free (malformed) group can
+      "commit" with logical clock scheduler. In that case worker id
+      points to the only active "exclusive" Worker that processes such
+      malformed group events one by one.
+      WL#7592 refines the original assert disjunction formula
+      with the final disjunct.
+    */
+    DBUG_ASSERT(seen_begin || is_gtid_event(ev) ||
+                ev->get_type_code() == binary_log::QUERY_EVENT ||
+                is_mts_db_partitioned(rli) || worker->id == 0 || seen_gtid);
 
     if (ev->ends_group() ||
-        (!seen_begin && ev->get_type_code() == QUERY_EVENT))
+        (!seen_begin && !is_gtid_event(ev) &&
+         (ev->get_type_code() == binary_log::QUERY_EVENT ||
+          /* break through by LC only in GTID off */
+          (!seen_gtid && !is_mts_db_partitioned(rli)))))
       break;
 
     remove_item_from_jobs(job_item, worker, rli);
@@ -2300,7 +2645,8 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli)
 
   DBUG_PRINT("info", (" commits GAQ index %lu, last committed  %lu",
                       ev->mts_group_idx, worker->last_group_done_index));
-  worker->slave_worker_ends_group(ev, error); /* last done sets post exec */
+  /* The group is applied successfully, so error should be 0 */
+  worker->slave_worker_ends_group(ev, 0);
 
 #ifndef DBUG_OFF
   DBUG_PRINT("mts", ("Check_slave_debug_group worker %lu mts_checkpoint_group"
@@ -2323,11 +2669,17 @@ int slave_worker_exec_job_group(Slave_worker *worker, Relay_log_info *rli)
 err:
   if (error)
   {
-    sql_print_information("Worker %lu is exiting: killed %i, error %i, "
-                          "running_status %d",
-                          worker->id, thd->killed, thd->is_error(),
-                          worker->running_status);
+    DBUG_PRINT("info", ("Worker %lu is exiting: killed %i, error %i, "
+                        "running_status %d",
+                        worker->id, thd->killed, thd->is_error(),
+                        worker->running_status));
     worker->slave_worker_ends_group(ev, error); /* last done sets post exec */
   }
   DBUG_RETURN(error);
 }
+
+const char* Slave_worker::get_for_channel_str(bool upper_case) const
+{
+  return c_rli->get_for_channel_str(upper_case);
+}
+

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,9 +14,11 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include <my_dir.h> /* for stat */
 #include <m_string.h>
 #include "mysys_err.h"
+#include "my_thread_local.h"
 
 #ifndef _WIN32
 #include <utime.h>
@@ -107,7 +109,7 @@ int my_copy(const char *from, const char *to, myf MyFlags)
       if (MyFlags & (MY_FAE+MY_WME))
       {
         char  errbuf[MYSYS_STRERROR_SIZE];
-        my_error(EE_CHANGE_PERMISSIONS, MYF(ME_BELL+ME_WAITTANG), from,
+        my_error(EE_CHANGE_PERMISSIONS, MYF(0), from,
                  errno, my_strerror(errbuf, sizeof(errbuf), errno));
       }
       goto err;
@@ -120,7 +122,7 @@ int my_copy(const char *from, const char *to, myf MyFlags)
       if (MyFlags & (MY_FAE+MY_WME))
       {
         char  errbuf[MYSYS_STRERROR_SIZE];
-        my_error(EE_CHANGE_OWNERSHIP, MYF(ME_BELL+ME_WAITTANG), from,
+        my_error(EE_CHANGE_OWNERSHIP, MYF(0), from,
                  errno, my_strerror(errbuf, sizeof(errbuf), errno));
       }
       goto err;

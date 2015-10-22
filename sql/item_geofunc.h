@@ -1,7 +1,7 @@
 #ifndef ITEM_GEOFUNC_INCLUDED
 #define ITEM_GEOFUNC_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,14 +18,17 @@
 
 
 /* This file defines all spatial functions */
-
-#include "gcalc_slicescan.h"
-#include <vector>
-#include <list>
-#include <set>
 #include "inplace_vector.h"
+#include "item_cmpfunc.h"      // Item_bool_func2
 #include "prealloced_array.h"
+#include "spatial.h"           // gis_wkb_raw_free
+#include "item_strfunc.h"      // Item_str_func
+#include "item_json_func.h"    // Item_json_func
+
+#include <vector>
+#include <set>
 #include <rapidjson/document.h>
+
 
 /**
    We have to hold result buffers in functions that return a GEOMETRY string,
@@ -50,6 +53,14 @@ public:
   void add_buffer(void *buf)
   {
     bg_results.insert_unique(buf);
+  }
+
+
+  void forget_buffer(void *buf)
+  {
+    if (bg_result_buf == buf)
+      bg_result_buf= NULL;
+    bg_results.erase_unique(buf);
   }
 
 
@@ -102,21 +113,44 @@ class Item_func_spatial_operation;
  */
 class BG_geometry_collection
 {
+  bool comp_no_overlapped;
+  Geometry::srid_t m_srid;
   size_t m_num_isolated;
-  std::list<Geometry*> m_geos;
+  std::vector<Geometry*> m_geos;
   Inplace_vector<Geometry_buffer> m_geobufs;
   Inplace_vector<String> m_geosdata;
 public:
-  typedef std::list<Geometry *> Geometry_list;
+  typedef std::vector<Geometry *> Geometry_list;
 
   BG_geometry_collection()
-    :m_num_isolated(0), m_geobufs(key_memory_Geometry_objects_data),
+    :comp_no_overlapped(false), m_srid(0), m_num_isolated(0),
+    m_geobufs(key_memory_Geometry_objects_data),
     m_geosdata(key_memory_Geometry_objects_data)
   {}
 
-  bool fill(const Geometry *geo)
+  bool is_comp_no_overlapped() const
   {
-    return store_geometry(geo);
+    return comp_no_overlapped;
+  }
+
+  void set_comp_no_overlapped(bool b)
+  {
+    comp_no_overlapped= b;
+  }
+
+  Geometry::srid_t get_srid() const
+  {
+    return m_srid;
+  }
+
+  void set_srid(Geometry::srid_t srid)
+  {
+    m_srid= srid;
+  }
+
+  bool fill(const Geometry *geo, bool break_multi_geom= false)
+  {
+    return store_geometry(geo, break_multi_geom);
   }
 
   const Geometry_list &get_geometries() const
@@ -141,13 +175,12 @@ public:
 
   Gis_geometry_collection *as_geometry_collection(String *geodata) const;
   template<typename Coord_type, typename Coordsys>
-  void merge_components(Item_func_spatial_operation *ifso,
-                        bool *pdone, my_bool *pnull_value);
+  void merge_components(my_bool *pnull_value);
 private:
   template<typename Coord_type, typename Coordsys>
   bool merge_one_run(Item_func_spatial_operation *ifso,
-                     bool *pdone, my_bool *pnull_value);
-  bool store_geometry(const Geometry *geo);
+                     my_bool *pnull_value);
+  bool store_geometry(const Geometry *geo, bool break_multi_geom);
   Geometry *store(const Geometry *geo);
 };
 
@@ -297,9 +330,10 @@ public:
                           Geometry::wkbType type, bool *rollback,
                           String *buffer, bool is_parent_featurecollection,
                           Geometry **geometry);
-  bool check_argument_valid_integer(Item *argument);
+  static bool check_argument_valid_integer(Item *argument);
   bool parse_crs_object(const rapidjson::Value *crs_object);
-  bool is_member_valid(const rapidjson::Value::Member *member,
+  bool is_member_valid(const rapidjson::Value *parent,
+                       rapidjson::Value::ConstMemberIterator member,
                        const char *member_name, rapidjson::Type expected_type,
                        bool allow_null, bool *was_null);
   rapidjson::Value::ConstMemberIterator
@@ -345,6 +379,70 @@ private:
 };
 
 
+/// Max width of long CRS URN supported + max width of SRID + '\0'.
+static const int MAX_CRS_WIDTH= (22 + MAX_INT_WIDTH + 1);
+
+/**
+  This class handles the following function:
+
+  <json> = ST_ASGEOJSON(<geometry>[, <maxdecimaldigits>[, <options>]])
+
+  It converts a GEOMETRY into a valid GeoJSON string. If maxdecimaldigits is
+  specified, the coordinates written are rounded to the number of decimals
+  specified (e.g with decimaldigits = 3: 10.12399 => 10.124).
+
+  Options is a bitmask with the following flags:
+  0  No options (default values).
+  1  Add a bounding box to the output.
+  2  Add a short CRS URN to the output. The default format is a
+     short format ("EPSG:<srid>").
+  4  Add a long format CRS URN ("urn:ogc:def:crs:EPSG::<srid>"). This
+     implies 2. This means that, e.g., bitmask 5 and 7 mean the
+     same: add a bounding box and a long format CRS URN.
+*/
+class Item_func_as_geojson :public Item_json_func
+{
+private:
+  /// Maximum number of decimal digits in printed coordinates.
+  int m_max_decimal_digits;
+  /// If true, the output GeoJSON has a bounding box for each GEOMETRY.
+  bool m_add_bounding_box;
+  /**
+    If true, the output GeoJSON has a CRS object in the short
+    form (e.g "EPSG:4326").
+  */
+  bool m_add_short_crs_urn;
+  /**
+    If true, the output GeoJSON has a CRS object in the long
+    form (e.g "urn:ogc:def:crs:EPSG::4326").
+  */
+  bool m_add_long_crs_urn;
+  /// The SRID found in the input GEOMETRY.
+  uint32 m_geometry_srid;
+public:
+  Item_func_as_geojson(THD *thd, const POS &pos, Item *geometry)
+    :Item_json_func(thd, pos, geometry), m_add_bounding_box(false),
+    m_add_short_crs_urn(false), m_add_long_crs_urn(false)
+  {}
+  Item_func_as_geojson(THD *thd, const POS &pos, Item *geometry, Item *maxdecimaldigits)
+    :Item_json_func(thd, pos, geometry, maxdecimaldigits),
+    m_add_bounding_box(false), m_add_short_crs_urn(false),
+    m_add_long_crs_urn(false)
+  {}
+  Item_func_as_geojson(THD *thd, const POS &pos, Item *geometry, Item *maxdecimaldigits,
+                       Item *options)
+    :Item_json_func(thd, pos, geometry, maxdecimaldigits, options),
+    m_add_bounding_box(false), m_add_short_crs_urn(false),
+    m_add_long_crs_urn(false)
+  {}
+  bool fix_fields(THD *thd, Item **ref);
+  bool val_json(Json_wrapper *wr);
+  const char *func_name() const { return "st_asgeojson"; }
+  bool parse_options_argument();
+  bool parse_maxdecimaldigits_argument();
+};
+
+
 class Item_func_centroid: public Item_geometry_func
 {
   BG_result_buf_mgr bg_resbuf_mgr;
@@ -378,6 +476,40 @@ public:
   const char *func_name() const { return "st_envelope"; }
   String *val_str(String *);
   Field::geometry_type get_geometry_type() const;
+};
+
+class Item_func_make_envelope: public Item_geometry_func
+{
+public:
+  Item_func_make_envelope(const POS &pos, Item *a, Item *b)
+    : Item_geometry_func(pos, a, b) {}
+  const char *func_name() const { return "st_makeenvelope"; }
+  String *val_str(String *);
+  Field::geometry_type get_geometry_type() const;
+};
+
+class Item_func_validate: public Item_geometry_func
+{
+  String arg_val;
+public:
+  Item_func_validate(const POS &pos, Item *a): Item_geometry_func(pos, a) {}
+  const char *func_name() const { return "st_validate"; }
+  String *val_str(String *);
+};
+
+class Item_func_simplify: public Item_geometry_func
+{
+  BG_result_buf_mgr bg_resbuf_mgr;
+  String arg_val;
+  template <typename Coordsys>
+  int simplify_basic(Geometry *geom, double max_dist, String *str,
+                     Gis_geometry_collection *gc= NULL,
+                     String *gcbuf= NULL);
+public:
+  Item_func_simplify(const POS &pos, Item *a, Item *b)
+    : Item_geometry_func(pos, a, b) {}
+  const char *func_name() const { return "st_simplify"; }
+  String *val_str(String *);
 };
 
 class Item_func_point: public Item_geometry_func
@@ -424,7 +556,7 @@ public:
   const char *func_name() const { return "st_pointfromgeohash"; }
   String *val_str(String *);
   bool fix_fields(THD *thd, Item **ref);
-  Field::geometry_type get_geometry_type() const 
+  Field::geometry_type get_geometry_type() const
   {
     return Field::GEOM_POINT;
   };
@@ -559,9 +691,6 @@ public:
 class Item_func_spatial_rel: public Item_bool_func2
 {
   enum Functype spatial_rel;
-  Gcalc_heap collector;
-  Gcalc_scan_iterator scan_it;
-  Gcalc_function func;
   String tmp_value1,tmp_value2;
 public:
   Item_func_spatial_rel(const POS &pos, Item *a,Item *b, enum Functype sp_rel);
@@ -594,7 +723,7 @@ public:
   bool is_null() { (void) val_int(); return null_value; }
 
   template<typename CoordinateElementType, typename CoordinateSystemType>
-  static int bg_geo_relation_check(Geometry *g1, Geometry *g2, bool *pisdone,
+  static int bg_geo_relation_check(Geometry *g1, Geometry *g2,
                                    Functype relchk_type, my_bool *);
 
 protected:
@@ -604,50 +733,50 @@ protected:
 
   template<typename Geotypes>
   static int within_check(Geometry *g1, Geometry *g2,
-                          bool *pbgdone, my_bool *pnull_value);
+                          my_bool *pnull_value);
   template<typename Geotypes>
   static int equals_check(Geometry *g1, Geometry *g2,
-                          bool *pbgdone, my_bool *pnull_value);
+                          my_bool *pnull_value);
   template<typename Geotypes>
   static int disjoint_check(Geometry *g1, Geometry *g2,
-                            bool *pbgdone, my_bool *pnull_value);
+                            my_bool *pnull_value);
   template<typename Geotypes>
   static int intersects_check(Geometry *g1, Geometry *g2,
-                              bool *pbgdone, my_bool *pnull_value);
+                              my_bool *pnull_value);
   template<typename Geotypes>
   static int overlaps_check(Geometry *g1, Geometry *g2,
-                            bool *pbgdone, my_bool *pnull_value);
+                            my_bool *pnull_value);
   template<typename Geotypes>
   static int touches_check(Geometry *g1, Geometry *g2,
-                           bool *pbgdone, my_bool *pnull_value);
+                           my_bool *pnull_value);
   template<typename Geotypes>
   static int crosses_check(Geometry *g1, Geometry *g2,
-                           bool *pbgdone, my_bool *pnull_value);
+                           my_bool *pnull_value);
 
   template<typename Coord_type, typename Coordsys>
-  int geocol_relation_check(Geometry *g1, Geometry *g2, bool *pbgdone);
+  int multipoint_within_geometry_collection(Gis_multi_point *mpts,
+                                            const typename
+                                            BG_geometry_collection::
+                                            Geometry_list *gv2,
+                                            const void *prtree);
+
+  template<typename Coord_type, typename Coordsys>
+  int geocol_relation_check(Geometry *g1, Geometry *g2);
   template<typename Coord_type, typename Coordsys>
   int geocol_relcheck_intersect_disjoint(const typename BG_geometry_collection::
                                          Geometry_list *gv1,
                                          const typename BG_geometry_collection::
-                                         Geometry_list *gv2,
-                                         bool *pbgdone);
+                                         Geometry_list *gv2);
   template<typename Coord_type, typename Coordsys>
   int geocol_relcheck_within(const typename BG_geometry_collection::
                              Geometry_list *gv1,
                              const typename BG_geometry_collection::
-                             Geometry_list *gv2,
-                             bool *pbgdone);
+                             Geometry_list *gv2);
   template<typename Coord_type, typename Coordsys>
   int geocol_equals_check(const typename BG_geometry_collection::
                           Geometry_list *gv1,
                           const typename BG_geometry_collection::
-                          Geometry_list *gv2,
-                          bool *pbgdone);
-
-  int func_touches();
-  int func_equals();
-
+                          Geometry_list *gv2);
 };
 
 
@@ -667,54 +796,63 @@ protected:
   friend class BG_geometry_collection;
 
   template<typename Coord_type, typename Coordsys>
-  Geometry *bg_geo_set_op(Geometry *g1, Geometry *g2, String *result, bool *);
+  Geometry *bg_geo_set_op(Geometry *g1, Geometry *g2, String *result);
 
   template<typename Coord_type, typename Coordsys>
   Geometry *combine_sub_results(Geometry *g1, Geometry *g2, String *result);
+  Geometry *simplify_multilinestring(Gis_multi_line_string *mls,
+                                     String *result);
 
-  Geometry *empty_result(String *str, uint32 srid);
   template<typename Coord_type, typename Coordsys>
   Geometry *geometry_collection_set_operation(Geometry *g1, Geometry *g2,
-                                              String *result, bool *);
+                                              String *result);
 
-  Gcalc_function::op_type spatial_op;
-  Gcalc_heap collector;
-  Gcalc_function func;
+  Geometry *empty_result(String *str, uint32 srid);
 
-  Gcalc_result_receiver res_receiver;
-  Gcalc_operation_reducer operation;
   String tmp_value1,tmp_value2;
   BG_result_buf_mgr bg_resbuf_mgr;
 
   bool assign_result(Geometry *geo, String *result);
 
   template <typename Geotypes>
-  Geometry *intersection_operation(Geometry *g1, Geometry *g2,
-                                   String *result, bool *opdone);
+  Geometry *intersection_operation(Geometry *g1, Geometry *g2, String *result);
   template <typename Geotypes>
-  Geometry *union_operation(Geometry *g1, Geometry *g2,
-                            String *result, bool *opdone);
+  Geometry *union_operation(Geometry *g1, Geometry *g2, String *result);
   template <typename Geotypes>
-  Geometry *difference_operation(Geometry *g1, Geometry *g2,
-                                 String *result, bool *opdone);
+  Geometry *difference_operation(Geometry *g1, Geometry *g2, String *result);
   template <typename Geotypes>
-  Geometry *symdifference_operation(Geometry *g1, Geometry *g2,
-                                    String *result, bool *opdone);
+  Geometry *symdifference_operation(Geometry *g1, Geometry *g2, String *result);
   template<typename Coord_type, typename Coordsys>
-  Geometry *geocol_symdifference(Geometry *g1, Geometry *g2,
-                                 String *result, bool *opdone);
+  Geometry *geocol_symdifference(const BG_geometry_collection &bggc1,
+                                 const BG_geometry_collection &bggc2,
+                                 String *result);
   template<typename Coord_type, typename Coordsys>
-  Geometry *geocol_difference(Geometry *g1, Geometry *g2,
-                              String *result, bool *opdone);
+  Geometry *geocol_difference(const BG_geometry_collection &bggc1,
+                              const BG_geometry_collection &bggc2,
+                              String *result);
   template<typename Coord_type, typename Coordsys>
-  Geometry *geocol_intersection(Geometry *g1, Geometry *g2,
-                                String *result, bool *opdone);
+  Geometry *geocol_intersection(const BG_geometry_collection &bggc1,
+                                const BG_geometry_collection &bggc2,
+                                String *result);
   template<typename Coord_type, typename Coordsys>
-  Geometry *geocol_union(Geometry *g1, Geometry *g2,
-                         String *result, bool *opdone);
+  Geometry *geocol_union(const BG_geometry_collection &bggc1,
+                         const BG_geometry_collection &bggc2,
+                         String *result);
 public:
+  enum op_type
+  {
+    op_shape= 0,
+    op_not= 0x80000000,
+    op_union= 0x10000000,
+    op_intersection= 0x20000000,
+    op_symdifference= 0x30000000,
+    op_difference= 0x40000000,
+    op_backdifference= 0x50000000,
+    op_any= 0x70000000
+  };
+
   Item_func_spatial_operation(const POS &pos, Item *a, Item *b,
-                              Gcalc_function::op_type sp_op) :
+                              Item_func_spatial_operation::op_type sp_op) :
     Item_geometry_func(pos, a, b), spatial_op(sp_op)
   {
   }
@@ -725,64 +863,92 @@ public:
   {
     Item_func::print(str, query_type);
   }
+private:
+  op_type spatial_op;
 };
 
 
 class Item_func_buffer: public Item_geometry_func
 {
-protected:
-  class Transporter : public Gcalc_operation_transporter
-  {
-    int m_npoints;
-    double m_d;
-    Gcalc_function::op_type m_buffer_op;
-    double x1,y1,x2,y2;
-    double x00,y00,x01,y01;
-    int add_edge_buffer(Gcalc_shape_status *st,
-                        double x3, double y3, bool round_p1, bool round_p2);
-    int add_last_edge_buffer(Gcalc_shape_status *st);
-    int add_point_buffer(Gcalc_shape_status *st, double x, double y);
-    int complete(Gcalc_shape_status *st);
-  public:
-    Transporter(Gcalc_function *fn, Gcalc_heap *heap, double d) :
-      Gcalc_operation_transporter(fn, heap), m_npoints(0), m_d(d)
-    {
-      m_buffer_op= d > 0.0 ? Gcalc_function::op_union :
-                             Gcalc_function::op_difference;
-    }
-    int single_point(Gcalc_shape_status *st, double x, double y);
-    int start_line(Gcalc_shape_status *st);
-    int complete_line(Gcalc_shape_status *st);
-    int start_poly(Gcalc_shape_status *st);
-    int complete_poly(Gcalc_shape_status *st);
-    int start_ring(Gcalc_shape_status *st);
-    int complete_ring(Gcalc_shape_status *st);
-    int add_point(Gcalc_shape_status *st, double x, double y);
-    int start_collection(Gcalc_shape_status *st, int nshapes);
-    int complete_collection(Gcalc_shape_status *st);
-    int collection_add_item(Gcalc_shape_status *st_collection,
-                            Gcalc_shape_status *st_item);
-
-    bool skip_point() const
-    { return m_buffer_op == Gcalc_function::op_difference; }
-    bool skip_line_string() const
-    { return m_buffer_op == Gcalc_function::op_difference; }
-    bool skip_poly() const
-    { return false; }
-  };
-  Gcalc_heap collector;
-  Gcalc_function func;
-
-  Gcalc_result_receiver res_receiver;
-  Gcalc_operation_reducer operation;
-  String tmp_value;
-
 public:
-  Item_func_buffer(const POS &pos, Item *obj, Item *distance):
-    Item_geometry_func(pos, obj, distance)
-  {}
+  /*
+    There are five types of buffer strategies, this is an enumeration of them.
+   */
+  enum enum_buffer_strategy_types
+  {
+    invalid_strategy_type= 0,
+    end_strategy,
+    join_strategy,
+    point_strategy,
+    // The two below are not parameterized.
+    distance_strategy,
+    side_strategy
+  };
+
+  /*
+    For each type of strategy listed above, there are several options/values
+    for it, this is an enumeration of all such options/values for all types of
+    strategies.
+   */
+  enum enum_buffer_strategies
+  {
+    invalid_strategy= 0,
+    end_round,
+    end_flat,
+    join_round,
+    join_miter,
+    point_circle,
+    point_square,
+    max_strategy= point_square
+
+    // Distance and side strategies are fixed, so no need to implement
+    // parameterization for them.
+  };
+
+  /*
+    A piece of strategy setting. User can specify 0 to 3 different strategy
+    settings in any order to ST_Buffer(), which must be of different
+    strategy types. Default strategies are used if not explicitly specified.
+   */
+  struct Strategy_setting
+  {
+    enum_buffer_strategies strategy;
+    // This field is only effective for end_round, join_round, join_mit,
+    // and point_circle.
+    double value;
+  };
+
+private:
+  BG_result_buf_mgr bg_resbuf_mgr;
+  int num_strats;
+  String *strategies[side_strategy + 1];
+  /*
+    end_xxx stored in settings[end_strategy];
+    join_xxx stored in settings[join_strategy];
+    point_xxx stored in settings[point_strategy].
+  */
+  Strategy_setting settings[side_strategy + 1];
+  String tmp_value;                             // Stores current buffer result.
+
+  void set_strategies();
+public:
+  Item_func_buffer(const POS &pos, PT_item_list *ilist);
   const char *func_name() const { return "st_buffer"; }
   String *val_str(String *);
+};
+
+
+class Item_func_buffer_strategy: public Item_str_func
+{
+private:
+  friend class Item_func_buffer;
+  String tmp_value;
+  char tmp_buffer[16];                          // The buffer for tmp_value.
+public:
+  Item_func_buffer_strategy(const POS &pos, PT_item_list *ilist);
+  const char *func_name() const { return "st_buffer_strategy"; }
+  String *val_str(String *);
+  void fix_length_and_dec();
 };
 
 
@@ -798,13 +964,11 @@ public:
 
 class Item_func_issimple: public Item_bool_func
 {
-  Gcalc_heap collector;
-  Gcalc_function func;
-  Gcalc_scan_iterator scan_it;
   String tmp;
 public:
   Item_func_issimple(const POS &pos, Item *a): Item_bool_func(pos, a) {}
   longlong val_int();
+  bool issimple(Geometry *g);
   optimize_type select_optimize() const { return OPTIMIZE_NONE; }
   const char *func_name() const { return "st_issimple"; }
   void fix_length_and_dec() { maybe_null= 1; }
@@ -818,6 +982,16 @@ public:
   optimize_type select_optimize() const { return OPTIMIZE_NONE; }
   const char *func_name() const { return "st_isclosed"; }
   void fix_length_and_dec() { maybe_null= 1; }
+};
+
+class Item_func_isvalid: public Item_bool_func
+{
+public:
+  Item_func_isvalid(const POS &pos, Item *a): Item_bool_func(pos, a) {}
+  longlong val_int();
+  optimize_type select_optimize() const { return OPTIMIZE_NONE; }
+  const char *func_name() const { return "st_isvalid"; }
+  void fix_length_and_dec() { maybe_null= 0; }
 };
 
 class Item_func_dimension: public Item_int_func
@@ -898,7 +1072,7 @@ class Item_func_area: public Item_real_func
   String value;
 
   template <typename Coordsys>
-  double bg_area(const Geometry *geom, bool *isdone);
+  double bg_area(const Geometry *geom);
 public:
   Item_func_area(const POS &pos, Item *a): Item_real_func(pos, a) {}
   double val_real();
@@ -939,41 +1113,34 @@ public:
 
 class Item_func_distance: public Item_real_func
 {
+  // Default earth radius in meters.
+  bool is_spherical_equatorial;
+  double earth_radius;
   String tmp_value1;
   String tmp_value2;
-  Gcalc_heap collector;
-  Gcalc_function func;
-  Gcalc_scan_iterator scan_it;
 
-  template <typename Coordsys>
-  double bg_distance(const Geometry *g1, const Geometry *g2, bool *isdone);
-  template <typename Coordsys>
-  double distance_point_geometry(const Geometry *g1, const Geometry *g2,
-                                 bool *isdone);
-  template <typename Coordsys>
-  double distance_multipoint_geometry(const Geometry *g1, const Geometry *g2,
-                                      bool *isdone);
-  template <typename Coordsys>
-  double distance_linestring_geometry(const Geometry *g1, const Geometry *g2,
-                                      bool *isdone);
-  template <typename Coordsys>
-  double distance_multilinestring_geometry(const Geometry *g1,
-                                           const Geometry *g2,
-                                           bool *isdone);
-  template <typename Coordsys>
-  double distance_polygon_geometry(const Geometry *g1, const Geometry *g2,
-                                   bool *isdone);
-  template <typename Coordsys>
-  double distance_multipolygon_geometry(const Geometry *g1, const Geometry *g2,
-                                        bool *isdone);
+  double geometry_collection_distance(const Geometry *g1, const Geometry *g2);
 
+  template <typename Coordsys, typename BG_geometry>
+  double distance_dispatch_second_geometry(const BG_geometry& bg1,
+                                           const Geometry* g2);
+
+  double distance_point_geometry_spherical(const Geometry *g1,
+                                           const Geometry *g2);
+  double distance_multipoint_geometry_spherical(const Geometry *g1,
+                                                const Geometry *g2);
 public:
-  Item_func_distance(const POS &pos, Item *a, Item *b)
-    : Item_real_func(pos, a, b)
+  double bg_distance_spherical(const Geometry *g1, const Geometry *g2);
+  template <typename Coordsys>
+  double bg_distance(const Geometry *g1, const Geometry *g2);
+
+  Item_func_distance(const POS &pos, PT_item_list *ilist, bool isspherical)
+    : Item_real_func(pos, ilist), is_spherical_equatorial(isspherical),
+      earth_radius(6370986.0)                   /* Default earth radius. */
   {
     /*
       Either operand can be an empty geometry collection, and it's meaningless
-      for a distance between them. 
+      for a distance between them.
     */
     maybe_null= true;
   }
@@ -985,19 +1152,11 @@ public:
   }
 
   double val_real();
-  const char *func_name() const { return "st_distance"; }
+  const char *func_name() const
+  {
+    return is_spherical_equatorial ? "st_distance_sphere" : "st_distance";
+  }
 };
 
-
-#ifndef DBUG_OFF
-class Item_func_gis_debug: public Item_int_func
-{
-public:
-  Item_func_gis_debug(const POS &pos, Item *a) :Item_int_func(pos, a)
-  { null_value= false; }
-  const char *func_name() const  { return "st_gis_debug"; }
-  longlong val_int();
-};
-#endif
 
 #endif /*ITEM_GEOFUNC_INCLUDED*/

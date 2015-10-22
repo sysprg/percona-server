@@ -1,4 +1,5 @@
-/* Copyright (c) 2004, 2014, Oracle and/or its affiliates. All rights reserved.
+/*
+   Copyright (c) 2004, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,17 +20,10 @@
    (We will refer to this code as to elsie-code further.)
 */
 
-/*
-  We should not include sql_priv.h in mysql_tzinfo_to_sql utility since
-  it creates unsolved link dependencies on some platforms.
-*/
-
 #include <my_global.h>
 #include <algorithm>
 
 #if !defined(TZINFO2SQL)
-#include "sql_priv.h"
-#include "unireg.h"
 #include "tztime.h"
 #include "sql_time.h"                           // localtime_to_TIME
 #include "sql_base.h"                           // open_trans_system_tables_for_read,
@@ -155,6 +149,11 @@ static my_bool prepare_tz_info(TIME_ZONE_INFO *sp, MEM_ROOT *storage);
 
 #if defined(TZINFO2SQL)
 
+#ifdef ABBR_ARE_USED
+static const char* const MAGIC_STRING_FOR_INVALID_ZONEINFO_FILE=
+  "Local time zone must be set--see zic manual page";
+#endif
+
 /*
   Load time zone description from zoneinfo (TZinfo) file.
 
@@ -223,7 +222,22 @@ tz_load(const char *name, TIME_ZONE_INFO *sp, MEM_ROOT *storage)
         ttisstdcnt +                            /* ttisstds */
         ttisgmtcnt)                             /* ttisgmts */
       return 1;
+
 #ifdef ABBR_ARE_USED
+    size_t start_of_zone_abbrev= sizeof(struct tzhead) +
+      sp->timecnt * 4 +                       /* ats */
+      sp->timecnt +                           /* types */
+      sp->typecnt * (4 + 2);                  /* ttinfos */
+
+    /*
+      Check that timezone file doesn't contain junk timezone data.
+    */
+    if (!memcmp(u.buf + start_of_zone_abbrev,
+                MAGIC_STRING_FOR_INVALID_ZONEINFO_FILE,
+                std::min(sizeof(MAGIC_STRING_FOR_INVALID_ZONEINFO_FILE) - 1,
+                         sp->charcnt)))
+        return true;
+
     size_t abbrs_buf_len= sp->charcnt+1;
 #endif
 
@@ -256,7 +270,7 @@ tz_load(const char *name, TIME_ZONE_INFO *sp, MEM_ROOT *storage)
 
     for (i= 0; i < sp->timecnt; i++)
     {
-      sp->types[i]= (uchar) *p++;
+      sp->types[i]= *p++;
       if (sp->types[i] >= sp->typecnt)
         return 1;
     }
@@ -267,10 +281,10 @@ tz_load(const char *name, TIME_ZONE_INFO *sp, MEM_ROOT *storage)
       ttisp= &sp->ttis[i];
       ttisp->tt_gmtoff= int4net(p);
       p+= 4;
-      ttisp->tt_isdst= (uchar) *p++;
+      ttisp->tt_isdst= *p++;
       if (ttisp->tt_isdst != 0 && ttisp->tt_isdst != 1)
         return 1;
-      ttisp->tt_abbrind= (uchar) *p++;
+      ttisp->tt_abbrind= *p++;
       if (ttisp->tt_abbrind > sp->charcnt)
         return 1;
     }
@@ -1621,13 +1635,15 @@ my_tz_init(THD *org_thd, const char *default_tzname, my_bool bootstrap)
 
   /* Init all memory structures that require explicit destruction */
   if (my_hash_init(&tz_names, &my_charset_latin1, 20,
-                   0, 0, (my_hash_get_key) my_tz_names_get_key, 0, 0))
+                   0, 0, (my_hash_get_key) my_tz_names_get_key, 0, 0,
+                   key_memory_tz_storage))
   {
     sql_print_error("Fatal error: OOM while initializing time zones");
     goto end;
   }
   if (my_hash_init(&offset_tzs, &my_charset_latin1, 26, 0, 0,
-                   (my_hash_get_key)my_offset_tzs_get_key, 0, 0))
+                   (my_hash_get_key)my_offset_tzs_get_key, 0, 0,
+                   key_memory_tz_storage))
   {
     sql_print_error("Fatal error: OOM while initializing time zones");
     my_hash_free(&tz_names);
@@ -2020,7 +2036,7 @@ tz_load_from_open_tables(const String *tz_name, TABLE_LIST *tz_tables)
 
   /*
     At last we are doing the same thing for records in
-    mysql.time_zone_transition table. Here we additionaly need records
+    mysql.time_zone_transition table. Here we additionally need records
     in ascending order by index scan also satisfies us.
   */
   table= tz_tables->table; 
@@ -2093,7 +2109,7 @@ tz_load_from_open_tables(const String *tz_name, TABLE_LIST *tz_tables)
                                        tz_name->length() + 1)))
   {
     sql_print_error("Out of memory while loading time zone description");
-    return 0;
+    DBUG_RETURN(0);
   }
 
   /* Move the temporary tz_info into the allocated area */
@@ -2415,7 +2431,12 @@ print_tz_as_sql(const char* tz_name, const TIME_ZONE_INFO *sp)
 (Time_zone_id, Transition_type_id, Offset, Is_DST, Abbreviation) VALUES\n");
 
   for (i= 0; i < sp->typecnt; i++)
-    printf("%s(@time_zone_id, %u, %ld, %d, '%s')\n", (i == 0 ? " " : ","), i,
+    /*
+      Since the column time_zone_transition_type.Abbreviation
+      is declared as CHAR(8) we have to limit the number of characters
+      for the column abbreviation in the next output by 8 chars.
+    */
+    printf("%s(@time_zone_id, %u, %ld, %d, '%.8s')\n", (i == 0 ? " " : ","), i,
            sp->ttis[i].tt_gmtoff, sp->ttis[i].tt_isdst,
            sp->chars + sp->ttis[i].tt_abbrind);
   printf(";\n");
@@ -2582,12 +2603,12 @@ main(int argc, char **argv)
     }
     else
     {
-      printf("START TRANSACTION;\n");
       if (tz_load(argv[1], &tz_info, &tz_storage))
       {
         fprintf(stderr, "Problems with zoneinfo file '%s'\n", argv[2]);
         return 1;
       }
+      printf("START TRANSACTION;\n");
       print_tz_as_sql(argv[2], &tz_info);
       printf("COMMIT;\n");
     }

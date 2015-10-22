@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved.
+Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -25,13 +25,12 @@ Created 3/14/2011 Jimmy Yang
 #include "handler_api.h"
 
 #include <my_global.h>
-#include <sql_priv.h>
 #include <stdlib.h>
 #include <ctype.h>
 #include <mysql_version.h>
 #include <mysql/plugin.h>
 #include <my_dir.h>
-#include "my_pthread.h"
+#include "my_thread.h"
 #include "my_sys.h"
 #include "m_string.h"
 #include "sql_plugin.h"
@@ -87,8 +86,8 @@ handler_create_thd(
 		return(NULL);
 	}
 
-	my_net_init(&thd->net,(st_vio*) 0);
-        thd->set_new_thread_id();
+	thd->get_protocol_classic()->init_net((st_vio *) 0);
+	thd->set_new_thread_id();
 	thd->thread_stack = reinterpret_cast<char*>(&thd);
 	thd->store_globals();
 
@@ -146,11 +145,18 @@ handler_open_table(
 	tables.init_one_table(db_name, strlen(db_name), table_name,
 			      strlen(table_name), table_name, lock_mode);
 
-	MDL_REQUEST_INIT(&tables.mdl_request,
-                         MDL_key::TABLE, db_name, table_name,
-			 (lock_mode > TL_READ)
-			 ? MDL_SHARED_WRITE
-			 : MDL_SHARED_READ, MDL_TRANSACTION);
+	/* For flush, we need to request exclusive mdl lock. */
+	if (lock_type == HDL_FLUSH) {
+		MDL_REQUEST_INIT(&tables.mdl_request,
+				 MDL_key::TABLE, db_name, table_name,
+				 MDL_EXCLUSIVE, MDL_TRANSACTION);
+	} else {
+		MDL_REQUEST_INIT(&tables.mdl_request,
+				 MDL_key::TABLE, db_name, table_name,
+				 (lock_mode > TL_READ)
+				 ? MDL_SHARED_WRITE : MDL_SHARED_READ,
+				 MDL_TRANSACTION);
+	}
 
 	if (!open_table(thd, &tables, &table_ctx)) {
 		TABLE*	table = tables.table;
@@ -363,13 +369,21 @@ handler_close_thd(
 /*==============*/
 	void*		my_thd)		/*!< in: THD */
 {
-	THD*	thd = static_cast<THD*>(my_thd);
+	THD* thd= static_cast<THD*>(my_thd);
 
 	/* destructor will not free it, because net.vio is 0. */
-	net_end(&thd->net);
-
+	thd->get_protocol_classic()->end_net();
 	thd->release_resources();
 	delete (thd);
+}
+
+/**********************************************************************//**
+Check if global read lock is active */
+
+bool
+handler_check_global_read_lock_active()
+{
+        return Global_read_lock::global_read_lock_active();
 }
 
 /**********************************************************************//**

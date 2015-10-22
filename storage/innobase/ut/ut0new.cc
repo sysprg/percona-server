@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2014, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2014, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -32,6 +32,7 @@ const size_t	alloc_max_retries = 60;
 
 /** Keys for registering allocations with performance schema.
 Keep this list alphabetically sorted. */
+PSI_memory_key	mem_key_ahi;
 PSI_memory_key	mem_key_buf_buf_pool;
 PSI_memory_key	mem_key_dict_stats_bg_recalc_pool_t;
 PSI_memory_key	mem_key_dict_stats_index_map_t;
@@ -40,8 +41,8 @@ PSI_memory_key	mem_key_other;
 PSI_memory_key	mem_key_row_log_buf;
 PSI_memory_key	mem_key_row_merge_sort;
 PSI_memory_key	mem_key_std;
-PSI_memory_key	mem_key_sync_debug_latches;
 PSI_memory_key	mem_key_trx_sys_t_rw_trx_ids;
+PSI_memory_key	mem_key_partitioning;
 
 PSI_memory_key	mem_key_log_online_modified_pages;
 PSI_memory_key	mem_key_log_online_sys;
@@ -70,6 +71,7 @@ the list below:
    (in ut_new_boot()) then mem_key_other is used.
 Keep this list alphabetically sorted. */
 static PSI_memory_info	pfs_info[] = {
+	{&mem_key_ahi, "adaptive hash index", 0},
 	{&mem_key_buf_buf_pool, "buf_buf_pool", 0},
 	{&mem_key_dict_stats_bg_recalc_pool_t, "dict_stats_bg_recalc_pool_t", 0},
 	{&mem_key_dict_stats_index_map_t, "dict_stats_index_map_t", 0},
@@ -78,7 +80,6 @@ static PSI_memory_info	pfs_info[] = {
 	{&mem_key_row_log_buf, "row_log_buf", 0},
 	{&mem_key_row_merge_sort, "row_merge_sort", 0},
 	{&mem_key_std, "std", 0},
-	{&mem_key_sync_debug_latches, "sync_debug_latches", 0},
 	{&mem_key_trx_sys_t_rw_trx_ids, "trx_sys_t::rw_trx_ids", 0},
 	{&mem_key_log_online_modified_pages, "log_online_modified_pages", 0},
 	{&mem_key_log_online_sys, "log_online_sys", 0},
@@ -94,6 +95,7 @@ static PSI_memory_info	pfs_info[] = {
 	 "log_sys_group_archive_file_header_bufs", 0},
 	{&mem_key_log_sys_group_archive_file_header_buf_ptr,
 	 "log_sys_group_archive_file_header_buf_ptr", 0},
+	{&mem_key_partitioning, "partitioning", 0},
 };
 
 /** Map used for default performance schema keys, based on file name of the
@@ -135,9 +137,12 @@ ut_new_boot()
 		"dict0dict",
 		"dict0mem",
 		"dict0stats",
+		"dict0stats_bg",
 		"eval0eval",
 		"fil0fil",
 		"fsp0file",
+		"fsp0space",
+		"fsp0sysspace",
 		"fts0ast",
 		"fts0config",
 		"fts0fts",
@@ -148,6 +153,7 @@ ut_new_boot()
 		"gis0sea",
 		"ha0ha",
 		"ha_innodb",
+		"handler0alter",
 		"hash0hash",
 		"i_s",
 		"ibuf0ibuf",
@@ -176,6 +182,7 @@ ut_new_boot()
 		"sync0arr",
 		"sync0debug",
 		"sync0rw",
+		"sync0types",
 		"trx0i_s",
 		"trx0purge",
 		"trx0roll",
@@ -186,6 +193,7 @@ ut_new_boot()
 		"usr0sess",
 		"ut0list",
 		"ut0mem",
+		"ut0mutex",
 		"ut0pool",
 		"ut0rbt",
 		"ut0wqueue",
@@ -203,7 +211,7 @@ ut_new_boot()
 						    &auto_event_keys[i]));
 
 		/* ret.second is true if new element has been inserted */
-		ut_ad(ret.second);
+		ut_a(ret.second);
 
 		/* e.g. "btr0btr" */
 		pfs_info_auto[i].m_name = auto_event_names[i];

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2001, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2001, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -27,6 +27,8 @@
 #include <welcome_copyright_notice.h> /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 using namespace Mysql::Tools::Check;
+using std::string;
+using std::vector;
 
 /* Exit codes */
 
@@ -247,6 +249,19 @@ static void usage(void)
 	 my_progname);
   printf("OR     %s [OPTIONS] --all-databases\n", my_progname);
   print_defaults("my", load_default_groups);
+  /*
+    Turn default for zombies off so that the help on how to 
+    turn them off text won't show up.
+    This is safe to do since it's followed by a call to exit().
+  */
+  for (struct my_option *optp= my_long_options; optp->name; optp++)
+  {
+    if (optp->id == OPT_SECURE_AUTH)
+    {
+      optp->def_value= 0;
+      break;
+    }
+  }
   my_print_help(my_long_options);
   my_print_variables(my_long_options);
 } /* usage */
@@ -283,9 +298,11 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
   case OPT_FIX_DB_NAMES:
     what_to_do= DO_UPGRADE;
     opt_databases= 1;
+    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--fix-db-names");
     break;
   case OPT_FIX_TABLE_NAMES:
     what_to_do= DO_UPGRADE;
+    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--fix-table-names");
     break;
   case 'p':
     if (argument == disabled_my_option)
@@ -333,12 +350,14 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
                                     opt->name);
     break;
   case OPT_SECURE_AUTH:
-    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
+    /* --secure-auth is a zombie option. */
     if (!opt_secure_auth)
     {
-      usage();
+      fprintf(stderr, "mysql: [ERROR] --skip-secure-auth is not supported.\n");
       exit(1);
     }
+    else
+      CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
     break;
   }
 
@@ -528,6 +547,7 @@ int main(int argc, char **argv)
 #if defined (_WIN32) && !defined (EMBEDDED_LIBRARY)
   my_free(shared_memory_base_name);
 #endif
+  free_defaults(argv);
   my_end(my_end_arg);
   return(first_error!=0);
 } /* main */

@@ -11,18 +11,18 @@
 
 --source include/have_innodb_16k.inc
 --source include/not_embedded.inc
-
---echo # Skip this test other platfoms and run only on Linux.
-if (`select convert(@@version_compile_os using latin1) IN ("Linux") = 0`)
-{
-  skip Need Linux;
-}
+--source include/linux.inc
+--source include/have_util_unzip.inc
 
 --echo # Set the environmental variables
-let MYSQL_BASEDIR= `select @@basedir`;
+LET MYSQL_BASEDIR= `select @@basedir`;
+LET $MYSQLD_DATADIR = `select @@datadir`;
+LET $INNODB_PAGE_SIZE = `select @@innodb_page_size`;
 
 --echo # Stop server
---source include/shutdown_mysqld.inc
+-- exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
+-- shutdown_server 30
+-- source include/wait_until_disconnected.inc
 
 --echo # Copy the remote tablespace & DB zip files from suite location to working location.
 #--copy_file $MYSQLTEST_VARDIR/../mysql-test/suite/innodb/t/portability_wl5980_linux.zip $MYSQL_TMP_DIR/portability_wl5980_linux.zip
@@ -110,6 +110,9 @@ EOF
 
 -- exec $MYSQL -e "UPDATE mysql.user SET plugin = 'mysql_native_password'"
 
+--echo Run mysql_upgrade once
+--exec $MYSQL_UPGRADE --skip-verbose --force 2>&1
+
 -- echo # Stop server
 -- source include/shutdown_mysqld.inc
 
@@ -150,18 +153,8 @@ SELECT COUNT(*) FROM emp4;
 SELECT COUNT(*) FROM purchase;
 
 --echo # Check the system tables have the proper entry of the tables.
---replace_result $MYSQL_TMP_DIR MYSQL_TMP_DIR
-SELECT path FROM information_schema.innodb_sys_datafiles
-       WHERE path LIKE '%test%' ORDER BY space;
-SELECT name,file_format,row_format
-       FROM information_schema.innodb_sys_tablespaces
-       ORDER BY name;
-SELECT name,n_cols,file_format,row_format
-       FROM information_schema.innodb_sys_tables
-       WHERE name LIKE '%emp%' ORDER BY name;
-SELECT name,n_cols,file_format,row_format
-       FROM information_schema.innodb_sys_tables
-       WHERE name LIKE '%purchase%' ORDER BY name;
+--source suite/innodb/include/show_i_s_tablespaces.inc
+--source suite/innodb/include/show_i_s_tables.inc
 
 --echo #
 --echo # Cleanup

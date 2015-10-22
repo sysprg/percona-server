@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,8 +17,6 @@
 /* Write some debug info */
 
 
-#include "sql_priv.h"
-#include "unireg.h"
 #include "sql_test.h"
 #include "sql_base.h" // table_def_cache, table_cache_count, unused_tables
 #include "sql_show.h" // calc_sum_of_all_status
@@ -178,7 +176,7 @@ void print_keyuse_array(Opt_trace_context *trace,
                        keyuse.optimize, keyuse.used_tables,
                        (ulong)keyuse.ref_table_rows, keyuse.keypart_map));
     Opt_trace_object(trace).
-      add_utf8_table(keyuse.table_ref->table).
+      add_utf8_table(keyuse.table_ref).
       add_utf8("field", (keyuse.keypart == FT_KEYPART) ? "<fulltext>" :
                keyuse.table_ref->table->key_info[keyuse.key].
                key_part[keyuse.keypart].field->field_name).
@@ -458,9 +456,8 @@ reads:          %10s\n\n",
 void mysql_print_status()
 {
   char current_dir[FN_REFLEN];
-  STATUS_VAR tmp;
+  STATUS_VAR current_global_status_var;
 
-  calc_sum_of_all_status(&tmp);
   printf("\nStatus information:\n\n");
   (void) my_getwd(current_dir, sizeof(current_dir),MYF(0));
   printf("Current dir: %s\n", current_dir);
@@ -475,6 +472,7 @@ void mysql_print_status()
   puts("\nKey caches:");
   process_key_caches(print_key_cache_status);
   mysql_mutex_lock(&LOCK_status);
+  calc_sum_of_all_status(&current_global_status_var);
   printf("\nhandler status:\n\
 read_key:   %10llu\n\
 read_next:  %10llu\n\
@@ -483,23 +481,23 @@ read_first: %10llu\n\
 write:      %10llu\n\
 delete      %10llu\n\
 update:     %10llu\n",
-	 tmp.ha_read_key_count,
-	 tmp.ha_read_next_count,
-	 tmp.ha_read_rnd_count,
-	 tmp.ha_read_first_count,
-	 tmp.ha_write_count,
-	 tmp.ha_delete_count,
-	 tmp.ha_update_count);
+	 current_global_status_var.ha_read_key_count,
+	 current_global_status_var.ha_read_next_count,
+	 current_global_status_var.ha_read_rnd_count,
+	 current_global_status_var.ha_read_first_count,
+	 current_global_status_var.ha_write_count,
+	 current_global_status_var.ha_delete_count,
+	 current_global_status_var.ha_update_count);
   mysql_mutex_unlock(&LOCK_status);
   printf("\nTable status:\n\
 Opened tables: %10lu\n\
 Open tables:   %10lu\n\
 Open files:    %10lu\n\
 Open streams:  %10lu\n",
-	 (ulong) tmp.opened_tables,
+	 (ulong) current_global_status_var.opened_tables,
 	 (ulong) table_cache_manager.cached_tables(),
-	 (ulong) my_file_opened,
-	 (ulong) my_stream_opened);
+	 my_file_opened,
+	 my_stream_opened);
   display_table_locks();
 #ifdef HAVE_MALLOC_INFO
   printf("\nMemory status:\n");

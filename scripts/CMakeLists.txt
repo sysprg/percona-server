@@ -1,4 +1,4 @@
-# Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -61,9 +61,45 @@ ADD_CUSTOM_COMMAND(
 ADD_CUSTOM_TARGET(GenFixPrivs
   ALL
   DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/mysql_fix_privilege_tables_sql.c
+  ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_sys_schema.h
 )
 
-IF(UNIX)
+# If we do not have performance schema compiled in then sys will not work,
+# so only create an empty sys database with an auto-generated file,
+# otherwise, load the full schema file normally.
+IF(NOT WITH_PERFSCHEMA_STORAGE_ENGINE)
+  FILE(WRITE ${CMAKE_CURRENT_BINARY_DIR}/mysql_sys_schema_empty.sql "CREATE DATABASE sys;")
+
+  ADD_CUSTOM_COMMAND(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_sys_schema.h
+    COMMAND comp_sql
+    mysql_sys_schema
+    ${CMAKE_CURRENT_BINARY_DIR}/mysql_sys_schema_empty.sql
+    sql_commands_sys_schema.h
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS comp_sql
+    ${CMAKE_CURRENT_BINARY_DIR}/mysql_sys_schema_empty.sql
+  )
+ELSE()
+  ADD_CUSTOM_COMMAND(
+    OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_sys_schema.h
+    COMMAND comp_sql
+    mysql_sys_schema
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_sys_schema.sql
+    sql_commands_sys_schema.h
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+    DEPENDS comp_sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_sys_schema.sql
+  )
+ENDIF()
+
+IF(NOT WITHOUT_SERVER)
+  ADD_CUSTOM_TARGET(GenSysSchema
+    ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_sys_schema.h
+  )
+ENDIF()
+
 ADD_CUSTOM_COMMAND(
   OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_data.h
   COMMAND comp_sql
@@ -98,13 +134,14 @@ ADD_CUSTOM_COMMAND(
 )
 
 # Add target for the above to be built
-ADD_CUSTOM_TARGET(GenBootstrapPriv
-  ALL
-  DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_data.h
-  ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables.h
-  ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_help_data.h
-)
-ENDIF(UNIX)
+IF(NOT WITHOUT_SERVER)
+  ADD_CUSTOM_TARGET(GenBootstrapPriv
+    ALL
+    DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_data.h
+    ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_system_tables.h
+    ${CMAKE_CURRENT_BINARY_DIR}/sql_commands_help_data.h
+  )
+ENDIF()
 
 IF(UNIX)
  FILE(WRITE ${CMAKE_CURRENT_BINARY_DIR}/make_binary_distribution 
@@ -114,16 +151,19 @@ IF(UNIX)
 )
 ENDIF()
 
-INSTALL(FILES
-  ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables.sql
-  ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables_data.sql
-  ${CMAKE_CURRENT_SOURCE_DIR}/fill_help_tables.sql
-  ${CMAKE_CURRENT_SOURCE_DIR}/mysql_test_data_timezone.sql
-  ${CMAKE_CURRENT_SOURCE_DIR}/mysql_security_commands.sql
-  ${FIX_PRIVILEGES_SQL}
-  DESTINATION ${INSTALL_MYSQLSHAREDIR} COMPONENT Server
-)
-
+IF(NOT WITHOUT_SERVER)
+  INSTALL(FILES
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables.sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables_data.sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/fill_help_tables.sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_sys_schema.sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_test_data_timezone.sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_security_commands.sql
+    ${CMAKE_CURRENT_SOURCE_DIR}/mysql_system_tables_fix_for_downgrade.sql
+    ${FIX_PRIVILEGES_SQL}
+    DESTINATION ${INSTALL_MYSQLSHAREDIR} COMPONENT Server
+  )
+ENDIF()
 
 # TCMalloc hacks
 IF(MALLOC_LIB)
@@ -149,6 +189,60 @@ ELSE()
     "${CMAKE_CXX_FLAGS_RELWITHDEBINFO}")
 ENDIF()
 
+# Add trailing whitespace, before substitution below.
+SET(CFLAGS "${CFLAGS} ")
+SET(CXXFLAGS "${CXXFLAGS} ")
+
+SET(REPLACE_OPTIONS
+  "-DDBUG_OFF "
+  "-DEXTRA_DEBUG "
+  "-DHAVE_VALGRIND "
+  "-DSAFE_MUTEX "
+  "-fPIC "
+  "-fno-inline "
+  "-fno-strict-aliasing "
+  "-fstack-protector-strong "
+  "-grecord-gcc-switches "
+  "-ip "
+  "-mp "
+  "-pipe "
+  "-restrict "
+  "-unroll2 "
+)
+
+# Note sequence of -W options here, most specific first.
+SET(REPLACE_REGEX_OPTIONS
+  "-Wp,[-=_A-Za-z0-9]*"
+  "-Werror=[-A-Za-z]*"
+  "-W[-A-Za-z]*"
+  "--param=[-=a-z0-9]*"
+  "-O[0-9]"
+  "-march=[-A-Za-z0-9]*"
+  "-mcpu=[-A-Za-z0-9]*"
+  "-mtune=[-A-Za-z0-9]*"
+  "-specs=[-A-Za-z0-9/]*"
+  "-xO[0-9]"
+)
+
+FOREACH(option ${REPLACE_REGEX_OPTIONS})
+  STRING(REGEX REPLACE "${option}" "" CFLAGS   "${CFLAGS}")
+  STRING(REGEX REPLACE "${option}" "" CXXFLAGS "${CXXFLAGS}")
+ENDFOREACH()
+
+FOREACH(option ${REPLACE_OPTIONS})
+  STRING(REPLACE "${option}" " " CFLAGS   "${CFLAGS}")
+  STRING(REPLACE "${option}" " " CXXFLAGS "${CXXFLAGS}")
+ENDFOREACH()
+STRING(REPLACE "-fexceptions " " " CFLAGS "${CFLAGS}")
+
+# Finally: strip away whitespace.
+STRING(REGEX REPLACE "[ ]+" " " CFLAGS   "${CFLAGS}")
+STRING(REGEX REPLACE "[ ]+" " " CXXFLAGS "${CXXFLAGS}")
+STRING(REGEX REPLACE "^[ ]+" "" CFLAGS   "${CFLAGS}")
+STRING(REGEX REPLACE "^[ ]+" "" CXXFLAGS "${CXXFLAGS}")
+STRING(REGEX REPLACE "[ ]+$" "" CFLAGS   "${CFLAGS}")
+STRING(REGEX REPLACE "[ ]+$" "" CXXFLAGS "${CXXFLAGS}")
+
 IF(UNIX)
   # FIND_PROC and CHECK_PID are used by mysqld_safe
 IF(CMAKE_SYSTEM_NAME MATCHES "Linux")
@@ -161,7 +255,7 @@ IF(NOT FIND_PROC AND CMAKE_SYSTEM_NAME MATCHES "SunOS")
 ENDIF()
 
 IF(NOT FIND_PROC)
-  # BSD style
+  # BSD styl
   EXECUTE_PROCESS(COMMAND ps -uaxww OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE result)
   IF(result MATCHES 0) 
      SET( FIND_PROC
@@ -311,13 +405,23 @@ ELSE()
     ${CMAKE_CURRENT_BINARY_DIR}/mysql_config.pl ESCAPE_QUOTES @ONLY)
   # On Unix, most of the files end up in the bin directory
   SET(mysql_config_COMPONENT COMPONENT Development)
-  SET(BIN_SCRIPTS
-    mysql_config
-    mysqldumpslow
-    mysqld_multi
-    mysqld_safe
-    ps_tokudb_admin
-  )
+
+  IF(WITH_SYSTEMD)
+    SET(BIN_SCRIPTS
+      mysql_config
+      mysqldumpslow
+      ps_tokudb_admin
+      )
+  ELSE()
+    SET(BIN_SCRIPTS
+      mysql_config
+      mysqldumpslow
+      mysqld_multi
+      mysqld_safe
+      ps_tokudb_admin
+      )
+  ENDIF()
+
   FOREACH(file ${BIN_SCRIPTS})
     IF(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${file}.sh)
       CONFIGURE_FILE(${CMAKE_CURRENT_SOURCE_DIR}/${file}.sh
@@ -346,6 +450,39 @@ ELSE()
       ${CMAKE_CURRENT_BINARY_DIR}/mysql_server_config
       DESTINATION ${INSTALL_BINDIR}
       COMPONENT ${mysql_server_config_COMPONENT}
+    )
+  ENDIF()
+
+  # Systemd files
+  IF(WITH_SYSTEMD)
+    CONFIGURE_FILE(systemd/mysqld_pre_systemd.in
+      ${CMAKE_CURRENT_BINARY_DIR}/mysqld_pre_systemd ESCAPE_QUOTES @ONLY)
+
+    CONFIGURE_FILE(systemd/mysqld.service.in
+      ${CMAKE_CURRENT_BINARY_DIR}/${SYSTEMD_SERVICE_NAME}.service ESCAPE_QUOTES @ONLY)
+
+    CONFIGURE_FILE(systemd/mysqld.tmpfiles.d.in
+      ${CMAKE_CURRENT_BINARY_DIR}/mysql.conf ESCAPE_QUOTES @ONLY)
+
+    INSTALL_SCRIPT(
+      ${CMAKE_CURRENT_BINARY_DIR}/mysqld_pre_systemd
+      DESTINATION ${INSTALL_BINDIR}
+      COMPONENT Server
+    )
+
+    IF(INSTALL_LAYOUT MATCHES "STANDALONE")
+      SET(SYSTEMD_INSTALL_PREFIX "${CMAKE_INSTALL_PREFIX}/")
+    ELSE()
+      SET(SYSTEMD_INSTALL_PREFIX "")
+    ENDIF()
+
+    INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/${SYSTEMD_SERVICE_NAME}.service
+       DESTINATION ${SYSTEMD_INSTALL_PREFIX}${SYSTEMD_SERVICES_DIR} COMPONENT Server
+       PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
+    )
+    INSTALL(FILES ${CMAKE_CURRENT_BINARY_DIR}/mysql.conf
+       DESTINATION ${SYSTEMD_INSTALL_PREFIX}${SYSTEMD_TMPFILES_DIR} COMPONENT Server
+       PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
     )
   ENDIF()
 ENDIF()

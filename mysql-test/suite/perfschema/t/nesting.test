@@ -8,12 +8,15 @@
 # On windows, the socket instrumentation collects an extra "opt"
 # event, which changes the test output.
 --source include/not_windows.inc
---source ../include/no_protocol.inc
+--source include/no_protocol.inc
 --source ../include/wait_for_pfs_thread_count.inc
 
 --disable_query_log
 
+set @orig_sql_mode= @@sql_mode;
+set sql_mode= (select replace(@@sql_mode,'NO_AUTO_CREATE_USER',''));
 grant ALL on *.* to user1@localhost;
+set sql_mode= @orig_sql_mode;
 
 flush privileges;
 
@@ -111,7 +114,7 @@ set @marker_end = (select end_event_id from performance_schema.events_statements
 select (@marker_end is not null) as expected;
 
 # Will point to what happened on spurious test failures
-show status like "performance_schema%";
+show global status like "performance_schema%";
 
 #
 # This is the test itself:

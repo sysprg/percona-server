@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,11 +14,13 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "mysys_err.h"
 #include <m_ctype.h>
 #include <m_string.h>
 #include <my_dir.h>
 #include <my_xml.h>
+#include "mysql/psi/mysql_file.h"
 
 /*
   The code below implements this functionality:
@@ -48,68 +50,6 @@ get_collation_number_internal(const char *name)
          !my_strcasecmp(&my_charset_latin1, cs[0]->name, name))
       return cs[0]->number;
   }  
-  return 0;
-}
-
-
-static my_bool init_state_maps(CHARSET_INFO *cs)
-{
-  uint i;
-  uchar *state_map;
-  uchar *ident_map;
-
-  if (!(cs->state_map= state_map= (uchar*) my_once_alloc(256, MYF(MY_WME))))
-    return 1;
-
-  if (!(cs->ident_map= ident_map= (uchar*) my_once_alloc(256, MYF(MY_WME))))
-    return 1;
-
-  /* Fill state_map with states to get a faster parser */
-  for (i=0; i < 256 ; i++)
-  {
-    if (my_isalpha(cs,i))
-      state_map[i]=(uchar) MY_LEX_IDENT;
-    else if (my_isdigit(cs,i))
-      state_map[i]=(uchar) MY_LEX_NUMBER_IDENT;
-    else if (my_ismb1st(cs, i))
-      /* To get whether it's a possible leading byte for a charset. */
-      state_map[i]=(uchar) MY_LEX_IDENT;
-    else if (my_isspace(cs,i))
-      state_map[i]=(uchar) MY_LEX_SKIP;
-    else
-      state_map[i]=(uchar) MY_LEX_CHAR;
-  }
-  state_map[(uchar)'_']=state_map[(uchar)'$']=(uchar) MY_LEX_IDENT;
-  state_map[(uchar)'\'']=(uchar) MY_LEX_STRING;
-  state_map[(uchar)'.']=(uchar) MY_LEX_REAL_OR_POINT;
-  state_map[(uchar)'>']=state_map[(uchar)'=']=state_map[(uchar)'!']= (uchar) MY_LEX_CMP_OP;
-  state_map[(uchar)'<']= (uchar) MY_LEX_LONG_CMP_OP;
-  state_map[(uchar)'&']=state_map[(uchar)'|']=(uchar) MY_LEX_BOOL;
-  state_map[(uchar)'#']=(uchar) MY_LEX_COMMENT;
-  state_map[(uchar)';']=(uchar) MY_LEX_SEMICOLON;
-  state_map[(uchar)':']=(uchar) MY_LEX_SET_VAR;
-  state_map[0]=(uchar) MY_LEX_EOL;
-  state_map[(uchar)'\\']= (uchar) MY_LEX_ESCAPE;
-  state_map[(uchar)'/']= (uchar) MY_LEX_LONG_COMMENT;
-  state_map[(uchar)'*']= (uchar) MY_LEX_END_LONG_COMMENT;
-  state_map[(uchar)'@']= (uchar) MY_LEX_USER_END;
-  state_map[(uchar) '`']= (uchar) MY_LEX_USER_VARIABLE_DELIMITER;
-  state_map[(uchar)'"']= (uchar) MY_LEX_STRING_OR_DELIMITER;
-
-  /*
-    Create a second map to make it faster to find identifiers
-  */
-  for (i=0; i < 256 ; i++)
-  {
-    ident_map[i]= (uchar) (state_map[i] == MY_LEX_IDENT ||
-			   state_map[i] == MY_LEX_NUMBER_IDENT);
-  }
-
-  /* Special handling of hex and binary strings */
-  state_map[(uchar)'x']= state_map[(uchar)'X']= (uchar) MY_LEX_IDENT_OR_HEX;
-  state_map[(uchar)'b']= state_map[(uchar)'B']= (uchar) MY_LEX_IDENT_OR_BIN;
-  state_map[(uchar)'n']= state_map[(uchar)'N']= (uchar) MY_LEX_IDENT_OR_NCHAR;
-
   return 0;
 }
 
@@ -147,8 +87,6 @@ static int cs_copy_data(CHARSET_INFO *to, CHARSET_INFO *from)
     if (!(to->ctype= (uchar*) my_once_memdup((char*) from->ctype,
 					     MY_CS_CTYPE_TABLE_SIZE,
 					     MYF(MY_WME))))
-      goto err;
-    if (init_state_maps(to))
       goto err;
   }
   if (from->to_lower)
@@ -259,8 +197,6 @@ static int add_collation(CHARSET_INFO *cs)
 #if defined (HAVE_CHARSET_utf8) && defined(HAVE_UCA_COLLATIONS)
         copy_uca_collation(newcs, &my_charset_utf8_unicode_ci);
         newcs->ctype= my_charset_utf8_unicode_ci.ctype;
-        if (init_state_maps(newcs))
-          return MY_XML_ERROR;
 #endif
       }
       else if (!strcmp(cs->csname, "utf8mb4"))
@@ -395,9 +331,9 @@ my_charset_loader_init_mysys(MY_CHARSET_LOADER *loader)
 {
   loader->error[0]= '\0';
   loader->once_alloc= my_once_alloc_c;
-  loader->malloc= my_malloc_c;
-  loader->realloc= my_realloc_c;
-  loader->free= my_free_c;
+  loader->mem_malloc= my_malloc_c;
+  loader->mem_realloc= my_realloc_c;
+  loader->mem_free= my_free_c;
   loader->reporter= my_charset_error_reporter;
   loader->add_collation= add_collation;
 }
@@ -481,30 +417,18 @@ void add_compiled_collation(CHARSET_INFO *cs)
 }
 
 
-static my_pthread_once_t charsets_initialized= MY_PTHREAD_ONCE_INIT;
-static my_pthread_once_t charsets_template= MY_PTHREAD_ONCE_INIT;
+static my_thread_once_t charsets_initialized= MY_THREAD_ONCE_INIT;
+static my_thread_once_t charsets_template= MY_THREAD_ONCE_INIT;
 
 static void init_available_charsets(void)
 {
   char fname[FN_REFLEN + sizeof(MY_CHARSET_INDEX)];
-  CHARSET_INFO **cs;
   MY_CHARSET_LOADER loader;
 
   memset(&all_charsets, 0, sizeof(all_charsets));
   init_compiled_charsets(MYF(0));
 
   /* Copy compiled charsets */
-  for (cs=all_charsets;
-       cs < all_charsets+array_elements(all_charsets)-1 ;
-       cs++)
-  {
-    if (*cs)
-    {
-      if (cs[0]->ctype)
-        if (init_state_maps(*cs))
-          *cs= NULL;
-    }
-  }
 
   my_charset_loader_init_mysys(&loader);
   my_stpcpy(get_charsets_dir(fname), MY_CHARSET_INDEX);
@@ -534,7 +458,7 @@ uint get_collation_number(const char *name)
 {
   uint id;
   char alias[64];
-  my_pthread_once(&charsets_initialized, init_available_charsets);
+  my_thread_once(&charsets_initialized, init_available_charsets);
   if ((id= get_collation_number_internal(name)))
     return id;
   if ((name= get_collation_name_alias(name, alias, sizeof(alias))))
@@ -572,7 +496,7 @@ get_charset_name_alias(const char *name)
 uint get_charset_number(const char *charset_name, uint cs_flags)
 {
   uint id;
-  my_pthread_once(&charsets_initialized, init_available_charsets);
+  my_thread_once(&charsets_initialized, init_available_charsets);
   if ((id= get_charset_number_internal(charset_name, cs_flags)))
     return id;
   if ((charset_name= get_charset_name_alias(charset_name)))
@@ -583,7 +507,7 @@ uint get_charset_number(const char *charset_name, uint cs_flags)
 
 const char *get_charset_name(uint charset_number)
 {
-  my_pthread_once(&charsets_initialized, init_available_charsets);
+  my_thread_once(&charsets_initialized, init_available_charsets);
 
   if (charset_number < array_elements(all_charsets))
   {
@@ -654,7 +578,7 @@ CHARSET_INFO *get_charset(uint cs_number, myf flags)
   if (cs_number == default_charset_info->number)
     return default_charset_info;
 
-  my_pthread_once(&charsets_initialized, init_available_charsets);
+  my_thread_once(&charsets_initialized, init_available_charsets);
  
   if (cs_number >= array_elements(all_charsets)) 
     return NULL;
@@ -668,7 +592,7 @@ CHARSET_INFO *get_charset(uint cs_number, myf flags)
     my_stpcpy(get_charsets_dir(index_file),MY_CHARSET_INDEX);
     cs_string[0]='#';
     int10_to_str(cs_number, cs_string+1, 10);
-    my_error(EE_UNKNOWN_CHARSET, MYF(ME_BELL), cs_string, index_file);
+    my_error(EE_UNKNOWN_CHARSET, MYF(0), cs_string, index_file);
   }
   return cs;
 }
@@ -689,7 +613,7 @@ my_collation_get_by_name(MY_CHARSET_LOADER *loader,
 {
   uint cs_number;
   CHARSET_INFO *cs;
-  my_pthread_once(&charsets_initialized, init_available_charsets);
+  my_thread_once(&charsets_initialized, init_available_charsets);
 
   cs_number= get_collation_number(name);
   my_charset_loader_init_mysys(loader);
@@ -699,7 +623,7 @@ my_collation_get_by_name(MY_CHARSET_LOADER *loader,
   {
     char index_file[FN_REFLEN + sizeof(MY_CHARSET_INDEX)];
     my_stpcpy(get_charsets_dir(index_file),MY_CHARSET_INDEX);
-    my_error(EE_UNKNOWN_COLLATION, MYF(ME_BELL), name, index_file);
+    my_error(EE_UNKNOWN_COLLATION, MYF(0), name, index_file);
   }
   return cs;
 }
@@ -731,7 +655,7 @@ my_charset_get_by_name(MY_CHARSET_LOADER *loader,
   DBUG_ENTER("get_charset_by_csname");
   DBUG_PRINT("enter",("name: '%s'", cs_name));
 
-  my_pthread_once(&charsets_initialized, init_available_charsets);
+  my_thread_once(&charsets_initialized, init_available_charsets);
 
   cs_number= get_charset_number(cs_name, cs_flags);
   cs= cs_number ? get_internal_charset(loader, cs_number, flags) : NULL;
@@ -740,7 +664,7 @@ my_charset_get_by_name(MY_CHARSET_LOADER *loader,
   {
     char index_file[FN_REFLEN + sizeof(MY_CHARSET_INDEX)];
     my_stpcpy(get_charsets_dir(index_file),MY_CHARSET_INDEX);
-    my_error(EE_UNKNOWN_CHARSET, MYF(ME_BELL), cs_name, index_file);
+    my_error(EE_UNKNOWN_CHARSET, MYF(0), cs_name, index_file);
   }
 
   DBUG_RETURN(cs);
@@ -970,11 +894,12 @@ CHARSET_INFO *fs_character_set()
     to_length           Length of destination buffer, or 0
     from                The string to escape
     length              The length of the string to escape
+    quote               The quote the buffer will be escaped against
 
   DESCRIPTION
-    This escapes the contents of a string by doubling up any apostrophes that
-    it contains. This is used when the NO_BACKSLASH_ESCAPES SQL_MODE is in
-    effect on the server.
+    This escapes the contents of a string by doubling up any character
+    specified by the quote parameter. This is used when the
+    NO_BACKSLASH_ESCAPES SQL_MODE is in effect on the server.
 
   NOTE
     To be consistent with escape_string_for_mysql(), to_length may be 0 to
@@ -987,7 +912,7 @@ CHARSET_INFO *fs_character_set()
 
 size_t escape_quotes_for_mysql(CHARSET_INFO *charset_info,
                                char *to, size_t to_length,
-                               const char *from, size_t length)
+                               const char *from, size_t length, char quote)
 {
   const char *to_start= to;
   const char *end, *to_end=to_start + (to_length ? to_length-1 : 2*length);
@@ -1013,15 +938,15 @@ size_t escape_quotes_for_mysql(CHARSET_INFO *charset_info,
       turned into a multi-byte character by the addition of an escaping
       character, because we are only escaping the ' character with itself.
      */
-    if (*from == '\'')
+    if (*from == quote)
     {
       if (to + 2 > to_end)
       {
         overflow= TRUE;
         break;
       }
-      *to++= '\'';
-      *to++= '\'';
+      *to++= quote;
+      *to++= quote;
     }
     else
     {

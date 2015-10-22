@@ -1,4 +1,4 @@
-/* Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,9 +13,8 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "sql_priv.h"
-#include "unireg.h"
 #include "event_scheduler.h"
+
 #include "events.h"
 #include "event_data_objects.h"
 #include "event_queue.h"
@@ -23,6 +22,8 @@
 #include "auth_common.h"             // SUPER_ACL
 #include "log.h"
 #include "mysqld_thd_manager.h"      // Global_THD_manager
+#include "sql_error.h"               // Sql_condition
+#include "sql_class.h"               // THD
 
 /**
   @addtogroup Event_Scheduler
@@ -34,7 +35,7 @@
 #define COND_STATE_WAIT(mythd, abstime, stage) \
         cond_wait(mythd, abstime, stage, __func__, __FILE__, __LINE__)
 
-extern pthread_attr_t connection_attrib;
+extern my_thread_attr_t connection_attrib;
 
 
 Event_db_repository *Event_worker_thread::db_repository;
@@ -130,7 +131,7 @@ Event_worker_thread::print_warnings(THD *thd, Event_job_data *et)
 bool
 post_init_event_thread(THD *thd)
 {
-  if (my_thread_init() || init_thr_lock() || thd->store_globals())
+  if (my_thread_init() || thd->store_globals())
   {
     return TRUE;
   }
@@ -155,8 +156,7 @@ deinit_event_thread(THD *thd)
 {
   Global_THD_manager *thd_manager= Global_THD_manager::get_instance();
   thd->proc_info= "Clearing";
-  DBUG_ASSERT(thd->net.buff != 0);
-  net_end(&thd->net);
+  thd->get_protocol_classic()->end_net();
   DBUG_PRINT("exit", ("Event thread finishing"));
 
   thd->release_resources();
@@ -184,16 +184,16 @@ void
 pre_init_event_thread(THD* thd)
 {
   DBUG_ENTER("pre_init_event_thread");
-  thd->client_capabilities= 0;
-  thd->security_ctx->master_access= 0;
-  thd->security_ctx->db_access= 0;
-  thd->security_ctx->host_or_ip= (char*)my_localhost;
-  my_net_init(&thd->net, NULL);
-  thd->security_ctx->set_user((char*)"event_scheduler");
-  thd->net.read_timeout= slave_net_timeout;
+  thd->security_context()->set_master_access(0);
+  thd->security_context()->set_db_access(0);
+  thd->security_context()->set_host_or_ip_ptr((char *) my_localhost,
+                                              strlen(my_localhost));
+  thd->get_protocol_classic()->init_net(NULL);
+  thd->security_context()->set_user_ptr(C_STRING_WITH_LEN("event_scheduler"));
+  thd->get_protocol_classic()->get_net()->read_timeout= slave_net_timeout;
   thd->slave_thread= 0;
   thd->variables.option_bits|= OPTION_AUTO_IS_NULL;
-  thd->client_capabilities|= CLIENT_MULTI_RESULTS;
+  thd->get_protocol_classic()->set_client_capabilities(CLIENT_MULTI_RESULTS);
 
   thd->set_new_thread_id();
   /*
@@ -222,11 +222,10 @@ pre_init_event_thread(THD* thd)
     0  OK
 */
 
-pthread_handler_t
-event_scheduler_thread(void *arg)
+extern "C" void *event_scheduler_thread(void *arg)
 {
   /* needs to be first for thread_stack */
-  THD *thd= (THD *) ((struct scheduler_param *) arg)->thd;
+  THD *thd= ((struct scheduler_param *) arg)->thd;
   Event_scheduler *scheduler= ((struct scheduler_param *) arg)->scheduler;
   bool res;
 
@@ -237,13 +236,15 @@ event_scheduler_thread(void *arg)
   res= post_init_event_thread(thd);
 
   DBUG_ENTER("event_scheduler_thread");
+  my_claim(arg);
+  thd->claim_memory_ownership();
   my_free(arg);
   if (!res)
     scheduler->run(thd);
   else
   {
     thd->proc_info= "Clearing";
-    net_end(&thd->net);
+    thd->get_protocol_classic()->end_net();
     delete thd;
   }
 
@@ -265,13 +266,16 @@ event_scheduler_thread(void *arg)
     0  OK
 */
 
-pthread_handler_t
-event_worker_thread(void *arg)
+extern "C" void *event_worker_thread(void *arg)
 {
   THD *thd;
   Event_queue_element_for_exec *event= (Event_queue_element_for_exec *)arg;
 
+  event->claim_memory_ownership();
+
   thd= event->thd;
+
+  thd->claim_memory_ownership();
 
   mysql_thread_set_psi_id(thd->thread_id());
 
@@ -405,8 +409,9 @@ Event_scheduler::start(int *err_no)
 {
   THD *new_thd= NULL;
   bool ret= false;
-  pthread_t th;
+  my_thread_handle th;
   struct scheduler_param *scheduler_param_value;
+  ulong master_access;
   DBUG_ENTER("Event_scheduler::start");
 
   LOCK_DATA();
@@ -437,7 +442,8 @@ Event_scheduler::start(int *err_no)
 
     Same goes for transaction access mode. Set it to read-write for this thd.
   */
-  new_thd->security_ctx->master_access |= SUPER_ACL;
+  master_access= new_thd->security_context()->master_access();
+  new_thd->security_context()->set_master_access(master_access | SUPER_ACL);
   new_thd->variables.tx_read_only= false;
   new_thd->tx_read_only= false;
 
@@ -462,8 +468,7 @@ Event_scheduler::start(int *err_no)
                     *err_no);
 
     new_thd->proc_info= "Clearing";
-    DBUG_ASSERT(new_thd->net.buff != 0);
-    net_end(&new_thd->net);
+    new_thd->get_protocol_classic()->end_net();
 
     state= INITIALIZED;
     scheduler_thd= NULL;
@@ -561,7 +566,7 @@ bool
 Event_scheduler::execute_top(Event_queue_element_for_exec *event_name)
 {
   THD *new_thd;
-  pthread_t th;
+  my_thread_handle th;
   int res= 0;
   DBUG_ENTER("Event_scheduler::execute_top");
   if (!(new_thd= new THD()))
@@ -594,8 +599,7 @@ Event_scheduler::execute_top(Event_queue_element_for_exec *event_name)
                     " thread (errno=%d). Stopping event scheduler", res);
 
     new_thd->proc_info= "Clearing";
-    DBUG_ASSERT(new_thd->net.buff != 0);
-    net_end(&new_thd->net);
+    new_thd->get_protocol_classic()->end_net();
 
     goto error;
   }
@@ -828,9 +832,10 @@ Event_scheduler::cond_wait(THD *thd, struct timespec *abstime, const PSI_stage_i
   if (thd)
   {
     /*
-      This will free the lock so we need to relock. Not the best thing to
-      do but we need to obey cond_wait()
+      Need to unlock before exit_cond, so we need to relock.
+      Not the best thing to do but we need to obey cond_wait()
     */
+    UNLOCK_DATA();
     thd->exit_cond(NULL, src_func, src_file, src_line);
     LOCK_DATA();
   }

@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,8 +16,15 @@
 #ifndef SQL_ALTER_TABLE_H
 #define SQL_ALTER_TABLE_H
 
-class Key;
+#include "sql_cmd.h"  // Sql_cmd
+#include "sql_list.h" // List
+#include "key.h"        // KEY
 
+class Create_field;
+class Item;
+class Key;
+class String;
+struct TABLE_LIST;
 
 /**
   Class representing DROP COLUMN, DROP KEY and DROP FOREIGN KEY
@@ -192,6 +199,12 @@ public:
   // Set for RENAME INDEX
   static const uint ALTER_RENAME_INDEX          = 1L << 27;
 
+  // Set for adding/altering stored generated columns
+  static const uint ALTER_STORED_GCOLUMN        = 1L << 28;
+
+  // Set for adding/altering virtual generated columns
+  static const uint ALTER_VIRTUAL_GCOLUMN       = 1L << 29;
+
   enum enum_enable_or_disable { LEAVE_AS_IS, ENABLE, DISABLE };
 
   /**
@@ -231,7 +244,12 @@ public:
   };
 
 
-  // Columns and keys to be dropped.
+  /**
+     Columns and keys to be dropped.
+     After mysql_prepare_alter_table() it contains only foreign keys and
+     virtual generated columns to be dropped. This information is necessary
+     for the storage engine to do in-place alter.
+  */
   List<Alter_drop>              drop_list;
   // Columns for ALTER_COLUMN_CHANGE_DEFAULT.
   List<Alter_column>            alter_list;

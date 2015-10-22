@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,7 +14,9 @@
    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "mysys_err.h"
+#include "my_thread_local.h"
 #include <sys/types.h>
 #include <sys/stat.h>
 #ifdef _WIN32
@@ -37,7 +39,7 @@ int my_mkdir(const char *dir, int Flags, myf MyFlags)
     if (MyFlags & (MY_FFNF | MY_FAE | MY_WME))
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(EE_CANT_MKDIR,  MYF(ME_BELL+ME_WAITTANG), dir,
+      my_error(EE_CANT_MKDIR,  MYF(0), dir,
                my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     }
     DBUG_RETURN(-1);

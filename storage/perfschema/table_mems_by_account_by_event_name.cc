@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -19,7 +19,7 @@
 */
 
 #include "my_global.h"
-#include "my_pthread.h"
+#include "my_thread.h"
 #include "pfs_instr_class.h"
 #include "pfs_column_types.h"
 #include "pfs_column_values.h"
@@ -27,6 +27,8 @@
 #include "pfs_global.h"
 #include "pfs_visitor.h"
 #include "pfs_memory.h"
+#include "pfs_buffer_container.h"
+#include "field.h"
 
 THR_LOCK table_mems_by_account_by_event_name::m_table_lock;
 
@@ -34,7 +36,7 @@ static const TABLE_FIELD_TYPE field_types[]=
 {
  {
     { C_STRING_WITH_LEN("USER") },
-    { C_STRING_WITH_LEN("char(16)") },
+    { C_STRING_WITH_LEN("char(" USERNAME_CHAR_LENGTH_STR ")") },
     { NULL, 0}
   },
   {
@@ -115,7 +117,8 @@ table_mems_by_account_by_event_name::m_share=
   sizeof(pos_mems_by_account_by_event_name),
   &m_table_lock,
   &m_field_def,
-  false /* checked */
+  false, /* checked */
+  false  /* perpetual */
 };
 
 PFS_engine_table* table_mems_by_account_by_event_name::create(void)
@@ -134,7 +137,7 @@ table_mems_by_account_by_event_name::delete_all_rows(void)
 ha_rows
 table_mems_by_account_by_event_name::get_row_count(void)
 {
-  return account_max * memory_class_max;
+  return global_account_container.get_row_count() * memory_class_max;
 }
 
 table_mems_by_account_by_event_name::table_mems_by_account_by_event_name()
@@ -152,21 +155,31 @@ int table_mems_by_account_by_event_name::rnd_next(void)
 {
   PFS_account *account;
   PFS_memory_class *memory_class;
+  bool has_more_account= true;
 
   for (m_pos.set_at(&m_next_pos);
-       m_pos.has_more_account();
+       has_more_account;
        m_pos.next_account())
   {
-    account= &account_array[m_pos.m_index_1];
-    if (account->m_lock.is_populated())
+    account= global_account_container.get(m_pos.m_index_1, & has_more_account);
+    if (account != NULL)
     {
-      memory_class= find_memory_class(m_pos.m_index_2);
-      if (memory_class)
+      do
       {
-        make_row(account, memory_class);
-        m_next_pos.set_after(&m_pos);
-        return 0;
+        memory_class= find_memory_class(m_pos.m_index_2);
+        if (memory_class != NULL)
+        {
+          if (! memory_class->is_global())
+          {
+            make_row(account, memory_class);
+            m_next_pos.set_after(&m_pos);
+            return 0;
+          }
+
+          m_pos.next_class();
+        }
       }
+      while (memory_class != NULL);
     }
   }
 
@@ -179,17 +192,19 @@ int table_mems_by_account_by_event_name::rnd_pos(const void *pos)
   PFS_memory_class *memory_class;
 
   set_position(pos);
-  DBUG_ASSERT(m_pos.m_index_1 < account_max);
 
-  account= &account_array[m_pos.m_index_1];
-  if (! account->m_lock.is_populated())
-    return HA_ERR_RECORD_DELETED;
-
-  memory_class= find_memory_class(m_pos.m_index_2);
-  if (memory_class)
+  account= global_account_container.get(m_pos.m_index_1);
+  if (account != NULL)
   {
-    make_row(account, memory_class);
-    return 0;
+    memory_class= find_memory_class(m_pos.m_index_2);
+    if (memory_class != NULL)
+    {
+      if (! memory_class->is_global())
+      {
+        make_row(account, memory_class);
+        return 0;
+      }
+    }
   }
 
   return HA_ERR_RECORD_DELETED;
@@ -209,7 +224,10 @@ void table_mems_by_account_by_event_name
   m_row.m_event_name.make_row(klass);
 
   PFS_connection_memory_visitor visitor(klass);
-  PFS_connection_iterator::visit_account(account, true, & visitor);
+  PFS_connection_iterator::visit_account(account,
+                                         true,  /* threads */
+                                         false, /* THDs */
+                                         & visitor);
 
   if (! account->m_lock.end_optimistic_lock(&lock))
     return;

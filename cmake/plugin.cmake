@@ -1,4 +1,4 @@
-# Copyright (c) 2009, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -53,13 +53,14 @@ ENDMACRO()
 MACRO(MYSQL_ADD_PLUGIN)
   MYSQL_PARSE_ARGUMENTS(ARG
     "LINK_LIBRARIES;DEPENDENCIES;MODULE_OUTPUT_NAME;STATIC_OUTPUT_NAME"
-    "STORAGE_ENGINE;STATIC_ONLY;MODULE_ONLY;MANDATORY;DEFAULT;DISABLED;NOT_FOR_EMBEDDED;RECOMPILE_FOR_EMBEDDED;DTRACE_INSTRUMENTED"
+    "STORAGE_ENGINE;STATIC_ONLY;MODULE_ONLY;MANDATORY;DEFAULT;DISABLED;NOT_FOR_EMBEDDED;RECOMPILE_FOR_EMBEDDED;DTRACE_INSTRUMENTED;TEST_ONLY"
     ${ARGN}
   )
   
   # Add common include directories
   INCLUDE_DIRECTORIES(${CMAKE_SOURCE_DIR}/include 
                     ${CMAKE_SOURCE_DIR}/sql
+                    ${CMAKE_SOURCE_DIR}/libbinlogevents/include
                     ${CMAKE_SOURCE_DIR}/sql/auth
                     ${CMAKE_SOURCE_DIR}/regex
                     ${SSL_INCLUDE_DIRS}
@@ -235,8 +236,16 @@ MACRO(MYSQL_ADD_PLUGIN)
     SET_TARGET_PROPERTIES(${target} PROPERTIES 
       OUTPUT_NAME "${ARG_MODULE_OUTPUT_NAME}")  
     # Install dynamic library
-    MYSQL_INSTALL_TARGETS(${target} DESTINATION ${INSTALL_PLUGINDIR} COMPONENT Server)
-    INSTALL_DEBUG_TARGET(${target} DESTINATION ${INSTALL_PLUGINDIR}/debug)
+    SET(INSTALL_COMPONENT Server)
+    IF(ARG_TEST_ONLY)
+      SET(INSTALL_COMPONENT Test)
+    ENDIF()
+    MYSQL_INSTALL_TARGETS(${target}
+      DESTINATION ${INSTALL_PLUGINDIR}
+      COMPONENT ${INSTALL_COMPONENT})
+    INSTALL_DEBUG_TARGET(${target}
+      DESTINATION ${INSTALL_PLUGINDIR}/debug
+      COMPONENT ${INSTALL_COMPONENT})
     # Add installed files to list for RPMs
     FILE(APPEND ${CMAKE_BINARY_DIR}/support-files/plugins.files
             "%attr(755, root, root) %{_prefix}/${INSTALL_PLUGINDIR}/${ARG_MODULE_OUTPUT_NAME}.so\n"
@@ -272,11 +281,4 @@ MACRO(CONFIGURE_PLUGINS)
       ADD_SUBDIRECTORY(${dir})
     ENDIF()
   ENDFOREACH()
-  FOREACH(dir ${dirs_plugin})
-    IF (EXISTS ${dir}/.bzr)
-      MESSAGE(STATUS "Found repo ${dir}/.bzr")
-      LIST(APPEND PLUGIN_BZR_REPOS "${dir}")
-    ENDIF()
-  ENDFOREACH()
-  SET(PLUGIN_REPOS "${PLUGIN_BZR_REPOS}" CACHE INTERNAL "")
 ENDMACRO()

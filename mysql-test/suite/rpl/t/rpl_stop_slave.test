@@ -1,6 +1,8 @@
 #Want to skip this test from daily Valgrind execution
 --source include/no_valgrind_without_big.inc
 
+# Needed because test uses CREATE TEMPORARY/DROP TEMPORARY inside transaction
+source include/not_gtid_enabled.inc;
 source include/master-slave.inc;
 source include/have_innodb.inc;
 source include/have_myisam.inc;
@@ -10,7 +12,6 @@ source include/have_debug_sync.inc;
 # 72475 renders this case irrelevant for mixed mode as temp tables are no
 # longer replicated to the slave.
 source include/have_binlog_format_statement.inc;
-source include/not_gtid_enabled.inc;
 
 --echo
 --echo # BUG#56118 STOP SLAVE does not wait till trx with CREATE TMP TABLE ends

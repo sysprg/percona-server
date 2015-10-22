@@ -48,10 +48,6 @@ where name like "wait/synch/mutex/sql/LOCK_status";
 count(name)
 1
 select count(name) from mutex_instances
-where name like "wait/synch/mutex/sql/LOCK_error_log";
-count(name)
-1
-select count(name) from mutex_instances
 where name like "wait/synch/mutex/sql/LOCK_uuid_generator";
 count(name)
 1
@@ -64,7 +60,7 @@ where name like "wait/synch/mutex/sql/LOCK_slave_list";
 count(name)
 1
 select count(name) from mutex_instances
-where name like "wait/synch/mutex/sql/LOCK_active_mi";
+where name like "wait/synch/mutex/sql/LOCK_msr_map";
 count(name)
 1
 select count(name) from mutex_instances
@@ -117,10 +113,6 @@ count(name)
 1
 select count(name) from mutex_instances
 where name like "wait/synch/mutex/sql/tz_LOCK";
-count(name)
-1
-select count(name) from rwlock_instances
-where name like "wait/synch/rwlock/sql/LOCK_grant";
 count(name)
 1
 select count(name) from rwlock_instances

@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,23 +13,47 @@
    along with this program; if not, write to the Free Software Foundation,
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
+#ifdef HAVE_REPLICATION
 #include "rpl_binlog_sender.h"
 
-#ifdef HAVE_REPLICATION
-#include "rpl_handler.h"
-#include "debug_sync.h"
-#include "my_pthread.h"
-#include "rpl_master.h"
+#include "debug_sync.h"              // debug_sync_set_action
+#include "log.h"                     // sql_print_information
+#include "log_event.h"               // MAX_MAX_ALLOWED_PACKET
+#include "rpl_constants.h"           // BINLOG_DUMP_NON_BLOCK
+#include "rpl_handler.h"             // RUN_HOOK
+#include "rpl_master.h"              // opt_sporadic_binlog_dump_fail
+#include "rpl_reporting.h"           // MAX_SLAVE_ERRMSG
+#include "sql_class.h"               // THD
+
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
 
 #ifndef DBUG_OFF
   static uint binlog_dump_count= 0;
 #endif
+using binary_log::checksum_crc32;
 
 const uint32 Binlog_sender::PACKET_MIN_SIZE= 4096;
 const uint32 Binlog_sender::PACKET_MAX_SIZE= UINT_MAX32;
 const ushort Binlog_sender::PACKET_SHRINK_COUNTER_THRESHOLD= 100;
 const float Binlog_sender::PACKET_GROW_FACTOR= 2.0;
 const float Binlog_sender::PACKET_SHRINK_FACTOR= 0.5;
+
+Binlog_sender::Binlog_sender(THD *thd, const char *start_file,
+                             my_off_t start_pos,
+                             Gtid_set *exclude_gtids, uint32 flag)
+  : m_thd(thd),
+    m_packet(*thd->get_protocol_classic()->get_packet()),
+    m_start_file(start_file),
+    m_start_pos(start_pos), m_exclude_gtid(exclude_gtids),
+    m_using_gtid_protocol(exclude_gtids != NULL),
+    m_check_previous_gtid_event(exclude_gtids != NULL),
+    m_gtid_clear_fd_created_flag(exclude_gtids == NULL),
+    m_diag_area(false),
+    m_errmsg(NULL), m_errno(0), m_last_file(NULL), m_last_pos(0),
+    m_half_buffer_size_req_counter(0), m_new_shrink_size(PACKET_MIN_SIZE),
+    m_flag(flag), m_observe_transmission(false), m_transmit_started(false)
+  {}
 
 void Binlog_sender::init()
 {
@@ -38,13 +62,14 @@ void Binlog_sender::init()
 
   thd->push_diagnostics_area(&m_diag_area);
   init_heartbeat_period();
+  m_last_event_sent_ts= time(0);
 
   mysql_mutex_lock(&thd->LOCK_thd_data);
   thd->current_linfo= &m_linfo;
   mysql_mutex_unlock(&thd->LOCK_thd_data);
 
   /* Initialize the buffer only once. */
-  m_packet.realloc(PACKET_MIN_SIZE); // size of the buffer
+  m_packet.mem_realloc(PACKET_MIN_SIZE); // size of the buffer
   m_new_shrink_size= PACKET_MIN_SIZE;
   DBUG_PRINT("info", ("Initial packet->alloced_length: %zu",
                       m_packet.alloced_length()));
@@ -61,10 +86,18 @@ void Binlog_sender::init()
     DBUG_VOID_RETURN;
   }
 
-  if (m_using_gtid_protocol && gtid_mode != GTID_MODE_ON)
+  if (m_using_gtid_protocol)
   {
-    set_fatal_error("Request to dump GTID when @@GLOBAL_.GTID_MODE <> ON.");
-    DBUG_VOID_RETURN;
+    enum_gtid_mode gtid_mode= get_gtid_mode(GTID_MODE_LOCK_NONE);
+    if (gtid_mode != GTID_MODE_ON)
+    {
+      char buf[MYSQL_ERRMSG_SIZE];
+      sprintf(buf, "The replication sender thread cannot start in "
+              "AUTO_POSITION mode: this server has GTID_MODE = %.192s "
+              "instead of ON.", get_gtid_mode_string(gtid_mode));
+      set_fatal_error(buf);
+      DBUG_VOID_RETURN;
+    }
   }
 
   if (check_start_file())
@@ -212,6 +245,19 @@ void Binlog_sender::run()
 
   THD_STAGE_INFO(m_thd, stage_waiting_to_finalize_termination);
   char error_text[MAX_SLAVE_ERRMSG];
+
+  /*
+    If the dump thread was killed because of a duplicate slave UUID we
+    will fail throwing an error to the slave so it will not try to
+    reconnect anymore.
+  */
+  mysql_mutex_lock(&m_thd->LOCK_thd_data);
+  bool was_killed_by_duplicate_slave_uuid= m_thd->duplicate_slave_uuid;
+  mysql_mutex_unlock(&m_thd->LOCK_thd_data);
+  if (was_killed_by_duplicate_slave_uuid)
+    set_fatal_error("A slave with the same server_uuid as this slave "
+                    "has connected to the master");
+
   if (file > 0)
   {
     if (is_fatal_error())
@@ -237,23 +283,7 @@ void Binlog_sender::run()
 
 my_off_t Binlog_sender::send_binlog(IO_CACHE *log_cache, my_off_t start_pos)
 {
-  /*
-    If we are skipping the beginning of the binlog file based on the position
-    asked by the slave, we must clear the log_pos and the created flag of the
-    Format_description_log_event to be sent.
-  */
-  bool clear_log_pos= start_pos > BIN_LOG_HEADER_SIZE;
-  /*
-    As when using GTID protocol the slave don't ask for a position, we will
-    clear the log_pos and the created flag of the Format_description_log_event
-    just if we are skipping at least the first GTID of the binlog file.
-  */
-  if (m_using_gtid_protocol)
-  {
-    clear_log_pos= m_gtid_clear_fd_created_flag;
-  }
-
-  if (unlikely(send_format_description_event(log_cache, clear_log_pos)))
+  if (unlikely(send_format_description_event(log_cache, start_pos)))
     return 1;
 
   if (start_pos == BIN_LOG_HEADER_SIZE)
@@ -361,11 +391,15 @@ int Binlog_sender::send_events(IO_CACHE *log_cache, my_off_t end_pos)
                             &event_ptr, &event_len)))
       DBUG_RETURN(1);
 
+    Log_event_type event_type= (Log_event_type)event_ptr[EVENT_TYPE_OFFSET];
+    if (unlikely(check_event_type(event_type, log_file, log_pos)))
+      DBUG_RETURN(1);
+
     DBUG_EXECUTE_IF("dump_thread_wait_before_send_xid",
                     {
-                      if ((Log_event_type) event_ptr[LOG_EVENT_OFFSET] == XID_EVENT)
+                      if (event_type == binary_log::XID_EVENT)
                       {
-                        net_flush(&thd->net);
+                        thd->get_protocol_classic()->flush_net();
                         const char act[]=
                           "now "
                           "wait_for signal.continue";
@@ -386,8 +420,30 @@ int Binlog_sender::send_events(IO_CACHE *log_cache, my_off_t end_pos)
     if (m_exclude_gtid && (in_exclude_group= skip_event(event_ptr, event_len,
                                                         in_exclude_group)))
     {
-      exclude_group_end_pos= log_pos;
-      DBUG_PRINT("info", ("Event is skipped\n"));
+      /*
+        If we have not send any event from past 'heartbeat_period' time
+        period, then it is time to send a packet before skipping this group.
+       */
+      DBUG_EXECUTE_IF("inject_2sec_sleep_when_skipping_an_event",
+                      {
+                      my_sleep(2000000);
+                      });
+      time_t now= time(0);
+      DBUG_ASSERT(now >= m_last_event_sent_ts);
+      bool time_for_hb_event= ((ulonglong)(now - m_last_event_sent_ts)
+                          >= (ulonglong)(m_heartbeat_period/1000000000UL));
+      if (time_for_hb_event)
+      {
+        if (unlikely(send_heartbeat_event(log_pos)))
+          DBUG_RETURN(1);
+        exclude_group_end_pos= 0;
+      }
+      else
+      {
+        exclude_group_end_pos= log_pos;
+      }
+      DBUG_PRINT("info", ("Event of type %s is skipped",
+                          Log_event::get_type_str(event_type)));
     }
     else
     {
@@ -420,12 +476,82 @@ int Binlog_sender::send_events(IO_CACHE *log_cache, my_off_t end_pos)
       DBUG_RETURN(1);
   }
 
+  /*
+    A heartbeat is needed before waiting for more events, if some
+    events are skipped. This is needed so that the slave can increase
+    master_log_pos correctly.
+  */
   if (unlikely(in_exclude_group))
   {
     if (send_heartbeat_event(log_pos))
       DBUG_RETURN(1);
   }
   DBUG_RETURN(0);
+}
+
+
+bool Binlog_sender::check_event_type(Log_event_type type,
+                                     const char *log_file, my_off_t log_pos)
+{
+  if (type == binary_log::ANONYMOUS_GTID_LOG_EVENT)
+  {
+    /*
+      Normally, there will not be any anonymous events when
+      auto_position is enabled, since both the master and the slave
+      refuse to connect if the master is not using GTID_MODE=ON.
+      However, if the master changes GTID_MODE after the connection
+      was initialized, or if the slave requests to replicate
+      transactions that appear before the last anonymous event, then
+      this can happen. Then we generate this error to prevent sending
+      anonymous transactions to the slave.
+    */
+    if (m_using_gtid_protocol)
+    {
+      DBUG_EXECUTE_IF("skip_sender_anon_autoposition_error",
+                      {
+                        return false;
+                      };);
+      char buf[MYSQL_ERRMSG_SIZE];
+      sprintf(buf, ER(ER_CANT_REPLICATE_ANONYMOUS_WITH_AUTO_POSITION),
+              log_file, log_pos);
+      set_fatal_error(buf);
+      return true;
+    }
+    /*
+      Normally, there will not be any anonymous events when master has
+      GTID_MODE=ON, since anonymous events are not generated when
+      GTID_MODE=ON.  However, this can happen if the master changes
+      GTID_MODE to ON when the slave has not yet replicated all
+      anonymous transactions.
+    */
+    else if (get_gtid_mode(GTID_MODE_LOCK_NONE) == GTID_MODE_ON)
+    {
+      char buf[MYSQL_ERRMSG_SIZE];
+      sprintf(buf, ER(ER_CANT_REPLICATE_ANONYMOUS_WITH_GTID_MODE_ON),
+              log_file, log_pos);
+      set_fatal_error(buf);
+      return true;
+    }
+  }
+  else if (type == binary_log::GTID_LOG_EVENT)
+  {
+    /*
+      Normally, there will not be any GTID events when master has
+      GTID_MODE=OFF, since GTID events are not generated when
+      GTID_MODE=OFF.  However, this can happen if the master changes
+      GTID_MODE to OFF when the slave has not yet replicated all GTID
+      transactions.
+    */
+    if (get_gtid_mode(GTID_MODE_LOCK_NONE) == GTID_MODE_OFF)
+    {
+      char buf[MYSQL_ERRMSG_SIZE];
+      sprintf(buf, ER(ER_CANT_REPLICATE_GTID_WITH_GTID_MODE_OFF),
+              log_file, log_pos);
+      set_fatal_error(buf);
+      return true;
+    }
+  }
+  return false;
 }
 
 
@@ -437,21 +563,19 @@ inline bool Binlog_sender::skip_event(const uchar *event_ptr, uint32 event_len,
   uint8 event_type= (Log_event_type) event_ptr[LOG_EVENT_OFFSET];
   switch (event_type)
   {
-  case GTID_LOG_EVENT:
+  case binary_log::GTID_LOG_EVENT:
     {
       Format_description_log_event fd_ev(BINLOG_VERSION);
-      fd_ev.checksum_alg= m_event_checksum_alg;
-
+      fd_ev.common_footer->checksum_alg= m_event_checksum_alg;
       Gtid_log_event gtid_ev((const char *)event_ptr, event_checksum_on() ?
                              event_len - BINLOG_CHECKSUM_LEN : event_len,
                              &fd_ev);
       Gtid gtid;
       gtid.sidno= gtid_ev.get_sidno(m_exclude_gtid->get_sid_map());
       gtid.gno= gtid_ev.get_gno();
-
       DBUG_RETURN(m_exclude_gtid->contains_gtid(gtid));
     }
-  case ROTATE_EVENT:
+  case binary_log::ROTATE_EVENT:
     DBUG_RETURN(false);
   }
   DBUG_RETURN(in_exclude_group);
@@ -477,7 +601,7 @@ int Binlog_sender::wait_new_events(my_off_t log_pos)
       ret= wait_without_heartbeat();
   }
 
-  /* it releases the lock set in ENTER_COND */
+  mysql_bin_log.unlock_binlog_end_pos();
   m_thd->EXIT_COND(&old_stage);
   return ret;
 }
@@ -550,6 +674,79 @@ int Binlog_sender::check_start_file()
   }
   else if (m_using_gtid_protocol)
   {
+    /*
+      In normal scenarios, it is not possible that Slave will
+      contain more gtids than Master with resepctive to Master's
+      UUID. But it could be possible case if Master's binary log
+      is truncated(due to raid failure) or Master's binary log is
+      deleted but GTID_PURGED was not set properly. That scenario
+      needs to be validated, i.e., it should *always* be the case that
+      Slave's gtid executed set (+retrieved set) is a subset of
+      Master's gtid executed set with respective to Master's UUID.
+      If it happens, dump thread will be stopped during the handshake
+      with Slave (thus the Slave's I/O thread will be stopped with the
+      error. Otherwise, it can lead to data inconsistency between Master
+      and Slave.
+    */
+    Sid_map* slave_sid_map= m_exclude_gtid->get_sid_map();
+    DBUG_ASSERT(slave_sid_map);
+    global_sid_lock->wrlock();
+    const rpl_sid &server_sid= gtid_state->get_server_sid();
+    rpl_sidno subset_sidno= slave_sid_map->sid_to_sidno(server_sid);
+    Gtid_set
+      gtid_executed_and_owned(gtid_state->get_executed_gtids()->get_sid_map());
+
+    // gtids = executed_gtids & owned_gtids
+    if (gtid_executed_and_owned.add_gtid_set(gtid_state->get_executed_gtids())
+        != RETURN_STATUS_OK)
+    {
+      DBUG_ASSERT(0);
+    }
+    gtid_state->get_owned_gtids()->get_gtids(gtid_executed_and_owned);
+
+    if (!m_exclude_gtid->is_subset_for_sid(&gtid_executed_and_owned,
+                                           gtid_state->get_server_sidno(),
+                                           subset_sidno))
+    {
+      errmsg= ER(ER_SLAVE_HAS_MORE_GTIDS_THAN_MASTER);
+      global_sid_lock->unlock();
+      set_fatal_error(errmsg);
+      return 1;
+    }
+    /*
+      Setting GTID_PURGED (when GTID_EXECUTED set is empty i.e., when
+      previous_gtids are also empty) will make binlog rotate. That
+      leaves first binary log with empty previous_gtids and second
+      binary log's previous_gtids with the value of gtid_purged.
+      In find_first_log_not_in_gtid_set() while we search for a binary
+      log whose previous_gtid_set is subset of slave_gtid_executed,
+      in this particular case, server will always find the first binary
+      log with empty previous_gtids which is subset of any given
+      slave_gtid_executed. Thus Master thinks that it found the first
+      binary log which is actually not correct and unable to catch
+      this error situation. Hence adding below extra if condition
+      to check the situation. Slave should know about Master's purged GTIDs.
+      If Slave's GTID executed + retrieved set does not contain Master's
+      complete purged GTID list, that means Slave is requesting(expecting)
+      GTIDs which were purged by Master. We should let Slave know about the
+      situation. i.e., throw error if slave's GTID executed set is not
+      a superset of Master's purged GTID set.
+      The other case, where user deleted binary logs manually
+      (without using 'PURGE BINARY LOGS' command) but gtid_purged
+      is not set by the user, the following if condition cannot catch it.
+      But that is not a problem because in find_first_log_not_in_gtid_set()
+      while checking for subset previous_gtids binary log, the logic
+      will not find one and an error ER_MASTER_HAS_PURGED_REQUIRED_GTIDS
+      is thrown from there.
+    */
+    if (!gtid_state->get_lost_gtids()->is_subset(m_exclude_gtid))
+    {
+      errmsg= ER(ER_MASTER_HAS_PURGED_REQUIRED_GTIDS);
+      global_sid_lock->unlock();
+      set_fatal_error(errmsg);
+      return 1;
+    }
+    global_sid_lock->unlock();
     Gtid first_gtid= {0, 0};
     if (mysql_bin_log.find_first_log_not_in_gtid_set(index_entry_name,
                                                      m_exclude_gtid,
@@ -624,7 +821,7 @@ void Binlog_sender::init_checksum_alg()
   LEX_STRING name= {C_STRING_WITH_LEN("master_binlog_checksum")};
   user_var_entry *entry;
 
-  m_slave_checksum_alg= BINLOG_CHECKSUM_ALG_UNDEF;
+  m_slave_checksum_alg= binary_log::BINLOG_CHECKSUM_ALG_UNDEF;
 
   /* Protects m_thd->user_vars. */
   mysql_mutex_lock(&m_thd->LOCK_thd_data);
@@ -634,8 +831,8 @@ void Binlog_sender::init_checksum_alg()
   if (entry)
   {
     m_slave_checksum_alg=
-      find_type((char*) entry->ptr(), &binlog_checksum_typelib, 1) - 1;
-    DBUG_ASSERT(m_slave_checksum_alg < BINLOG_CHECKSUM_ALG_ENUM_END);
+      static_cast<enum_binlog_checksum_alg>(find_type((char*) entry->ptr(), &binlog_checksum_typelib, 1) - 1);
+    DBUG_ASSERT(m_slave_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END);
   }
 
   mysql_mutex_unlock(&m_thd->LOCK_thd_data);
@@ -656,7 +853,7 @@ int Binlog_sender::fake_rotate_event(const char *next_log_file,
   DBUG_ENTER("fake_rotate_event");
   const char* p = next_log_file + dirname_length(next_log_file);
   size_t ident_len = strlen(p);
-  size_t event_len = ident_len + LOG_EVENT_HEADER_LEN + ROTATE_HEADER_LEN +
+  size_t event_len = ident_len + LOG_EVENT_HEADER_LEN + Binary_log_event::ROTATE_HEADER_LEN +
     (event_checksum_on() ? BINLOG_CHECKSUM_LEN : 0);
 
   /* reset transmit packet for the fake rotate event below */
@@ -672,14 +869,14 @@ int Binlog_sender::fake_rotate_event(const char *next_log_file,
     real and fake Rotate events (if necessary)
   */
   int4store(header, 0);
-  header[EVENT_TYPE_OFFSET] = ROTATE_EVENT;
+  header[EVENT_TYPE_OFFSET] = binary_log::ROTATE_EVENT;
   int4store(header + SERVER_ID_OFFSET, server_id);
   int4store(header + EVENT_LEN_OFFSET, static_cast<uint32>(event_len));
   int4store(header + LOG_POS_OFFSET, 0);
   int2store(header + FLAGS_OFFSET, LOG_EVENT_ARTIFICIAL_F);
 
   int8store(rotate_header, log_pos);
-  memcpy(rotate_header + ROTATE_HEADER_LEN, p, ident_len);
+  memcpy(rotate_header + Binary_log_event::ROTATE_HEADER_LEN, p, ident_len);
 
   if (event_checksum_on())
     calc_event_checksum(header, event_len);
@@ -689,8 +886,8 @@ int Binlog_sender::fake_rotate_event(const char *next_log_file,
 
 inline void Binlog_sender::calc_event_checksum(uchar *event_ptr, size_t event_len)
 {
-  ha_checksum crc= my_checksum(0L, NULL, 0);
-  crc= my_checksum(crc, event_ptr, event_len - BINLOG_CHECKSUM_LEN);
+  ha_checksum crc= checksum_crc32(0L, NULL, 0);
+  crc= checksum_crc32(crc, event_ptr, event_len - BINLOG_CHECKSUM_LEN);
   int4store(event_ptr + event_len - BINLOG_CHECKSUM_LEN, crc);
 }
 
@@ -723,32 +920,35 @@ inline int Binlog_sender::reset_transmit_packet(ushort flags, size_t event_len)
 }
 
 int Binlog_sender::send_format_description_event(IO_CACHE *log_cache,
-                                                 bool clear_log_pos)
+                                                 my_off_t start_pos)
 {
   DBUG_ENTER("Binlog_sender::send_format_description_event");
   uchar* event_ptr;
   uint32 event_len;
 
-  if (read_event(log_cache, BINLOG_CHECKSUM_ALG_OFF, &event_ptr, &event_len))
+  if (read_event(log_cache, binary_log::BINLOG_CHECKSUM_ALG_OFF, &event_ptr,
+                 &event_len))
     DBUG_RETURN(1);
 
   DBUG_PRINT("info",
              ("Looked for a Format_description_log_event, found event type %s",
               Log_event::get_type_str((Log_event_type) event_ptr[EVENT_TYPE_OFFSET])));
 
-  if (event_ptr[EVENT_TYPE_OFFSET] != FORMAT_DESCRIPTION_EVENT)
+  if (event_ptr[EVENT_TYPE_OFFSET] != binary_log::FORMAT_DESCRIPTION_EVENT)
   {
     set_fatal_error("Could not find format_description_event in binlog file");
     DBUG_RETURN(1);
   }
 
-  m_event_checksum_alg= get_checksum_alg((const char *)event_ptr, event_len);
+  DBUG_ASSERT(event_ptr[LOG_POS_OFFSET] > 0);
+  m_event_checksum_alg=
+    Log_event_footer::get_checksum_alg((const char *)event_ptr, event_len);
 
-  DBUG_ASSERT(m_event_checksum_alg < BINLOG_CHECKSUM_ALG_ENUM_END ||
-              m_event_checksum_alg == BINLOG_CHECKSUM_ALG_UNDEF);
+  DBUG_ASSERT(m_event_checksum_alg < binary_log::BINLOG_CHECKSUM_ALG_ENUM_END ||
+              m_event_checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF);
 
   /* Slave does not support checksum, but binary events include checksum */
-  if (m_slave_checksum_alg == BINLOG_CHECKSUM_ALG_UNDEF &&
+  if (m_slave_checksum_alg == binary_log::BINLOG_CHECKSUM_ALG_UNDEF &&
       event_checksum_on())
   {
     set_fatal_error("Slave can not handle replication events with the "
@@ -762,18 +962,42 @@ int Binlog_sender::send_format_description_event(IO_CACHE *log_cache,
 
   event_ptr[FLAGS_OFFSET] &= ~LOG_EVENT_BINLOG_IN_USE_F;
 
-  /*
-    Mark that this event with "log_pos=0", so the slave should not increment
-    master's binlog position (rli->group_master_log_pos).
-  */
-  if (clear_log_pos)
+  bool event_updated= false;
+  if (m_using_gtid_protocol)
   {
-    int4store(event_ptr + LOG_POS_OFFSET, 0);
-    int4store(event_ptr + LOG_EVENT_MINIMAL_HEADER_LEN + ST_CREATED_OFFSET, 0);
-    /* fix the checksum due to latest changes in header */
-    if (event_checksum_on())
-      calc_event_checksum(event_ptr, event_len);
+    if (m_gtid_clear_fd_created_flag)
+    {
+      /*
+        As we are skipping at least the first transaction of the binlog,
+        we must clear the "created" field of the FD event (set it to 0)
+        to avoid destroying temp tables on slave.
+      */
+      int4store(event_ptr + LOG_EVENT_MINIMAL_HEADER_LEN + ST_CREATED_OFFSET,
+                0);
+      event_updated= true;
+    }
   }
+  else if (start_pos > BIN_LOG_HEADER_SIZE)
+  {
+    /*
+      If we are skipping the beginning of the binlog file based on the position
+      asked by the slave, we must clear the log_pos and the created flag of the
+      Format_description_log_event to be sent. Mark that this event with
+      "log_pos=0", so the slave should not increment master's binlog position
+      (rli->group_master_log_pos)
+    */
+    int4store(event_ptr + LOG_POS_OFFSET, 0);
+    /*
+      Set the 'created' field to 0 to avoid destroying
+      temp tables on slave.
+    */
+    int4store(event_ptr + LOG_EVENT_MINIMAL_HEADER_LEN + ST_CREATED_OFFSET, 0);
+    event_updated= true;
+  }
+
+  /* fix the checksum due to latest changes in header */
+  if (event_checksum_on() && event_updated)
+    calc_event_checksum(event_ptr, event_len);
 
   DBUG_RETURN(send_packet());
 }
@@ -792,7 +1016,7 @@ int Binlog_sender::has_previous_gtid_log_event(IO_CACHE *log_cache,
       set_fatal_error(log_read_error_msg(LOG_READ_IO));
       return 1;
     }
-    *found= (buf[EVENT_TYPE_OFFSET] == PREVIOUS_GTIDS_LOG_EVENT);
+    *found= (buf[EVENT_TYPE_OFFSET] == binary_log::PREVIOUS_GTIDS_LOG_EVENT);
   }
   return 0;
 }
@@ -818,7 +1042,7 @@ const char* Binlog_sender::log_read_error_msg(int error)
   }
 }
 
-inline int Binlog_sender::read_event(IO_CACHE *log_cache, uint8 checksum_alg,
+inline int Binlog_sender::read_event(IO_CACHE *log_cache, enum_binlog_checksum_alg checksum_alg,
                                      uchar **event_ptr, uint32 *event_len)
 {
   DBUG_ENTER("Binlog_sender::read_event");
@@ -890,7 +1114,7 @@ int Binlog_sender::send_heartbeat_event(my_off_t log_pos)
 
   /* Timestamp field */
   int4store(header, 0);
-  header[EVENT_TYPE_OFFSET] = HEARTBEAT_LOG_EVENT;
+  header[EVENT_TYPE_OFFSET] = binary_log::HEARTBEAT_LOG_EVENT;
   int4store(header + SERVER_ID_OFFSET, server_id);
   int4store(header + EVENT_LEN_OFFSET, event_len);
   int4store(header + LOG_POS_OFFSET, static_cast<uint32>(log_pos));
@@ -905,7 +1129,8 @@ int Binlog_sender::send_heartbeat_event(my_off_t log_pos)
 
 inline int Binlog_sender::flush_net()
 {
-  if (DBUG_EVALUATE_IF("simulate_flush_error", 1, net_flush(&m_thd->net)))
+  if (DBUG_EVALUATE_IF("simulate_flush_error", 1,
+      m_thd->get_protocol_classic()->flush_net()))
   {
     set_unknow_error("failed on flush_net()");
     return 1;
@@ -915,18 +1140,25 @@ inline int Binlog_sender::flush_net()
 
 inline int Binlog_sender::send_packet()
 {
+  DBUG_ENTER("Binlog_sender::send_packet");
+  DBUG_PRINT("info",
+             ("Sending event of type %s", Log_event::get_type_str(
+                (Log_event_type)m_packet.ptr()[1 + EVENT_TYPE_OFFSET])));
   // We should always use the same buffer to guarantee that the reallocation
   // logic is not broken.
   if (DBUG_EVALUATE_IF("simulate_send_error", true,
-                       my_net_write(&m_thd->net, (uchar*) m_packet.ptr(),
-                                    m_packet.length())))
+                       my_net_write(
+                         m_thd->get_protocol_classic()->get_net(),
+                         (uchar*) m_packet.ptr(), m_packet.length())))
   {
     set_unknow_error("Failed on my_net_write()");
-    return 1;
+    DBUG_RETURN(1);
   }
 
   /* Shrink the packet if needed. */
-  return shrink_packet() ? 1 : 0;
+  int ret= shrink_packet() ? 1 : 0;
+  m_last_event_sent_ts= time(0);
+  DBUG_RETURN(ret);
 }
 
 inline int Binlog_sender::send_packet_and_flush()
@@ -962,7 +1194,7 @@ inline int Binlog_sender::after_send_hook(const char *log_file,
     semisync after_send_event hook doesn't return and error when net error
     happens.
   */
-  if (m_thd->net.error != 0)
+  if (m_thd->get_protocol_classic()->get_net()->last_errno != 0)
   {
     set_unknow_error("Found net error");
     return 1;
@@ -1008,7 +1240,7 @@ inline bool Binlog_sender::grow_packet(size_t extra_size)
                          PACKET_GROW_FACTOR, &new_buffer_size))
       DBUG_RETURN(true);
 
-    if (m_packet.realloc(new_buffer_size))
+    if (m_packet.mem_realloc(new_buffer_size))
       DBUG_RETURN(true);
 
     /*

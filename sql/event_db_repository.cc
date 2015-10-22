@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2006, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2006, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,10 +14,9 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "sql_priv.h"
-#include "unireg.h"
-#include "sql_base.h"                           // close_thread_tables
 #include "event_db_repository.h"
+
+#include "sql_base.h"                           // close_thread_tables
 #include "key.h"                                // key_copy
 #include "sql_db.h"                        // get_default_db_collation
 #include "sql_time.h"                      // interval_type_to_name
@@ -26,9 +25,12 @@
 #include "records.h"          // init_read_record, end_read_record
 #include "sp_head.h"
 #include "event_data_objects.h"
+#include "event_parse_data.h"
 #include "events.h"
 #include "sql_show.h"
 #include "lock.h"                               // MYSQL_LOCK_IGNORE_TIMEOUT
+#include "log.h"
+#include "item_timefunc.h"          // Item_func_now_local
 
 /**
   @addtogroup Event_Scheduler
@@ -247,7 +249,7 @@ mysql_event_fill_row(THD *thd,
   */
   if (!is_update || et->status_changed)
     rs|= fields[ET_FIELD_STATUS]->store((longlong)et->status, TRUE);
-  rs|= fields[ET_FIELD_ORIGINATOR]->store((longlong)et->originator, TRUE);
+  rs|= fields[ET_FIELD_ORIGINATOR]->store(et->originator, TRUE);
 
   /*
     Change the SQL_MODE only if body was present in an ALTER EVENT and of course
@@ -278,7 +280,7 @@ mysql_event_fill_row(THD *thd,
     }
 
     fields[ET_FIELD_INTERVAL_EXPR]->set_notnull();
-    rs|= fields[ET_FIELD_INTERVAL_EXPR]->store((longlong)et->expression, TRUE);
+    rs|= fields[ET_FIELD_INTERVAL_EXPR]->store(et->expression, TRUE);
 
     fields[ET_FIELD_TRANSIENT_INTERVAL]->set_notnull();
 
@@ -618,7 +620,7 @@ Event_db_repository::open_event_table(THD *thd, enum thr_lock_type lock_type,
 
   tables.init_one_table("mysql", 5, "event", 5, "event", lock_type);
 
-  if (open_and_lock_tables(thd, &tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (open_and_lock_tables(thd, &tables, MYSQL_LOCK_IGNORE_TIMEOUT))
     DBUG_RETURN(TRUE);
 
   *table= tables.table;
@@ -899,6 +901,14 @@ Event_db_repository::drop_event(THD *thd, LEX_STRING db, LEX_STRING name,
   MDL_savepoint mdl_savepoint= thd->mdl_context.mdl_savepoint();
   int ret= 1;
 
+  /*
+    Turn off row binlogging of this statement and use statement-based so
+    that all supporting tables are updated for DROP EVENT command.
+  */
+  bool save_binlog_row_based;
+  if ((save_binlog_row_based= thd->is_current_stmt_binlog_format_row()))
+    thd->clear_current_stmt_binlog_format_row();
+
   DBUG_ENTER("Event_db_repository::drop_event");
   DBUG_PRINT("enter", ("%s@%s", db.str, name.str));
 
@@ -927,6 +937,11 @@ Event_db_repository::drop_event(THD *thd, LEX_STRING db, LEX_STRING name,
 end:
   close_thread_tables(thd);
   thd->mdl_context.rollback_to_savepoint(mdl_savepoint);
+
+  /* Restore the state of binlog format */
+  DBUG_ASSERT(!thd->is_current_stmt_binlog_format_row());
+  if (save_binlog_row_based)
+    thd->set_current_stmt_binlog_format_row();
 
   DBUG_RETURN(MY_TEST(ret));
 }
@@ -1135,7 +1150,7 @@ update_timing_fields_for_event(THD *thd,
   if ((save_binlog_row_based= thd->is_current_stmt_binlog_format_row()))
     thd->clear_current_stmt_binlog_format_row();
 
-  DBUG_ASSERT(thd->security_ctx->master_access & SUPER_ACL);
+  DBUG_ASSERT(thd->security_context()->check_access(SUPER_ACL));
 
   if (open_event_table(thd, TL_WRITE, &table))
     goto end;
@@ -1194,7 +1209,7 @@ Event_db_repository::check_system_tables(THD *thd)
 {
   TABLE_LIST tables;
   int ret= FALSE;
-  const unsigned int event_priv_column_position= 29;
+  const unsigned int event_priv_column_position= 28;
 
   DBUG_ENTER("Event_db_repository::check_system_tables");
   DBUG_PRINT("enter", ("thd: 0x%lx", (long) thd));
@@ -1202,7 +1217,7 @@ Event_db_repository::check_system_tables(THD *thd)
   /* Check mysql.db */
   tables.init_one_table("mysql", 5, "db", 2, "db", TL_READ);
 
-  if (open_and_lock_tables(thd, &tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (open_and_lock_tables(thd, &tables, MYSQL_LOCK_IGNORE_TIMEOUT))
   {
     ret= 1;
     sql_print_error("Cannot open mysql.db");
@@ -1216,7 +1231,7 @@ Event_db_repository::check_system_tables(THD *thd)
   /* Check mysql.user */
   tables.init_one_table("mysql", 5, "user", 4, "user", TL_READ);
 
-  if (open_and_lock_tables(thd, &tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (open_and_lock_tables(thd, &tables, MYSQL_LOCK_IGNORE_TIMEOUT))
   {
     ret= 1;
     sql_print_error("Cannot open mysql.user");
@@ -1236,7 +1251,7 @@ Event_db_repository::check_system_tables(THD *thd)
   /* Check mysql.event */
   tables.init_one_table("mysql", 5, "event", 5, "event", TL_READ);
 
-  if (open_and_lock_tables(thd, &tables, FALSE, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (open_and_lock_tables(thd, &tables, MYSQL_LOCK_IGNORE_TIMEOUT))
   {
     ret= 1;
     sql_print_error("Cannot open mysql.event");

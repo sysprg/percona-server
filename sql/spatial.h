@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,10 +16,10 @@
 #ifndef SPATIAL_INCLUDED
 #define SPATIAL_INCLUDED
 
-#include "sql_string.h"                         /* String, LEX_STRING */
-#include <my_compiler.h>
-#include "gcalc_tools.h"
+#include "my_global.h"
+#include "mysql/mysql_lex_string.h"     // LEX_STRING
 #include "mysqld.h"
+#include "sql_string.h"                 // String
 
 #include <vector>
 #include <algorithm>
@@ -63,18 +63,12 @@ public:
   double y;
   point_xy() { }
   point_xy(double x_arg, double y_arg): x(x_arg), y(y_arg) { }
-  /**
-    Distance to another point.
-  */
-  double distance(point_xy p)
-  {
-    return sqrt(pow(x - p.x, 2) + pow(y - p.y, 2));
-  }
+  double distance(const point_xy &p) const;
   /**
     Compare to another point.
     Return true if equal, false if not equal.
   */
-  bool eq(point_xy p)
+  bool eq(point_xy p) const
   {
     return (x == p.x) && (y == p.y);
   }
@@ -144,48 +138,44 @@ struct MBR
       ymax= mbr->ymax;
   }
 
-  int equals(const MBR *mbr)
+  int equals(const MBR *mbr) const
   {
     /* The following should be safe, even if we compare doubles */
     return ((mbr->xmin == xmin) && (mbr->ymin == ymin) &&
 	    (mbr->xmax == xmax) && (mbr->ymax == ymax));
   }
 
-  int disjoint(const MBR *mbr)
+  int disjoint(const MBR *mbr) const
   {
     /* The following should be safe, even if we compare doubles */
     return ((mbr->xmin > xmax) || (mbr->ymin > ymax) ||
 	    (mbr->xmax < xmin) || (mbr->ymax < ymin));
   }
 
-  int intersects(const MBR *mbr)
+  int intersects(const MBR *mbr) const
   {
     return !disjoint(mbr);
   }
 
-  int touches(const MBR *mbr)
+  int touches(const MBR *mbr) const;
+
+  int within(const MBR *mbr) const;
+
+  int contains(const MBR *mbr) const
   {
-    /* The following should be safe, even if we compare doubles */
-    return ((mbr->xmin == xmax || mbr->xmax == xmin) &&
-            ((mbr->ymin >= ymin && mbr->ymin <= ymax) ||
-             (mbr->ymax >= ymin && mbr->ymax <= ymax))) ||
-           ((mbr->ymin == ymax || mbr->ymax == ymin) &&
-            ((mbr->xmin >= xmin && mbr->xmin <= xmax) ||
-             (mbr->xmax >= xmin && mbr->xmax <= xmax)));
+    return mbr->within(this);
   }
 
-  int within(const MBR *mbr)
+  int covered_by(const MBR *mbr) const
   {
     /* The following should be safe, even if we compare doubles */
     return ((mbr->xmin <= xmin) && (mbr->ymin <= ymin) &&
-	    (mbr->xmax >= xmax) && (mbr->ymax >= ymax));
+            (mbr->xmax >= xmax) && (mbr->ymax >= ymax));
   }
 
-  int contains(const MBR *mbr)
+  int covers(const MBR *mbr) const
   {
-    /* The following should be safe, even if we compare doubles */
-    return ((mbr->xmin >= xmin) && (mbr->ymin >= ymin) &&
-	    (mbr->xmax <= xmax) && (mbr->ymax <= ymax));
+    return mbr->covered_by(this);
   }
 
   bool inner_point(double x, double y) const
@@ -218,7 +208,7 @@ struct MBR
     return d;
   }
 
-  int overlaps(const MBR *mbr)
+  int overlaps(const MBR *mbr) const
   {
     /*
       overlaps() requires that some point inside *this is also inside
@@ -226,8 +216,9 @@ struct MBR
       same dimension.
     */
     int d= dimension();
+    DBUG_ASSERT(d >= 0 && d <= 2);
 
-    if (d != mbr->dimension() || d <= 0 || contains(mbr) || within(mbr))
+    if (d != mbr->dimension() || d == 0 || contains(mbr) || within(mbr))
       return 0;
 
     MBR intersection(std::max(xmin, mbr->xmin), std::max(ymin, mbr->ymin),
@@ -338,6 +329,15 @@ protected:
     into its buffer without copying its WKB data.
    */
   const static int HAS_GEOM_HEADER_SPACE= 0x40;
+
+  /*
+    Whether the multi geometry has overlapped components, if false(the bit set)
+    this geometry will be skipped from merge-component operation.
+    Effective only for multipolygons, multilinestrings and geometry collections.
+    Such geometries returned by BG always has this bit set, i.e. their
+    components don't overlap.
+  */
+  const static int MULTIPOLYGON_NO_OVERLAPPED_COMPS= 0x80;
 public:
   // Check user's transmitted data against these limits.
   const static uint32 MAX_GEOM_WKB_LENGTH= 0x3fffffff;
@@ -589,10 +589,6 @@ public:
   virtual uint init_from_wkb(const char *wkb, uint len, wkbByteOrder bo,
                              String *res) { return 0; }
 
-  virtual uint init_from_opresult(String *bin,
-                                  const char *opres, uint opres_length)
-  { return init_from_wkb(opres + 4, UINT_MAX32, wkb_ndr, bin) + 4; }
-
   virtual bool get_data_as_wkt(String *txt, wkb_parser *wkb) const
   { return true;}
   virtual bool get_mbr(MBR *mbr, wkb_parser *wkb) const
@@ -633,27 +629,6 @@ public:
   virtual int get_x(double *x) const { return -1; }
   virtual int get_y(double *y) const { return -1; }
   virtual int geom_length(double *len) const  { return -1; }
-  /**
-    Calculate area of a Geometry.
-    This default implementation returns 0 for the types that have zero area:
-    Point, LineString, MultiPoint, MultiLineString.
-    The over geometry types (Polygon, MultiPolygon, GeometryCollection)
-    override the default method.
-  */
-  virtual bool area(double *ar, wkb_parser *wkb) const
-  {
-    uint32 data_size= get_data_size();
-    if (data_size == GET_SIZE_ERROR || wkb->no_data(data_size))
-      return true;
-    wkb->skip_unsafe(data_size);
-    *ar= 0;
-    return false;
-  }
-  bool area(double *ar) const
-  {
-    wkb_parser wkb(get_cptr(), get_cptr() + get_nbytes());
-    return area(ar, &wkb);
-  }
   virtual int is_closed(int *closed) const { return -1; }
   virtual int num_interior_ring(uint32 *n_int_rings) const { return -1; }
   virtual int num_points(uint32 *n_points) const { return -1; }
@@ -663,18 +638,9 @@ public:
   virtual int start_point(String *point) const { return -1; }
   virtual int end_point(String *point) const { return -1; }
   virtual int exterior_ring(String *ring) const { return -1; }
-  virtual int centroid(String *point) const { return -1; }
   virtual int point_n(uint32 num, String *result) const { return -1; }
   virtual int interior_ring_n(uint32 num, String *result) const { return -1; }
   virtual int geometry_n(uint32 num, String *result) const { return -1; }
-
-  virtual int store_shapes(Gcalc_shape_transporter *trn,
-                           Gcalc_shape_status *st) const { return -1;}
-  int store_shapes(Gcalc_shape_transporter *trn) const
-  {
-    Gcalc_shape_status dummy;
-    return store_shapes(trn, &dummy);
-  }
 
 public:
   static Geometry *create_by_typeid(Geometry_buffer *buffer, int type_id);
@@ -691,18 +657,20 @@ public:
   }
 
   static Geometry *construct(Geometry_buffer *buffer,
-                             const char *data, uint32 data_len);
-  static Geometry *construct(Geometry_buffer *buffer, const String *str)
+                             const char *data, uint32 data_len,
+                             bool has_srid= true);
+  static Geometry *construct(Geometry_buffer *buffer, const String *str,
+                             bool has_srid= true)
   {
-    return construct(buffer, str->ptr(), static_cast<uint32>(str->length()));
+    return construct(buffer, str->ptr(),
+                     static_cast<uint32>(str->length()), has_srid);
   }
   static Geometry *create_from_wkt(Geometry_buffer *buffer,
-				   Gis_read_stream *trs, String *wkt,
-				   bool init_stream=1);
+                                   Gis_read_stream *trs, String *wkt,
+                                   bool init_stream= true,
+                                   bool check_trailing= true);
   static Geometry *create_from_wkb(Geometry_buffer *buffer, const char *wkb,
                                    uint32 len, String *res, bool init);
-  static int create_from_opresult(Geometry_buffer *g_buf,
-                                  String *res, Gcalc_result_receiver &rr);
   bool as_wkt(String *wkt, wkb_parser *wkb) const
   {
     uint32 len= (uint) get_class_info()->m_name.length;
@@ -741,6 +709,8 @@ public:
   }
 
   bool envelope(String *result) const;
+  bool envelope(MBR *mbr) const;
+
   static Class_info *ci_collection[wkb_last+1];
 
   bool is_polygon_ring() const
@@ -770,6 +740,22 @@ public:
       m_flags.props|= HAS_GEOM_HEADER_SPACE;
     else
       m_flags.props&= ~HAS_GEOM_HEADER_SPACE;
+  }
+
+  bool is_components_no_overlapped() const
+  {
+    return (m_flags.props & MULTIPOLYGON_NO_OVERLAPPED_COMPS);
+  }
+
+  void set_components_no_overlapped(bool b)
+  {
+    DBUG_ASSERT(get_type() == wkb_multilinestring ||
+                get_type() == wkb_multipolygon ||
+                get_type() == wkb_geometrycollection);
+    if (b)
+      m_flags.props|= MULTIPOLYGON_NO_OVERLAPPED_COMPS;
+    else
+      m_flags.props&= ~MULTIPOLYGON_NO_OVERLAPPED_COMPS;
   }
 
   void set_props(uint16 flag)
@@ -811,42 +797,6 @@ protected:
       m_flags.props &= ~GEOM_LENGTH_VERIFIED;
   }
 
-  /**
-    Store shapes of a collection:
-    GeometryCollection, MultiPoint, MultiLineString or MultiPolygon.
-
-    In case when collection is GeometryCollection, NULL should be passed as
-    "collection_item" argument. Proper collection item objects will be
-    created inside collection_store_shapes, according to the geometry type of
-    every item in the collection.
-
-    For MultiPoint, MultiLineString or MultiPolygon, an address of a
-    pre-allocated item object of Gis_point, Gis_line_string or Gis_polygon
-    can be passed for better performance.
-  */
-  int collection_store_shapes(Gcalc_shape_transporter *trn,
-                              Gcalc_shape_status *st,
-                              Geometry *collection_item) const;
-  /**
-    Calculate area of a collection:
-    GeometryCollection, MultiPoint, MultiLineString or MultiPolygon.
-
-    The meaning of the "collection_item" is the same to
-    the similar argument in collection_store_shapes().
-  */
-  bool collection_area(double *ar, wkb_parser *wkb, Geometry *it) const;
-
-  /**
-    Initialize a collection from an operation result.
-    Share between: GeometryCollection, MultiLineString, MultiPolygon.
-    The meaning of the "collection_item" is the same to
-    the similare agument in collection_store_shapes().
-  */
-  uint collection_init_from_opresult(String *bin,
-                                     const char *opres, uint opres_length,
-                                     Geometry *collection_item);
-
-
   /***************************** Boost Geometry Adapter Interface ************/
 public:
   /**
@@ -877,14 +827,13 @@ public:
     Flags_t(const Flags_t &o)
     {
       compile_time_assert(sizeof(*this) == sizeof(uint64));
-      *(reinterpret_cast<uint64 *>(this))=
-        *(reinterpret_cast<const uint64 *>(&o));
+      memcpy(this, &o, sizeof(o));
     }
 
     Flags_t()
     {
       compile_time_assert(sizeof(*this) == sizeof(uint64));
-      *(reinterpret_cast<uint64 *>(this))= 0UL;
+      memset(this, 0, sizeof(*this));
       bo= wkb_ndr;
       dim= GEOM_DIM - 1;
       nomem= 1;
@@ -893,7 +842,7 @@ public:
     Flags_t(wkbType type, size_t len)
     {
       compile_time_assert(sizeof(*this) == sizeof(uint64));
-      *(reinterpret_cast<uint64 *>(this))= 0UL;
+      memset(this, 0, sizeof(*this));
       geotype= type;
       nbytes= len;
       bo= wkb_ndr;
@@ -904,8 +853,7 @@ public:
     Flags_t &operator=(const Flags_t &rhs)
     {
       compile_time_assert(sizeof(*this) == sizeof(uint64));
-      *(reinterpret_cast<uint64 *>(this))=
-        *(reinterpret_cast<const uint64 *>(&rhs));
+      memcpy(this, &rhs, sizeof(rhs));
       return *this;
     }
 
@@ -1005,6 +953,24 @@ public:
     return ((gt >= wkb_first && gt <= wkb_geometrycollection) ||
             gt == wkb_polygon_inner_rings);
   }
+
+  /**
+    Verify that a string is a well-formed GEOMETRY string.
+   
+    This does not check if the geometry is geometrically valid.
+
+    @see Geometry_well_formed_checker
+   
+    @param from String to check
+    @param length Length of string
+    @param type Expected type of geometry, or
+           Geoemtry::wkb_invalid_type if any type is allowed
+
+    @return True if the string is a well-formed GEOMETRY string,
+            false otherwise
+   */
+  static bool is_well_formed(const char *from, size_t length,
+                             wkbType type, wkbByteOrder bo);
 
   void set_geotype(Geometry::wkbType gt)
   {
@@ -1349,7 +1315,6 @@ public:
     return wkb.skip_coord() || wkb.scan_coord(y);
   }
   uint32 feature_dimension() const { return 0; }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
 
 
@@ -1358,7 +1323,6 @@ public:
 
   typedef Gis_point self;
   typedef Geometry base;
-  typedef self point_type;
 
   explicit Gis_point(bool is_bg_adapter= true)
     :Geometry(NULL, 0, Flags_t(wkb_point, 0), default_srid)
@@ -1459,6 +1423,11 @@ public:
   {
     return (get<0>() == pt.get<0>() && get<1>() == pt.get<1>());
   }
+
+  bool operator!=(const Gis_point &pt) const
+  {
+    return !(operator==(pt));
+  }
 };
 
 
@@ -1497,7 +1466,7 @@ class Gis_wkb_vector_const_iterator
 protected:
   typedef Gis_wkb_vector_const_iterator<T> self;
   typedef Gis_wkb_vector<T> owner_t;
-  typedef int index_type;
+  typedef ptrdiff_t index_type;
 public:
   ////////////////////////////////////////////////////////////////////
   //
@@ -1776,7 +1745,7 @@ public:
   difference_type operator-(const self &itr) const
   {
     DBUG_ASSERT(m_owner == itr.m_owner);
-    return (difference_type) (m_curidx - itr.m_curidx);
+    return (m_curidx - itr.m_curidx);
   }
 
 
@@ -1795,7 +1764,8 @@ public:
   reference operator*() const
   {
     DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                static_cast<size_t>(this->m_curidx) <= this->m_owner->size());
+                this->m_curidx <
+                static_cast<index_type>(this->m_owner->size()));
     return (*m_owner)[m_curidx];
   }
 
@@ -1809,16 +1779,17 @@ public:
   pointer operator->() const
   {
     DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                static_cast<size_t>(this->m_curidx) <= this->m_owner->size());
+                this->m_curidx <
+                static_cast<index_type>(this->m_owner->size()));
     return &(*m_owner)[m_curidx];
   }
 
 
   /// @brief Iterator index operator.
   ///
-  /// If offset not in a valid range, the returned value will be invalid.
-  /// @param offset The valid index relative to this iterator.
-  /// @return Return the element which is at position *this + offset.
+  /// @param offset The offset of target element relative to this iterator.
+  /// @return Return the reference of the element which is at
+  /// position *this + offset.
   /// The returned value can only be used to read its referenced
   /// element.
   reference operator[](difference_type offset) const
@@ -1826,8 +1797,8 @@ public:
     self itr= *this;
     move_by(itr, offset, false);
 
-    DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                static_cast<size_t>(this->m_curidx) <= this->m_owner->size());
+    DBUG_ASSERT(itr.m_owner != NULL && itr.m_curidx >= 0 &&
+                itr.m_curidx < static_cast<index_type>(itr.m_owner->size()));
     return (*m_owner)[itr.m_curidx];
   }
   //@}
@@ -1848,7 +1819,7 @@ protected:
 
     if (newidx < 0)
       newidx= -1;
-    else if (newidx >= (index_type)(sz= m_owner->size()))
+    else if (newidx >= static_cast<index_type>((sz= m_owner->size())))
       newidx= sz;
 
     itr.m_curidx= newidx;
@@ -1879,7 +1850,7 @@ protected:
   typedef Gis_wkb_vector_const_iterator<T> base;
   typedef Gis_wkb_vector<T> owner_t;
 public:
-  typedef int index_type;
+  typedef ptrdiff_t index_type;
   typedef T value_type;
   typedef ptrdiff_t difference_type;
   typedef difference_type distance_type;
@@ -2085,7 +2056,8 @@ public:
   reference operator*() const
   {
     DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                static_cast<size_t>(this->m_curidx) <= this->m_owner->size());
+                this->m_curidx <
+                static_cast<index_type>(this->m_owner->size()));
     return (*this->m_owner)[this->m_curidx];
   }
 
@@ -2099,27 +2071,25 @@ public:
   pointer operator->() const
   {
     DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                static_cast<size_t>(this->m_curidx) <= this->m_owner->size());
+                this->m_curidx <
+                static_cast<index_type>(this->m_owner->size()));
     return &(*this->m_owner)[this->m_curidx];
   }
 
 
-  // We can't return reference here otherwise we are returning an
-  // reference to an local object.
   /// @brief Iterator index operator.
   ///
-  /// If offset not in a valid range, the returned value will be invalid.
-  /// @param offset The valid index relative to this iterator.
-  /// @return Return the element which is at position *this + offset,
+  /// @param offset The offset of target element relative to this iterator.
+  /// @return Return the element which is at position *this + offset.
   /// The returned value can be used to read or update its referenced
   /// element.
   reference operator[](difference_type offset) const
   {
     self itr= *this;
     this->move_by(itr, offset, false);
-    DBUG_ASSERT(this->m_owner != NULL && this->m_curidx >= 0 &&
-                static_cast<size_t>(this->m_curidx) <= this->m_owner->size());
-    return (*this->m_owner)[this->m_curidx];
+    DBUG_ASSERT(itr.m_owner != NULL && itr.m_curidx >= 0 &&
+                itr.m_curidx < static_cast<index_type>(this->m_owner->size()));
+    return (*this->m_owner)[itr.m_curidx];
   }
   //@} // funcs_val
   ////////////////////////////////////////////////////////////////////
@@ -2188,7 +2158,7 @@ class Gis_wkb_vector : public Geometry
 {
 private:
   typedef Gis_wkb_vector<T> self;
-  typedef int index_type;
+  typedef ptrdiff_t index_type;
   typedef Geometry base;
 public:
   typedef T value_type;
@@ -2199,7 +2169,6 @@ public:
   typedef const T& const_reference;
   typedef T* pointer;
   typedef T& reference;
-  typedef typename T::point_type point_type;
   typedef ptrdiff_t difference_type;
 
   typedef Geometry_vector<T> Geo_vector;
@@ -2266,6 +2235,12 @@ public:
   {
     set_bg_adapter(true);
     return m_geo_vect ? m_geo_vect->size() : 0;
+  }
+
+
+  bool empty() const
+  {
+    return size() == 0;
   }
 
 
@@ -2432,7 +2407,8 @@ Gis_wkb_vector(const void *ptr, size_t nbytes, const Flags_t &flags,
 
   wkbType geotype= get_geotype();
   // Points don't need it, polygon creates it when parsing.
-  if (geotype != Geometry::wkb_point && geotype != Geometry::wkb_polygon)
+  if (geotype != Geometry::wkb_point &&
+      geotype != Geometry::wkb_polygon && ptr != NULL)
     guard.reset(m_geo_vect= new Geo_vector());
   // For polygon parsing to work
   if (geotype == Geometry::wkb_polygon)
@@ -2449,7 +2425,7 @@ Gis_wkb_vector(const void *ptr, size_t nbytes, const Flags_t &flags,
 
 template <typename T>
 Gis_wkb_vector<T>::
-Gis_wkb_vector(const Gis_wkb_vector<T> &v) :Geometry(v)
+Gis_wkb_vector(const Gis_wkb_vector<T> &v) :Geometry(v), m_geo_vect(NULL)
 {
   DBUG_ASSERT((v.get_ptr() != NULL && v.get_nbytes() > 0) ||
               (v.get_ptr() == NULL && !v.get_ownmem() &&
@@ -2662,7 +2638,14 @@ void Gis_wkb_vector<T>::set_ptr(void *ptr, size_t len)
 template <typename T>
 void Gis_wkb_vector<T>::clear()
 {
+  if (!m_geo_vect)
+  {
+    DBUG_ASSERT(m_ptr == NULL);
+    return;
+  }
+
   DBUG_ASSERT(m_geo_vect && get_geotype() != Geometry::wkb_polygon);
+
   // Keep the component vector because this object can be reused again.
   const void *ptr= get_ptr();
   set_bg_adapter(true);
@@ -3315,12 +3298,10 @@ public:
   int end_point(String *point) const;
   int point_n(uint32 n, String *result) const;
   uint32 feature_dimension() const { return 1; }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
 
   /**** Boost Geometry Adapter Interface ******/
 
-  typedef Gis_point point_type;
   typedef Gis_wkb_vector<Gis_point> base_type;
   typedef Gis_line_string self;
 
@@ -3350,7 +3331,6 @@ class Gis_polygon_ring : public Gis_wkb_vector<Gis_point>
 public:
   typedef Gis_wkb_vector<Gis_point> base;
   typedef Gis_polygon_ring self;
-  typedef Gis_point point_type;
 
   virtual ~Gis_polygon_ring()
   {}
@@ -3392,22 +3372,16 @@ public:
   uint32 get_data_size() const;
   bool init_from_wkt(Gis_read_stream *trs, String *wkb);
   uint init_from_wkb(const char *wkb, uint len, wkbByteOrder bo, String *res);
-  uint init_from_opresult(String *bin, const char *opres, uint opres_length);
   bool get_data_as_wkt(String *txt, wkb_parser *wkb) const;
   bool get_mbr(MBR *mbr, wkb_parser *wkb) const;
-  bool area(double *ar, wkb_parser *wkb) const;
   int exterior_ring(String *result) const;
   int num_interior_ring(uint32 *n_int_rings) const;
   int interior_ring_n(uint32 num, String *result) const;
-  bool centroid_xy(point_xy *p) const;
-  int centroid(String *result) const;
   uint32 feature_dimension() const { return 2; }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
 
 
   /**** Boost Geometry Adapter Interface ******/
-  typedef Gis_point point_type;
   typedef Gis_polygon self;
   typedef Gis_polygon_ring ring_type;
   typedef Gis_wkb_vector<ring_type> inner_container_type;
@@ -3512,19 +3486,16 @@ public:
   uint32 get_data_size() const;
   bool init_from_wkt(Gis_read_stream *trs, String *wkb);
   uint init_from_wkb(const char *wkb, uint len, wkbByteOrder bo, String *res);
-  uint init_from_opresult(String *bin, const char *opres, uint opres_length);
   bool get_data_as_wkt(String *txt, wkb_parser *wkb) const;
   bool get_mbr(MBR *mbr, wkb_parser *wkb) const;
   int num_geometries(uint32 *num) const;
   int geometry_n(uint32 num, String *result) const;
   uint32 feature_dimension() const { return 0; }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
 
 
   /**** Boost Geometry Adapter Interface ******/
 
-  typedef Gis_point point_type;
   typedef Gis_wkb_vector<Gis_point> base_type;
   typedef Gis_multi_point self;
 
@@ -3554,7 +3525,6 @@ public:
   uint32 get_data_size() const;
   bool init_from_wkt(Gis_read_stream *trs, String *wkb);
   uint init_from_wkb(const char *wkb, uint len, wkbByteOrder bo, String *res);
-  uint init_from_opresult(String *bin, const char *opres, uint opres_length);
   bool get_data_as_wkt(String *txt, wkb_parser *wkb) const;
   bool get_mbr(MBR *mbr, wkb_parser *wkb) const;
   int num_geometries(uint32 *num) const;
@@ -3562,14 +3532,12 @@ public:
   int geom_length(double *len) const;
   int is_closed(int *closed) const;
   uint32 feature_dimension() const { return 1; }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
 
   /**** Boost Geometry Adapter Interface ******/
 
   typedef Gis_wkb_vector<Gis_line_string> base;
   typedef Gis_multi_line_string self;
-  typedef Gis_point point_type;
 
   explicit Gis_multi_line_string(bool is_bg_adapter= true)
     :base(NULL, 0, Flags_t(wkb_multilinestring, 0),
@@ -3601,16 +3569,11 @@ public:
   bool get_mbr(MBR *mbr, wkb_parser *wkb) const;
   int num_geometries(uint32 *num) const;
   int geometry_n(uint32 num, String *result) const;
-  bool area(double *ar, wkb_parser *wkb) const;
-  int centroid(String *result) const;
   uint32 feature_dimension() const { return 2; }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
-  uint init_from_opresult(String *bin, const char *opres, uint opres_length);
 
 
   /**** Boost Geometry Adapter Interface ******/
-  typedef Gis_point point_type;
   typedef Gis_multi_polygon self;
   typedef Gis_wkb_vector<Gis_polygon> base;
 
@@ -3634,7 +3597,6 @@ public:
 class Gis_geometry_collection: public Geometry
 {
 public:
-  typedef Gis_point point_type;
   Gis_geometry_collection()
     :Geometry(NULL, 0, Flags_t(wkb_geometrycollection, 0), default_srid)
   {
@@ -3650,10 +3612,8 @@ public:
   uint32 get_data_size() const;
   bool init_from_wkt(Gis_read_stream *trs, String *wkb);
   uint init_from_wkb(const char *wkb, uint len, wkbByteOrder bo, String *res);
-  uint init_from_opresult(String *bin, const char *opres, uint opres_length);
   bool get_data_as_wkt(String *txt, wkb_parser *wkb) const;
   bool get_mbr(MBR *mbr, wkb_parser *wkb) const;
-  bool area(double *ar, wkb_parser *wkb) const;
   int num_geometries(uint32 *num) const;
   int geometry_n(uint32 num, String *result) const;
   bool dimension(uint32 *dim, wkb_parser *wkb) const;
@@ -3662,7 +3622,6 @@ public:
     DBUG_ASSERT(0);
     return 0;
   }
-  int store_shapes(Gcalc_shape_transporter *trn, Gcalc_shape_status *st) const;
   const Class_info *get_class_info() const;
 };
 
@@ -3701,6 +3660,15 @@ public:
                the scanner just scanned.
    */
   virtual void on_wkb_end(const void *wkb)= 0;
+
+  /*
+    Called after each on_wkb_start/end call, if returns false, wkb_scanner
+    will stop scanning.
+   */
+  virtual bool continue_scan() const
+  {
+    return true;
+  }
 };
 
 

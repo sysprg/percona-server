@@ -1,4 +1,4 @@
-/* Copyright (c) 2002, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2002, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,8 +13,6 @@
    along with this program; if not, write to the Free Software Foundation,
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
-#include "sql_priv.h"
-#include "unireg.h"
 #include "sp_pcontext.h"
 #include "sp_head.h"
 
@@ -374,8 +372,7 @@ bool sp_pcontext::check_duplicate_handler(
   {
     sp_handler *h= m_handlers.at(i);
 
-    List_iterator_fast<const sp_condition_value> li(
-      const_cast<List<const sp_condition_value>&>(h->condition_values));
+    List_iterator_fast<const sp_condition_value> li(h->condition_values);
     const sp_condition_value *cv;
 
     while ((cv= li++))
@@ -401,8 +398,7 @@ sp_pcontext::find_handler(const char *sql_state,
   {
     sp_handler *h= m_handlers.at(i);
 
-    List_iterator_fast<const sp_condition_value> li(
-      const_cast<List<const sp_condition_value>&>(h->condition_values));
+    List_iterator_fast<const sp_condition_value> li(h->condition_values);
     const sp_condition_value *cv;
 
     while ((cv= li++))

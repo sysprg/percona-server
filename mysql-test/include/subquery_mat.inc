@@ -1514,5 +1514,83 @@ DROP TABLE t1,t2,t3;
 
 }
 
+--echo #
+--echo # Bug#19297190 NOT IN DOESN'T RETURN EXPECTED RESULT
+--echo #
+
+CREATE TABLE t1 (a VARCHAR(500) CHARACTER SET UTF8) ENGINE=INNODB;
+
+# Fill the table with 32 distinct long rows (>32kB of data)
+SET @str= repeat("a",450);
+SET @num=1000;
+INSERT INTO t1 VALUES (CONCAT((@num:=@num+1), @str));
+INSERT INTO t1 SELECT CONCAT((@num:=@num+1), @str) FROM t1;
+INSERT INTO t1 SELECT CONCAT((@num:=@num+1), @str) FROM t1;
+INSERT INTO t1 SELECT CONCAT((@num:=@num+1), @str) FROM t1;
+INSERT INTO t1 SELECT CONCAT((@num:=@num+1), @str) FROM t1;
+INSERT INTO t1 SELECT CONCAT((@num:=@num+1), @str) FROM t1;
+SELECT COUNT(*) FROM t1;
+
+ANALYZE TABLE t1;
+
+let $query=
+SELECT COUNT(*)
+FROM t1
+WHERE t1.a NOT IN (
+  SELECT t2.a FROM t1 as t2
+);
+
+#  If subq-mat is used, this will force MEMORY->disk-based tmp table conversion:
+set @save_heap_size= @@max_heap_table_size;
+set @@max_heap_table_size= 16384;
+
+# Test both disk-based engines:
+set @saved_engine=@@internal_tmp_disk_storage_engine;
+set global internal_tmp_disk_storage_engine = 'myisam';
+
+# Subq-materialization can be used and gives correct result:
+eval EXPLAIN $query;
+eval $query;
+
+set global internal_tmp_disk_storage_engine = 'innodb';
+eval EXPLAIN $query;
+eval $query;
+
+DROP TABLE t1;
+set global internal_tmp_disk_storage_engine = @saved_engine;
+set @@max_heap_table_size= @save_heap_size;
+
+--echo #
+--echo # Bug#19805761 ASSERTION FAILURE IN SUBSELECT_HASH_SJ_ENGINE::EXEC WITH SUBQUERY IN LEFT ARGUME
+--echo #
+
+CREATE TABLE t1(a INT) ENGINE=INNODB;
+INSERT INTO t1 VALUES(1);
+CREATE TABLE t2 LIKE t1;
+ANALYZE TABLE t1,t2;
+
+let $query=
+SELECT (SELECT 1,2 FROM t2) NOT IN (SELECT 1,2 FROM t1) FROM t1;
+
+eval EXPLAIN $query;
+eval $query;
+
+DROP TABLE t1,t2;
+
+--echo #
+--echo # Bug#20729351 ASSERTION FAILED: ITEM_IN->LEFT_EXPR->ELEMENT_INDEX(0)->MAYBE_NULL
+--echo #
+
+CREATE TABLE t1 (a LONGBLOB) ENGINE=INNODB;
+INSERT INTO t1 VALUES ('a'), ('a'), ('a');
+CREATE TABLE t2 (a INT) ENGINE=INNODB;
+INSERT INTO t2 VALUES(1), (1), (1), (1);
+ANALYZE TABLE t1, t2;
+SELECT
+ (SELECT NULL IN (NULL) FROM t1 WHERE a) =
+  ANY(SELECT 1 FROM t2)
+FROM t1;
+DROP TABLE t1, t2;
+
 set @@optimizer_switch=@old_opt_switch;
 SET sql_mode = default;

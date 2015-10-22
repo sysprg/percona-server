@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2010, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2010, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2012, Facebook Inc.
 
 This program is free software; you can redistribute it and/or modify it under
@@ -355,6 +355,71 @@ static monitor_info_t	innodb_counter_info[] =
 	 "Number of pages requested for flushing.",
 	 MONITOR_NONE,
 	 MONITOR_DEFAULT_START, MONITOR_FLUSH_N_TO_FLUSH_REQUESTED},
+
+	{"buffer_flush_n_to_flush_by_age", "buffer",
+	 "Number of pages target by LSN Age for flushing.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_N_TO_FLUSH_BY_AGE},
+
+	{"buffer_flush_adaptive_avg_time_slot", "buffer",
+	 "Avg time (ms) spent for adaptive flushing recently per slot.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_ADAPTIVE_AVG_TIME_SLOT},
+
+	{"buffer_LRU_batch_flush_avg_time_slot", "buffer",
+	 "Avg time (ms) spent for LRU batch flushing recently per slot.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_LRU_BATCH_FLUSH_AVG_TIME_SLOT},
+
+	{"buffer_flush_adaptive_avg_time_thread", "buffer",
+	 "Avg time (ms) spent for adaptive flushing recently per thread.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_ADAPTIVE_AVG_TIME_THREAD},
+
+	{"buffer_LRU_batch_flush_avg_time_thread", "buffer",
+	 "Avg time (ms) spent for LRU batch flushing recently per thread.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_LRU_BATCH_FLUSH_AVG_TIME_THREAD},
+
+	{"buffer_flush_adaptive_avg_time_est", "buffer",
+	 "Estimated time (ms) spent for adaptive flushing recently.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_ADAPTIVE_AVG_TIME_EST},
+
+	{"buffer_LRU_batch_flush_avg_time_est", "buffer",
+	 "Estimated time (ms) spent for LRU batch flushing recently.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_LRU_BATCH_FLUSH_AVG_TIME_EST},
+
+	{"buffer_flush_avg_time", "buffer",
+	 "Avg time (ms) spent for flushing recently.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_AVG_TIME},
+
+	{"buffer_flush_adaptive_avg_pass", "buffer",
+	 "Numner of adaptive flushes passed during the recent Avg period.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_ADAPTIVE_AVG_PASS},
+
+	{"buffer_LRU_batch_flush_avg_pass", "buffer",
+	 "Number of LRU batch flushes passed during the recent Avg period.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_LRU_BATCH_FLUSH_AVG_PASS},
+
+	{"buffer_flush_avg_pass", "buffer",
+	 "Number of flushes passed during the recent Avg period.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_FLUSH_AVG_PASS},
+
+	{"buffer_LRU_get_free_loops", "buffer",
+	 "Total loops in LRU get free.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_LRU_GET_FREE_LOOPS},
+
+	{"buffer_LRU_get_free_waits", "buffer",
+	 "Total sleep waits in LRU get free.",
+	 MONITOR_NONE,
+	 MONITOR_DEFAULT_START, MONITOR_LRU_GET_FREE_WAITS},
 
 	{"buffer_flush_avg_page_rate", "buffer",
 	 "Average number of pages at which flushing is happening",
@@ -936,7 +1001,8 @@ static monitor_info_t	innodb_counter_info[] =
 
 	{"adaptive_hash_searches_btree", "adaptive_hash_index",
 	 "Number of searches using B-tree on an index search",
-	 MONITOR_NONE,
+	 static_cast<monitor_type_t>(
+	 MONITOR_EXISTING | MONITOR_DEFAULT_ON),
 	 MONITOR_DEFAULT_START, MONITOR_OVLD_ADAPTIVE_HASH_SEARCH_BTREE},
 
 	{"adaptive_hash_pages_added", "adaptive_hash_index",
@@ -1250,6 +1316,16 @@ static monitor_info_t	innodb_counter_info[] =
 	 MONITOR_NONE,
 	 MONITOR_DEFAULT_START, MONITOR_ICP_MATCH},
 
+	/* ========== Mutex monitoring on/off ========== */
+	{"latch_status", "Latch counters",
+	 "Collect latch counters to display via SHOW ENGING INNODB MUTEX",
+	 MONITOR_MODULE,
+	 MONITOR_DEFAULT_START, MONITOR_MODULE_LATCHES},
+
+	{"latch", "sync", "Latch monitoring control",
+	 MONITOR_HIDDEN,
+	 MONITOR_DEFAULT_START, MONITOR_LATCHES},
+
 	/* ========== To turn on/off reset all counters ========== */
 	{"all", "All Counters", "Turn on/off and reset all counters",
 	 MONITOR_MODULE,
@@ -1264,37 +1340,11 @@ has been turned on/off. */
 ulint		monitor_set_tbl[(NUM_MONITOR + NUM_BITS_ULINT
 						- 1) / NUM_BITS_ULINT];
 
-#ifndef HAVE_ATOMIC_BUILTINS_64
-/** Mutex protecting atomic operations on platforms that lack
-built-in operations for atomic memory access */
-ib_mutex_t	monitor_mutex;
-
-/****************************************************************//**
-Initialize the monitor subsystem. */
-
-void
-srv_mon_create(void)
-/*================*/
-{
-	mutex_create("monitor", &monitor_mutex);
-}
-/****************************************************************//**
-Close the monitor subsystem. */
-
-void
-srv_mon_free(void)
-/*==============*/
-{
-	mutex_free(&monitor_mutex);
-}
-#endif /* !HAVE_ATOMIC_BUILTINS_64 */
-
 /****************************************************************//**
 Get a monitor's "monitor_info" by its monitor id (index into the
 innodb_counter_info array.
 @return Point to corresponding monitor_info_t, or NULL if no such
 monitor */
-
 monitor_info_t*
 srv_mon_get_info(
 /*=============*/
@@ -1313,7 +1363,6 @@ Get monitor's name by its monitor id (indexing into the
 innodb_counter_info array.
 @return corresponding monitor name, or NULL if no such
 monitor */
-
 const char*
 srv_mon_get_name(
 /*=============*/
@@ -1331,7 +1380,6 @@ srv_mon_get_name(
 Turn on/off, reset monitor counters in a module. If module_id
 is MONITOR_ALL_COUNTER then turn on all monitor counters.
 turned on because it has already been turned on. */
-
 void
 srv_mon_set_module_control(
 /*=======================*/
@@ -1469,7 +1517,6 @@ corresponding monitors are turned on/off/reset, and do appropriate
 mathematics to deduct the actual value. Please also refer to
 srv_export_innodb_status() for related global counters used by
 the existing status variables.*/
-
 void
 srv_mon_process_existing_counter(
 /*=============================*/
@@ -1910,7 +1957,6 @@ srv_mon_process_existing_counter(
 /*************************************************************//**
 Reset a monitor, create a new base line with the current monitor
 value. This baseline is recorded by MONITOR_VALUE_RESET(monitor) */
-
 void
 srv_mon_reset(
 /*==========*/
@@ -1958,7 +2004,6 @@ srv_mon_reset(
 
 /*************************************************************//**
 Turn on monitor counters that are marked as default ON. */
-
 void
 srv_mon_default_on(void)
 /*====================*/

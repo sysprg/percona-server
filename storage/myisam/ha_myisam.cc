@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,7 +16,6 @@
 
 
 #define MYSQL_SERVER 1
-#include "sql_priv.h"
 #include "probes_mysql.h"
 #include "key.h"                                // key_copy
 #include "sql_plugin.h"
@@ -144,7 +143,7 @@ static void mi_check_print_msg(MI_CHECK *param,	const char* msg_type,
 			       const char *fmt, va_list args)
 {
   THD* thd = (THD*)param->thd;
-  Protocol *protocol= thd->protocol;
+  Protocol *protocol= thd->get_protocol();
   size_t length, msg_length;
   char msgbuf[MI_MAX_MSG_BUF];
   char name[NAME_LEN*2+2];
@@ -179,12 +178,12 @@ static void mi_check_print_msg(MI_CHECK *param,	const char* msg_type,
   if (param->need_print_msg_lock)
     mysql_mutex_lock(&param->print_msg_mutex);
 
-  protocol->prepare_for_resend();
+  protocol->start_row();
   protocol->store(name, length, system_charset_info);
   protocol->store(param->op_name, system_charset_info);
   protocol->store(msg_type, system_charset_info);
   protocol->store(msgbuf, msg_length, system_charset_info);
-  if (protocol->write())
+  if (protocol->end_row())
     sql_print_error("Failed on my_net_write, writing to stderr instead: %s\n",
 		    msgbuf);
 
@@ -320,7 +319,7 @@ int table2myisam(TABLE *table_arg, MI_KEYDEF **keydef_out,
   record= table_arg->record[0];
   recpos= 0;
   recinfo_pos= recinfo;
-  while (recpos < (uint) share->reclength)
+  while (recpos < (uint) share->stored_rec_length)
   {
     Field **field, *found= 0;
     minpos= share->reclength;
@@ -648,6 +647,7 @@ ha_myisam::ha_myisam(handlerton *hton, TABLE_SHARE *table_arg)
                   HA_FILE_BASED | HA_CAN_GEOMETRY | HA_NO_TRANSACTIONS |
                   HA_CAN_BIT_FIELD | HA_CAN_RTREEKEYS |
                   HA_HAS_RECORDS | HA_STATS_RECORDS_IS_EXACT | HA_CAN_REPAIR |
+                  HA_GENERATED_COLUMNS | 
                   HA_ATTACHABLE_TRX_COMPATIBLE),
    can_enable_indexes(1)
 {}
@@ -1829,11 +1829,6 @@ int ha_myisam::rnd_next(uchar *buf)
   return error;
 }
 
-int ha_myisam::restart_rnd_next(uchar *buf, uchar *pos)
-{
-  return rnd_pos(buf,pos);
-}
-
 int ha_myisam::rnd_pos(uchar *buf, uchar *pos)
 {
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str,
@@ -2111,7 +2106,7 @@ void ha_myisam::get_auto_increment(ulonglong offset, ulonglong increment,
     ha_myisam::info(HA_STATUS_AUTO);
     *first_value= stats.auto_increment_value;
     /* MyISAM has only table-level lock, so reserves to +inf */
-    *nb_reserved_values= ULONGLONG_MAX;
+    *nb_reserved_values= ULLONG_MAX;
     return;
   }
 

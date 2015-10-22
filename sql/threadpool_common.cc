@@ -15,18 +15,18 @@
 
 #include <my_global.h>
 #include <violite.h>
-#include <sql_priv.h>
 #include <sql_class.h>
-#include <my_pthread.h>
 #include <sql_connect.h>
 #include <sql_audit.h>
 #include <debug_sync.h>
 #include <threadpool.h>
 #include <probes_mysql.h>
 #include <my_thread_local.h>
+#include <mysql/psi/mysql_idle.h>
 #include <conn_handler/channel_info.h>
 #include <conn_handler/connection_handler_manager.h>
 #include <mysqld_thd_manager.h>
+#include <mysql/thread_pool_priv.h>
 
 /* Threadpool parameters */
 
@@ -103,7 +103,8 @@ static bool thread_attach(THD* thd)
 #ifdef HAVE_PSI_THREAD_INTERFACE
   PSI_THREAD_CALL(set_thread)(thd->event_scheduler.m_psi);
 #endif
-  mysql_socket_set_thread_owner(thd->net.vio->mysql_socket);
+  mysql_socket_set_thread_owner(thd->get_protocol_classic()->get_vio()
+                                ->mysql_socket);
   return 0;
 }
 
@@ -161,6 +162,7 @@ void threadpool_net_after_header_psi(struct st_net *net, void *user_data,
 
 void threadpool_init_net_server_extension(THD *thd)
 {
+// TODO laurynas duplicated parts with init_net_server_extension?
 #ifdef HAVE_PSI_INTERFACE
   /* Start with a clean state for connection events. */
   thd->m_idle_psi= NULL;
@@ -170,10 +172,12 @@ void threadpool_init_net_server_extension(THD *thd)
   thd->m_net_server_extension.m_user_data= thd;
   thd->m_net_server_extension.m_before_header= threadpool_net_before_header_psi_noop;
   thd->m_net_server_extension.m_after_header= threadpool_net_after_header_psi;
+
   /* Activate this private extension for the mysqld server. */
-  thd->net.extension= & thd->m_net_server_extension;
+  thd->get_protocol_classic()->get_net()->extension=
+      &thd->m_net_server_extension;
 #else
-  thd->net.extension= NULL;
+  thd->get_protocol_classic()->get_net()->extension= NULL;
 #endif
 }
 
@@ -227,9 +231,10 @@ int threadpool_add_connection(THD* thd)
   if (thd_is_connection_alive(thd))
   {
     retval= 0;
-    thd->net.reading_or_writing= 1;
+    thd_set_net_read_write(thd, 1);
     thd->skip_wait_timeout= true;
-    MYSQL_SOCKET_SET_STATE(thd->net.vio->mysql_socket, PSI_SOCKET_STATE_IDLE);
+    MYSQL_SOCKET_SET_STATE(thd->get_protocol_classic()->get_vio()->mysql_socket,
+                           PSI_SOCKET_STATE_IDLE);
     thd->m_server_idle= true;
     threadpool_init_net_server_extension(thd);
   }
@@ -253,7 +258,7 @@ void threadpool_remove_connection(THD *thd)
   worker_context.save();
 
   thread_attach(thd);
-  thd->net.reading_or_writing= 0;
+  thd_set_net_read_write(thd, 0);
 
   end_connection(thd);
   close_connection(thd, 0);
@@ -307,7 +312,7 @@ int threadpool_process_request(THD *thd)
   for(;;)
   {
     Vio *vio;
-    thd->net.reading_or_writing= 0;
+    thd_set_net_read_write(thd, 0);
     mysql_audit_release(thd);
 
     if ((retval= do_command(thd)) != 0)
@@ -319,16 +324,16 @@ int threadpool_process_request(THD *thd)
       goto end;
     }
 
-    vio= thd->net.vio;
+    vio= thd->get_protocol_classic()->get_vio();
     if (!vio->has_data(vio))
     { 
       /* More info on this debug sync is in sql_parse.cc*/
       DEBUG_SYNC(thd, "before_do_command_net_read");
-      thd->net.reading_or_writing= 1;
+      thd_set_net_read_write(thd, 1);
       goto end;
     }
     if (!thd->m_server_idle) {
-      MYSQL_SOCKET_SET_STATE(thd->net.vio->mysql_socket, PSI_SOCKET_STATE_IDLE);
+      MYSQL_SOCKET_SET_STATE(vio->mysql_socket, PSI_SOCKET_STATE_IDLE);
       MYSQL_START_IDLE_WAIT(thd->m_idle_psi, &thd->m_idle_state);
       thd->m_server_idle= true;
     }
@@ -336,7 +341,8 @@ int threadpool_process_request(THD *thd)
 
 end:
   if (!retval && !thd->m_server_idle) {
-    MYSQL_SOCKET_SET_STATE(thd->net.vio->mysql_socket, PSI_SOCKET_STATE_IDLE);
+    MYSQL_SOCKET_SET_STATE(thd->get_protocol_classic()->get_vio()
+                           ->mysql_socket, PSI_SOCKET_STATE_IDLE);
     MYSQL_START_IDLE_WAIT(thd->m_idle_psi, &thd->m_idle_state);
     thd->m_server_idle= true;
   }

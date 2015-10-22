@@ -37,6 +37,8 @@
 #include "file.hpp"             // for TaoCrypt Source
 #include "coding.hpp"           // HexDecoder
 #include "helpers.hpp"          // for placement new hack
+#include "rsa.hpp"              // for TaoCrypt RSA key decode
+#include "dsa.hpp"              // for TaoCrypt DSA key decode
 #include <stdio.h>
 
 #ifdef _WIN32
@@ -54,6 +56,8 @@ namespace yaSSL {
 
 int read_file(SSL_CTX* ctx, const char* file, int format, CertType type)
 {
+    int ret = SSL_SUCCESS;
+
     if (format != SSL_FILETYPE_ASN1 && format != SSL_FILETYPE_PEM)
         return SSL_BAD_FILETYPE;
 
@@ -141,8 +145,31 @@ int read_file(SSL_CTX* ctx, const char* file, int format, CertType type)
             }
         }
     }
+
+    if (type == PrivateKey && ctx->privateKey_) {
+        // see if key is valid early
+        TaoCrypt::Source rsaSource(ctx->privateKey_->get_buffer(),
+                                   ctx->privateKey_->get_length());
+        TaoCrypt::RSA_PrivateKey rsaKey;
+        rsaKey.Initialize(rsaSource);
+
+        if (rsaSource.GetError().What()) {
+            // rsa failed see if DSA works
+
+            TaoCrypt::Source dsaSource(ctx->privateKey_->get_buffer(),
+                                       ctx->privateKey_->get_length());
+            TaoCrypt::DSA_PrivateKey dsaKey;
+            dsaKey.Initialize(dsaSource);
+
+            if (rsaSource.GetError().What()) {
+                // neither worked
+                ret = SSL_FAILURE;
+            }
+        }
+    }
+
     fclose(input);
-    return SSL_SUCCESS;
+    return ret;
 }
 
 
@@ -601,16 +628,31 @@ int SSL_set_compression(SSL* ssl)   /* Chad didn't rename to ya~ because it is p
 
 
 
+X509* X509_Copy(X509 *x)
+{
+    if (x == 0) return NULL;
+
+    X509_NAME* issuer   = x->GetIssuer();
+    X509_NAME* subject  = x->GetSubject();
+    ASN1_TIME* before = x->GetBefore();
+    ASN1_TIME* after  = x->GetAfter();
+
+    X509 *newX509 = NEW_YS X509(issuer->GetName(), issuer->GetLength(),
+        subject->GetName(), subject->GetLength(),
+        before, after);
+
+    return newX509;
+}
+
 X509* SSL_get_peer_certificate(SSL* ssl)
 {
-    return ssl->getCrypto().get_certManager().get_peerX509();
+    return X509_Copy(ssl->getCrypto().get_certManager().get_peerX509());
 }
 
 
-void X509_free(X509* /*x*/)
+void X509_free(X509* x)
 {
-    // peer cert set for deletion during destruction
-    // no need to delete now
+    ysDelete(x);
 }
 
 
@@ -631,6 +673,45 @@ int X509_STORE_CTX_get_error_depth(X509_STORE_CTX* ctx)
     return ctx->error_depth;
 }
 
+X509* PEM_read_X509(FILE *fp, X509 *x,
+                    pem_password_cb cb,
+                    void *u)
+{
+  if (fp == NULL)
+    return NULL;
+
+  // Get x509 handle and encryption information
+  x509* ptr = PemToDer(fp, Cert);
+  if (!ptr)
+      return NULL;
+
+  // Now decode x509 object.
+  TaoCrypt::SignerList signers;
+  TaoCrypt::Source source(ptr->get_buffer(), ptr->get_length());
+  TaoCrypt::CertDecoder cert(source, true, &signers, true, TaoCrypt::CertDecoder::CA);
+
+  if (cert.GetError().What()) {
+      ysDelete(ptr);
+      return NULL;
+  }
+
+  // Ok. Now create X509 object.
+  size_t iSz = strlen(cert.GetIssuer()) + 1;
+  size_t sSz = strlen(cert.GetCommonName()) + 1;
+  ASN1_STRING beforeDate, afterDate;
+  beforeDate.data = (unsigned char *) cert.GetBeforeDate();
+  beforeDate.type = cert.GetBeforeDateType();
+  beforeDate.length = strlen((char *) beforeDate.data) + 1;
+  afterDate.data = (unsigned char *) cert.GetAfterDate();
+  afterDate.type = cert.GetAfterDateType();
+  afterDate.length = strlen((char *) afterDate.data) + 1;
+
+  X509 *thisX509 = NEW_YS X509(cert.GetIssuer(), iSz, cert.GetCommonName(),
+                               sSz, &beforeDate, &afterDate);
+
+  ysDelete(ptr);
+  return thisX509;
+}
 
 // copy name into buffer, at most sz bytes, if buffer is null
 // will malloc buffer, caller responsible for freeing

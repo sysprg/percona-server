@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -42,11 +42,23 @@ fseg_alloc_free_page) */
 /* @} */
 
 #endif /* !UNIV_INNOCHECKSUM */
-/** File space extent size (one megabyte) in pages */
-#define	FSP_EXTENT_SIZE		(1048576U / UNIV_PAGE_SIZE)
+/** File space extent size in pages
+page size | file space extent size
+----------+-----------------------
+   4 KiB  | 256 pages = 1 MiB
+   8 KiB  | 128 pages = 1 MiB
+  16 KiB  |  64 pages = 1 MiB
+  32 KiB  |  64 pages = 2 MiB
+  64 KiB  |  64 pages = 4 MiB
+*/
+#define FSP_EXTENT_SIZE         ((UNIV_PAGE_SIZE <= (16384) ?	\
+				(1048576 / UNIV_PAGE_SIZE) :	\
+				((UNIV_PAGE_SIZE <= (32768)) ?	\
+				(2097152 / UNIV_PAGE_SIZE) :	\
+				(4194304 / UNIV_PAGE_SIZE))))
 
-/** File space extent size (one megabyte) in pages for MAX page size */
-#define	FSP_EXTENT_SIZE_MAX	(1048576 / UNIV_PAGE_SIZE_MAX)
+/** File space extent size (four megabyte) in pages for MAX page size */
+#define	FSP_EXTENT_SIZE_MAX	(4194304 / UNIV_PAGE_SIZE_MAX)
 
 /** File space extent size (one megabyte) in pages for MIN page size */
 #define	FSP_EXTENT_SIZE_MIN	(1048576 / UNIV_PAGE_SIZE_MIN)
@@ -69,6 +81,56 @@ typedef	byte	fseg_header_t;
 #define FSEG_HEADER_SIZE	10	/*!< Length of the file system
 					header, in bytes */
 /* @} */
+
+#ifdef UNIV_DEBUG
+
+struct mtr_t;
+
+/** A wrapper class to print the file segment header information. */
+class fseg_header
+{
+public:
+	/** Constructor of fseg_header.
+	@param[in]	header	the underlying file segment header object
+	@param[in]	mtr	the mini-transaction.  No redo logs are
+				generated, only latches are checked within
+				mini-transaction */
+	fseg_header(
+		const fseg_header_t*	header,
+		mtr_t*			mtr)
+		:
+		m_header(header),
+		m_mtr(mtr)
+	{}
+
+	/** Print the file segment header to the given output stream.
+	@param[in,out]	out	the output stream into which the object
+				is printed.
+	@retval	the output stream into which the object was printed. */
+	std::ostream&
+	to_stream(std::ostream&	out) const;
+private:
+	/** The underlying file segment header */
+	const fseg_header_t*	m_header;
+
+	/** The mini transaction, which is used mainly to check whether
+	appropriate latches have been taken by the calling thread. */
+	mtr_t*			m_mtr;
+};
+
+/* Overloading the global output operator to print a file segment header
+@param[in,out]	out	the output stream into which object will be printed
+@param[in]	header	the file segment header to be printed
+@retval the output stream */
+inline
+std::ostream&
+operator<<(
+	std::ostream&		out,
+	const fseg_header&	header)
+{
+	return(header.to_stream(out));
+}
+#endif /* UNIV_DEBUG */
 
 /** Flags for fsp_reserve_free_extents */
 enum fsp_reserve_t {
@@ -117,24 +179,21 @@ every XDES_DESCRIBED_PER_PAGE pages in every tablespace. */
 /*--------------------------------------*/
 /* @} */
 
-/********************************************************************//**
-Validate and return the tablespace flags, which are stored in the
-tablespace header at offset FSP_SPACE_FLAGS.  They should be 0 for
-ROW_FORMAT=COMPACT and ROW_FORMAT=REDUNDANT. The newer row formats,
-COMPRESSED and DYNAMIC, use a file format > Antelope so they should
-have a file format number plus the DICT_TF_COMPACT bit set.
-@return true if check ok */
-
+/** Validate the tablespace flags.
+These flags are stored in the tablespace header at offset FSP_SPACE_FLAGS.
+They should be 0 for ROW_FORMAT=COMPACT and ROW_FORMAT=REDUNDANT.
+The newer row formats, COMPRESSED and DYNAMIC, use a file format > Antelope
+so they should have a file format number plus the DICT_TF_COMPACT bit set.
+@param[in]	flags	Tablespace flags
+@return true if valid, false if not */
 bool
 fsp_flags_is_valid(
-/*===============*/
-	ulint	flags)		/*!< in: tablespace flags */
+	ulint	flags)
 	__attribute__((warn_unused_result, const));
 
 /** Check if tablespace is system temporary.
 @param[in]      space_id        verify is checksum is enabled for given space.
 @return true if tablespace is system temporary. */
-
 bool
 fsp_is_system_temporary(
 	ulint	space_id);
@@ -142,10 +201,28 @@ fsp_is_system_temporary(
 /** Check if checksum is disabled for the given space.
 @param[in]	space_id	verify is checksum is enabled for given space.
 @return true if checksum is disabled for given space. */
-
 bool
 fsp_is_checksum_disabled(
 	ulint	space_id);
+
+/** Check if tablespace is file-per-table.
+@param[in]	space_id	Tablespace ID
+@param[in]	fsp_flags	Tablespace Flags
+@return true if tablespace is file-per-table. */
+bool
+fsp_is_file_per_table(
+	ulint	space_id,
+	ulint	fsp_flags);
+
+#ifdef UNIV_DEBUG
+/** Skip some of the sanity checks that are time consuming even in debug mode
+and can affect frequent verification runs that are done to ensure stability of
+the product.
+@return true if check should be skipped for given space. */
+bool
+fsp_skip_sanity_check(
+	ulint	space_id);
+#endif /* UNIV_DEBUG */
 
 #endif /* !UNIV_INNOCHECKSUM */
 
@@ -164,12 +241,21 @@ to the two Barracuda row formats COMPRESSED and DYNAMIC. */
 /** Width of the DATA_DIR flag.  This flag indicates that the tablespace
 is found in a remote location, not the default data directory. */
 #define FSP_FLAGS_WIDTH_DATA_DIR	1
+/** Width of the SHARED flag.  This flag indicates that the tablespace
+was created with CREATE TABLESPACE and can be shared by multiple tables. */
+#define FSP_FLAGS_WIDTH_SHARED		1
+/** Width of the TEMPORARY flag.  This flag indicates that the tablespace
+is a temporary tablespace and everything in it is temporary, meaning that
+it is for a single client and should be deleted upon startup if it exists. */
+#define FSP_FLAGS_WIDTH_TEMPORARY	1
 /** Width of all the currently known tablespace flags */
 #define FSP_FLAGS_WIDTH		(FSP_FLAGS_WIDTH_POST_ANTELOPE	\
 				+ FSP_FLAGS_WIDTH_ZIP_SSIZE	\
 				+ FSP_FLAGS_WIDTH_ATOMIC_BLOBS	\
 				+ FSP_FLAGS_WIDTH_PAGE_SSIZE	\
-				+ FSP_FLAGS_WIDTH_DATA_DIR)
+				+ FSP_FLAGS_WIDTH_DATA_DIR	\
+				+ FSP_FLAGS_WIDTH_SHARED	\
+				+ FSP_FLAGS_WIDTH_TEMPORARY)
 
 /** A mask of all the known/used bits in tablespace flags */
 #define FSP_FLAGS_MASK		(~(~0 << FSP_FLAGS_WIDTH))
@@ -188,9 +274,15 @@ is found in a remote location, not the default data directory. */
 /** Zero relative shift position of the start of the DATA_DIR bit */
 #define FSP_FLAGS_POS_DATA_DIR		(FSP_FLAGS_POS_PAGE_SSIZE	\
 					+ FSP_FLAGS_WIDTH_PAGE_SSIZE)
-/** Zero relative shift position of the start of the UNUSED bits */
-#define FSP_FLAGS_POS_UNUSED		(FSP_FLAGS_POS_DATA_DIR	\
+/** Zero relative shift position of the start of the SHARED bit */
+#define FSP_FLAGS_POS_SHARED		(FSP_FLAGS_POS_DATA_DIR		\
 					+ FSP_FLAGS_WIDTH_DATA_DIR)
+/** Zero relative shift position of the start of the TEMPORARY bit */
+#define FSP_FLAGS_POS_TEMPORARY		(FSP_FLAGS_POS_SHARED		\
+					+ FSP_FLAGS_WIDTH_SHARED)
+/** Zero relative shift position of the start of the UNUSED bits */
+#define FSP_FLAGS_POS_UNUSED		(FSP_FLAGS_POS_TEMPORARY	\
+					+ FSP_FLAGS_WIDTH_TEMPORARY)
 
 /** Bit mask of the POST_ANTELOPE field */
 #define FSP_FLAGS_MASK_POST_ANTELOPE				\
@@ -212,6 +304,14 @@ is found in a remote location, not the default data directory. */
 #define FSP_FLAGS_MASK_DATA_DIR					\
 		((~(~0 << FSP_FLAGS_WIDTH_DATA_DIR))		\
 		<< FSP_FLAGS_POS_DATA_DIR)
+/** Bit mask of the SHARED field */
+#define FSP_FLAGS_MASK_SHARED					\
+		((~(~0 << FSP_FLAGS_WIDTH_SHARED))		\
+		<< FSP_FLAGS_POS_SHARED)
+/** Bit mask of the TEMPORARY field */
+#define FSP_FLAGS_MASK_TEMPORARY				\
+		((~(~0 << FSP_FLAGS_WIDTH_TEMPORARY))		\
+		<< FSP_FLAGS_POS_TEMPORARY)
 
 /** Return the value of the POST_ANTELOPE field */
 #define FSP_FLAGS_GET_POST_ANTELOPE(flags)			\
@@ -233,15 +333,20 @@ is found in a remote location, not the default data directory. */
 #define FSP_FLAGS_HAS_DATA_DIR(flags)				\
 		((flags & FSP_FLAGS_MASK_DATA_DIR)		\
 		>> FSP_FLAGS_POS_DATA_DIR)
+/** Return the contents of the SHARED field */
+#define FSP_FLAGS_GET_SHARED(flags)				\
+		((flags & FSP_FLAGS_MASK_SHARED)		\
+		>> FSP_FLAGS_POS_SHARED)
+/** Return the contents of the TEMPORARY field */
+#define FSP_FLAGS_GET_TEMPORARY(flags)				\
+		((flags & FSP_FLAGS_MASK_TEMPORARY)		\
+		>> FSP_FLAGS_POS_TEMPORARY)
 /** Return the contents of the UNUSED bits */
 #define FSP_FLAGS_GET_UNUSED(flags)				\
 		(flags >> FSP_FLAGS_POS_UNUSED)
 
-/** Set a PAGE_SSIZE into the correct bits in a given
-tablespace flags. */
-#define FSP_FLAGS_SET_PAGE_SSIZE(flags, ssize)			\
-		(flags | (ssize << FSP_FLAGS_POS_PAGE_SSIZE))
-
+/** Use an alias in the code for FSP_FLAGS_GET_SHARED() */
+#define fsp_is_shared_tablespace FSP_FLAGS_GET_SHARED
 /* @} */
 
 #endif /* fsp0types_h */

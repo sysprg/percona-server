@@ -1,7 +1,7 @@
 #ifndef THR_COND_INCLUDED
 #define THR_COND_INCLUDED
 
-/* Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -26,12 +26,16 @@
        Other OSes - pthread
   2) my_cond_*()
        Functions that use SAFE_MUTEX (default for debug).
-       FAST_MUTEX (default for release - non Windows). If neither
-       of these apply, native_cond_*() is used.
+       Otherwise native_cond_*() is used.
   3) mysql_cond*()
        Functions that include Performance Schema instrumentation.
        See include/mysql/psi/mysql_thread.h
 */
+
+#include "my_thread.h"
+#include "thr_mutex.h"
+
+C_MODE_START
 
 #ifdef _WIN32
 typedef CONDITION_VARIABLE native_cond_t;
@@ -159,8 +163,6 @@ static inline int my_cond_timedwait(native_cond_t *cond, my_mutex_t *mp,
 {
 #ifdef SAFE_MUTEX
   return safe_cond_timedwait(cond, mp, abstime, file, line);
-#elif defined MY_PTHREAD_FASTMUTEX
-  return native_cond_timedwait(cond, &mp->mutex, abstime);
 #else
   return native_cond_timedwait(cond, mp, abstime);
 #endif
@@ -174,11 +176,11 @@ static inline int my_cond_wait(native_cond_t *cond, my_mutex_t *mp
 {
 #ifdef SAFE_MUTEX
   return safe_cond_wait(cond, mp, file, line);
-#elif defined MY_PTHREAD_FASTMUTEX
-  return native_cond_wait(cond, &mp->mutex);
 #else
   return native_cond_wait(cond, mp);
 #endif
 }
+
+C_MODE_END
 
 #endif /* THR_COND_INCLUDED */

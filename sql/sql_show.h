@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2005, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,25 +16,18 @@
 #ifndef SQL_SHOW_H
 #define SQL_SHOW_H
 
-#include "sql_list.h"                           /* List */
-#include "sql_priv.h"                           /* enum_var_type */
-#include "handler.h"                            /* enum_schema_tables */
-#include "table.h"                              /* enum_schema_table_state */
+#include "my_global.h"
+#include "handler.h"                            // enum_schema_tables
+#include "table.h"                              // enum_schema_table_state
+#include "set_var.h"                            // enum_var_type
 
 /* Forward declarations */
 class JOIN;
-class String;
-class THD;
 class sp_name;
-struct TABLE_LIST;
-struct st_ha_create_information;
 typedef class st_select_lex SELECT_LEX;
-typedef st_ha_create_information HA_CREATE_INFO;
-struct LEX;
-typedef struct st_mysql_show_var SHOW_VAR;
-typedef struct st_schema_table ST_SCHEMA_TABLE;
-struct TABLE;
 typedef struct system_status_var STATUS_VAR;
+// TODO: allocator based on my_malloc.
+typedef std::vector<st_mysql_show_var> Status_var_array;
 
 enum find_files_result {
   FIND_FILES_OK,
@@ -63,6 +56,7 @@ enum find_files_result {
 #define IS_COLUMNS_EXTRA                       17
 #define IS_COLUMNS_PRIVILEGES                  18
 #define IS_COLUMNS_COLUMN_COMMENT              19
+#define IS_COLUMNS_GENERATION_EXPRESSION       20
 
 /* Define fields' indexes for ROUTINES table of I_S tables */
 #define IS_ROUTINES_SPECIFIC_NAME               0
@@ -157,7 +151,8 @@ enum find_files_result {
 #define IS_FILES_EXTRA               37
 
 find_files_result find_files(THD *thd, List<LEX_STRING> *files, const char *db,
-                             const char *path, const char *wild, bool dir);
+                             const char *path, const char *wild, bool dir,
+                             MEM_ROOT *tmp_mem_root);
 
 int store_create_info(THD *thd, TABLE_LIST *table_list, String *packet,
                       HA_CREATE_INFO  *create_info_arg, bool show_database);
@@ -165,9 +160,13 @@ int view_store_create_info(THD *thd, TABLE_LIST *table, String *buff);
 
 int copy_event_to_schema_table(THD *thd, TABLE *sch_table, TABLE *event_table);
 
-void append_identifier(THD *thd, String *packet, const char *name, size_t length);
 void append_identifier(THD *thd, String *packet, const char *name, size_t length,
                        const CHARSET_INFO *from_cs, const CHARSET_INFO *to_cs);
+
+inline void append_identifier(THD *thd, String *packet, const char *name, size_t length)
+{
+  append_identifier(thd, packet, name, length, NULL, NULL);
+}
 inline void append_identifier(THD *thd, String *packet, Simple_cstring str)
 {
   append_identifier(thd, packet, str.ptr(), str.length());
@@ -185,13 +184,16 @@ char *make_backup_log_name(char *buff, const char *name, const char* log_ext);
 void calc_sum_of_all_status(STATUS_VAR *to);
 void append_definer(THD *thd, String *buffer, const LEX_CSTRING &definer_user,
                     const LEX_CSTRING &definer_host);
-int add_status_vars(SHOW_VAR *list);
+int add_status_vars(const SHOW_VAR *list);
+DYNAMIC_ARRAY *get_status_vars();
+
 void remove_status_vars(SHOW_VAR *list);
 void init_status_vars();
 void free_status_vars();
 bool get_status_var(THD *thd, SHOW_VAR *list, const char *name,
                     char * const buff, enum_var_type var_type, size_t *length);
 void reset_status_vars();
+ulonglong get_status_vars_version(void);
 bool show_create_trigger(THD *thd, const sp_name *trg_name);
 void view_store_options(THD *thd, TABLE_LIST *table, String *buff);
 
@@ -208,7 +210,7 @@ bool get_schema_tables_result(JOIN *join,
                               enum enum_schema_table_state executed_place);
 enum enum_schema_tables get_schema_table_idx(ST_SCHEMA_TABLE *schema_table);
 
-const char* get_one_variable(THD *thd, SHOW_VAR *variable,
+const char* get_one_variable(THD *thd, const SHOW_VAR *variable,
                              enum_var_type value_type, SHOW_TYPE show_type,
                              system_status_var *status_var,
                              const CHARSET_INFO **charset, char *buff,

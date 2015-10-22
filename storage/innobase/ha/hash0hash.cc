@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1997, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -36,7 +36,6 @@ Created 5/20/1997 Heikki Tuuri
 
 /************************************************************//**
 Reserves the mutex for a fold value in a hash table. */
-
 void
 hash_mutex_enter(
 /*=============*/
@@ -49,7 +48,6 @@ hash_mutex_enter(
 
 /************************************************************//**
 Releases the mutex for a fold value in a hash table. */
-
 void
 hash_mutex_exit(
 /*============*/
@@ -62,7 +60,6 @@ hash_mutex_exit(
 
 /************************************************************//**
 Reserves all the mutexes of a hash table, in an ascending order. */
-
 void
 hash_mutex_enter_all(
 /*=================*/
@@ -78,7 +75,6 @@ hash_mutex_enter_all(
 
 /************************************************************//**
 Releases all the mutexes of a hash table. */
-
 void
 hash_mutex_exit_all(
 /*================*/
@@ -94,7 +90,6 @@ hash_mutex_exit_all(
 
 /************************************************************//**
 Releases all but the passed in mutex of a hash table. */
-
 void
 hash_mutex_exit_all_but(
 /*====================*/
@@ -117,7 +112,6 @@ hash_mutex_exit_all_but(
 
 /************************************************************//**
 s-lock a lock for a fold value in a hash table. */
-
 void
 hash_lock_s(
 /*========*/
@@ -130,17 +124,14 @@ hash_lock_s(
 	ut_ad(table->type == HASH_TABLE_SYNC_RW_LOCK);
 	ut_ad(lock);
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(!rw_lock_own(lock, RW_LOCK_S));
 	ut_ad(!rw_lock_own(lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 	rw_lock_s_lock(lock);
 }
 
 /************************************************************//**
 x-lock a lock for a fold value in a hash table. */
-
 void
 hash_lock_x(
 /*========*/
@@ -153,17 +144,14 @@ hash_lock_x(
 	ut_ad(table->type == HASH_TABLE_SYNC_RW_LOCK);
 	ut_ad(lock);
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(!rw_lock_own(lock, RW_LOCK_S));
 	ut_ad(!rw_lock_own(lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 	rw_lock_x_lock(lock);
 }
 
 /************************************************************//**
 unlock an s-lock for a fold value in a hash table. */
-
 void
 hash_unlock_s(
 /*==========*/
@@ -177,16 +165,13 @@ hash_unlock_s(
 	ut_ad(table->type == HASH_TABLE_SYNC_RW_LOCK);
 	ut_ad(lock);
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(rw_lock_own(lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
 
 	rw_lock_s_unlock(lock);
 }
 
 /************************************************************//**
 unlock x-lock for a fold value in a hash table. */
-
 void
 hash_unlock_x(
 /*==========*/
@@ -198,16 +183,13 @@ hash_unlock_x(
 	ut_ad(table->type == HASH_TABLE_SYNC_RW_LOCK);
 	ut_ad(lock);
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(rw_lock_own(lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 	rw_lock_x_unlock(lock);
 }
 
 /************************************************************//**
 Reserves all the locks of a hash table, in an ascending order. */
-
 void
 hash_lock_x_all(
 /*============*/
@@ -218,10 +200,9 @@ hash_lock_x_all(
 	for (ulint i = 0; i < table->n_sync_obj; i++) {
 
 		rw_lock_t* lock = table->sync_obj.rw_locks + i;
-#ifdef UNIV_SYNC_DEBUG
+
 		ut_ad(!rw_lock_own(lock, RW_LOCK_S));
 		ut_ad(!rw_lock_own(lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 		rw_lock_x_lock(lock);
 	}
@@ -229,7 +210,6 @@ hash_lock_x_all(
 
 /************************************************************//**
 Releases all the locks of a hash table, in an ascending order. */
-
 void
 hash_unlock_x_all(
 /*==============*/
@@ -240,9 +220,8 @@ hash_unlock_x_all(
 	for (ulint i = 0; i < table->n_sync_obj; i++) {
 
 		rw_lock_t* lock = table->sync_obj.rw_locks + i;
-#ifdef UNIV_SYNC_DEBUG
+
 		ut_ad(rw_lock_own(lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 		rw_lock_x_unlock(lock);
 	}
@@ -250,7 +229,6 @@ hash_unlock_x_all(
 
 /************************************************************//**
 Releases all but passed in lock of a hash table, */
-
 void
 hash_unlock_x_all_but(
 /*==================*/
@@ -262,9 +240,8 @@ hash_unlock_x_all_but(
 	for (ulint i = 0; i < table->n_sync_obj; i++) {
 
 		rw_lock_t* lock = table->sync_obj.rw_locks + i;
-#ifdef UNIV_SYNC_DEBUG
+
 		ut_ad(rw_lock_own(lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 		if (keep_lock != lock) {
 			rw_lock_x_unlock(lock);
@@ -278,7 +255,6 @@ hash_unlock_x_all_but(
 Creates a hash table with >= n array cells. The actual number of cells is
 chosen to be a prime number slightly bigger than n.
 @return own: created table */
-
 hash_table_t*
 hash_create(
 /*========*/
@@ -320,7 +296,6 @@ hash_create(
 
 /*************************************************************//**
 Frees a hash table. */
-
 void
 hash_table_free(
 /*============*/
@@ -337,14 +312,13 @@ hash_table_free(
 Creates a sync object array to protect a hash table.
 ::sync_obj can be mutexes or rw_locks depening on the type of
 hash table. */
-
 void
 hash_create_sync_obj(
 /*=================*/
 	hash_table_t*		table,	/*!< in: hash table */
 	enum hash_table_sync_t	type,	/*!< in: HASH_TABLE_SYNC_MUTEX
 					or HASH_TABLE_SYNC_RW_LOCK */
-	const char*		name,/*!< in: mutex/rw_lock name */
+	latch_id_t		id,	/*!< in: latch ID */
 	ulint			n_sync_obj)/*!< in: number of sync objects,
 					must be a power of 2 */
 {
@@ -360,14 +334,14 @@ hash_create_sync_obj(
 			ut_malloc_nokey(n_sync_obj * sizeof(ib_mutex_t)));
 
 		for (ulint i = 0; i < n_sync_obj; i++) {
-			mutex_create(name, table->sync_obj.mutexes + i);
+			mutex_create(id, table->sync_obj.mutexes + i);
 		}
 
 		break;
 
 	case HASH_TABLE_SYNC_RW_LOCK: {
 
-		latch_level_t	level = sync_latch_get_level(name);
+		latch_level_t	level = sync_latch_get_level(id);
 
 		ut_a(level != SYNC_UNKNOWN);
 

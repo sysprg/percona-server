@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2011, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2011, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 Portions of this file contain modifications contributed and copyrighted by
 Google, Inc. Those modifications are gratefully acknowledged and are described
@@ -38,10 +38,9 @@ Created 2011/04/18 Sunny Bains
 *******************************************************/
 
 #include "ha_prototypes.h"
-#include <mysql/plugin.h>
+#include <mysql/service_thd_wait.h>
 
 #include "srv0srv.h"
-#include "sync0mutex.h"
 #include "btr0types.h"
 #include "trx0trx.h"
 #include "row0mysql.h"
@@ -51,10 +50,8 @@ Created 2011/04/18 Sunny Bains
 SQL query after it has once got the ticket. */
 ulong	srv_n_free_tickets_to_enter = 500;
 
-#ifdef HAVE_ATOMIC_BUILTINS
 /** Maximum sleep delay (in micro-seconds), value of 0 disables it. */
 ulong	srv_adaptive_max_sleep_delay = 150000;
-#endif /* HAVE_ATOMIC_BUILTINS */
 
 ulong	srv_thread_sleep_delay	= 10000;
 
@@ -70,39 +67,6 @@ threads waiting for locks are not counted into the number because otherwise
 we could get a deadlock. Value of 0 will disable the concurrency check. */
 
 ulong	srv_thread_concurrency	= 0;
-
-#ifndef HAVE_ATOMIC_BUILTINS
-/** Mutex protecting some server global variables. */
-ib_mutex_t	server_mutex;
-
-/** This mutex protects srv_conc data structures */
-static SysMutex	srv_conc_mutex;
-
-/** Concurrency list node */
-typedef UT_LIST_NODE_T(struct srv_conc_slot_t)	srv_conc_node_t;
-
-/** Slot for a thread waiting in the concurrency control queue. */
-struct srv_conc_slot_t{
-	os_event_t	event;		/*!< event to wait */
-	ibool		reserved;	/*!< TRUE if slot
-					reserved */
-	ibool		wait_ended;	/*!< TRUE when another thread has
-					already set the event and the thread
-					in this slot is free to proceed; but
-					reserved may still be TRUE at that
-					point */
-	srv_conc_node_t	srv_conc_queue;	/*!< queue node */
-};
-
-/** Queue of threads waiting to get in */
-typedef UT_LIST_BASE_NODE_T(srv_conc_slot_t)	srv_conc_queue_t;
-
-static srv_conc_queue_t	srv_conc_queue;
-
-/** Array of wait slots */
-static srv_conc_slot_t*	srv_conc_slots;
-
-#endif /* !HAVE_ATOMIC_BUILTINS */
 
 /** Variables tracking the active and waiting threads. */
 struct srv_conc_t {
@@ -123,46 +87,6 @@ struct srv_conc_t {
 /* Control variables for tracking concurrency. */
 static srv_conc_t	srv_conc;
 
-#ifndef HAVE_ATOMIC_BUILTINS
-/** Initialise the concurrency management data structures. */
-
-void
-srv_conc_init(void)
-{
-	ulint		i;
-
-	/* Init the server concurrency restriction data structures */
-
-	mutex_create("conc_mutex", &srv_conc_mutex);
-
-	UT_LIST_INIT(srv_conc_queue, &srv_conc_slot_t::srv_conc_queue);
-
-	srv_conc_slots = static_cast<srv_conc_slot_t*>(
-		ut_zalloc_nokey(OS_THREAD_MAX_N * sizeof(*srv_conc_slots)));
-
-	for (i = 0; i < OS_THREAD_MAX_N; i++) {
-		srv_conc_slot_t*	conc_slot = &srv_conc_slots[i];
-
-		conc_slot->event = os_event_create("conc_event");
-		ut_a(conc_slot->event);
-	}
-
-	mutex_create("server", &server_mutex);
-}
-
-/** Free the concurrency management data structures. */
-
-void
-srv_conc_free(void)
-{
-	mutex_free(&server_mutex);
-	mutex_free(&srv_conc_mutex);
-	ut_free(srv_conc_slots);
-	srv_conc_slots = NULL;
-}
-#endif /* !HAVE_ATOMIC_BUILTINS */
-
-#ifdef HAVE_ATOMIC_BUILTINS
 /*********************************************************************//**
 Note that a user thread is entering InnoDB. */
 static
@@ -202,6 +126,19 @@ srv_conc_enter_innodb_with_atomics(
 
 	for (;;) {
 		ulint	sleep_in_us;
+
+		if (srv_thread_concurrency == 0) {
+
+			if (notified_mysql) {
+
+				(void) os_atomic_decrement_lint(
+					&srv_conc.n_waiting, 1);
+
+				thd_wait_end(trx->mysql_thd);
+			}
+
+			return;
+		}
 
 		if (srv_conc.n_active < (lint) srv_thread_concurrency) {
 			ulint	n_active;
@@ -260,6 +197,7 @@ srv_conc_enter_innodb_with_atomics(
 			notified_mysql = TRUE;
 		}
 
+		DEBUG_SYNC_C("user_thread_waiting");
 		trx->op_info = "sleeping before entering InnoDB";
 
 		sleep_in_us = srv_thread_sleep_delay;
@@ -299,262 +237,44 @@ srv_conc_exit_innodb_with_atomics(
 
 	(void) os_atomic_decrement_lint(&srv_conc.n_active, 1);
 }
-#else
-/*********************************************************************//**
-Note that a user thread is leaving InnoDB code. */
-static
-void
-srv_conc_exit_innodb_without_atomics(
-/*=================================*/
-	trx_t*	trx)		/*!< in/out: transaction */
-{
-	srv_conc_slot_t*	slot;
-
-	mutex_enter(&srv_conc_mutex);
-
-	ut_ad(srv_conc.n_active > 0);
-	srv_conc.n_active--;
-	trx->declared_to_be_inside_innodb = FALSE;
-	trx->n_tickets_to_enter_innodb = 0;
-
-	slot = NULL;
-
-	if (srv_conc.n_active < (lint) srv_thread_concurrency) {
-		/* Look for a slot where a thread is waiting and no other
-		thread has yet released the thread */
-
-		for (slot = UT_LIST_GET_FIRST(srv_conc_queue);
-		     slot != NULL && slot->wait_ended == TRUE;
-		     slot = UT_LIST_GET_NEXT(srv_conc_queue, slot)) {
-
-			/* No op */
-		}
-
-		if (slot != NULL) {
-			slot->wait_ended = TRUE;
-
-			/* We increment the count on behalf of the released
-			thread */
-
-			srv_conc.n_active++;
-		}
-	}
-
-	mutex_exit(&srv_conc_mutex);
-
-	if (slot != NULL) {
-		os_event_set(slot->event);
-	}
-}
-
-/*********************************************************************//**
-Handle the scheduling of a user thread that wants to enter InnoDB. */
-static
-void
-srv_conc_enter_innodb_without_atomics(
-/*==================================*/
-	trx_t*	trx)			/*!< in/out: transaction that wants
-					to enter InnoDB */
-{
-	ulint			i;
-	srv_conc_slot_t*	slot = NULL;
-	ibool			has_slept = FALSE;
-	ib_uint64_t		start_time = 0L;
-	ib_uint64_t		finish_time = 0L;
-	ulint			sec;
-	ulint			ms;
-
-	mutex_enter(&srv_conc_mutex);
-retry:
-	if (trx->declared_to_be_inside_innodb) {
-		mutex_exit(&srv_conc_mutex);
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Trying to declare trx to enter InnoDB, but"
-			" it already is declared.");
-		trx_print(stderr, trx, 0);
-		putc('\n', stderr);
-		return;
-	}
-
-	ut_ad(srv_conc.n_active >= 0);
-
-	if (srv_conc.n_active < (lint) srv_thread_concurrency) {
-
-		srv_conc.n_active++;
-		trx->declared_to_be_inside_innodb = TRUE;
-		trx->n_tickets_to_enter_innodb = srv_n_free_tickets_to_enter;
-
-		mutex_exit(&srv_conc_mutex);
-
-		return;
-	}
-
-	/* If the transaction is not holding resources, let it sleep
-	for srv_thread_sleep_delay microseconds, and try again then */
-
-	if (!has_slept && !trx->has_search_latch
-	    && NULL == UT_LIST_GET_FIRST(trx->lock.trx_locks)) {
-
-		has_slept = TRUE; /* We let it sleep only once to avoid
-				starvation */
-
-		srv_conc.n_waiting++;
-
-		mutex_exit(&srv_conc_mutex);
-
-		trx->op_info = "sleeping before joining InnoDB queue";
-
-		/* Peter Zaitsev suggested that we take the sleep away
-		altogether. But the sleep may be good in pathological
-		situations of lots of thread switches. Simply put some
-		threads aside for a while to reduce the number of thread
-		switches. */
-		if (srv_thread_sleep_delay > 0) {
-			os_thread_sleep(srv_thread_sleep_delay);
-			trx->innodb_que_wait_timer += sleep_in_us;
-		}
-
-		trx->op_info = "";
-
-		mutex_exit(&srv_conc_mutex);
-
-		srv_conc.n_waiting--;
-
-		goto retry;
-	}
-
-	/* Too many threads inside: put the current thread to a queue */
-
-	for (i = 0; i < OS_THREAD_MAX_N; i++) {
-		slot = srv_conc_slots + i;
-
-		if (!slot->reserved) {
-
-			break;
-		}
-	}
-
-	if (i == OS_THREAD_MAX_N) {
-		/* Could not find a free wait slot, we must let the
-		thread enter */
-
-		srv_conc.n_active++;
-		trx->declared_to_be_inside_innodb = TRUE;
-		trx->n_tickets_to_enter_innodb = 0;
-
-		mutex_exit(&srv_conc_mutex);
-
-		return;
-	}
-
-	/* Release possible search system latch this thread has */
-	if (trx->has_search_latch) {
-		trx_search_latch_release_if_reserved(trx);
-	}
-
-	/* Add to the queue */
-	slot->reserved = TRUE;
-	slot->wait_ended = FALSE;
-
-	UT_LIST_ADD_LAST(srv_conc_queue, slot);
-
-	os_event_reset(slot->event);
-
-	srv_conc.n_waiting++;
-
-	mutex_exit(&srv_conc_mutex);
-
-	/* Go to wait for the event; when a thread leaves InnoDB it will
-	release this thread */
-
-	ut_ad(!trx->has_search_latch);
-
-	{
-		btrsea_sync_check	check(trx->has_search_latch);
-
-		ut_ad(!sync_check_iterate(check));
-	}
-
-	if (UNIV_UNLIKELY(trx->take_stats)) {
-		ut_usectime(&sec, &ms);
-		start_time = (ib_uint64_t)sec * 1000000 + ms;
-	} else {
-		start_time = 0;
-	}
-
-	trx->op_info = "waiting in InnoDB queue";
-
-	thd_wait_begin(trx->mysql_thd, THD_WAIT_USER_LOCK);
-
-	os_event_wait(slot->event);
-	thd_wait_end(trx->mysql_thd);
-
-	trx->op_info = "";
-
-	if (UNIV_UNLIKELY(start_time != 0)) {
-		ut_usectime(&sec, &ms);
-		finish_time = (ib_uint64_t)sec * 1000000 + ms;
-		trx->innodb_que_wait_timer
-			+= (ulint)(finish_time - start_time);
-	}
-
-	mutex_enter(&srv_conc_mutex);
-
-	srv_conc.n_waiting--;
-
-	/* NOTE that the thread which released this thread already
-	incremented the thread counter on behalf of this thread */
-
-	slot->reserved = FALSE;
-
-	UT_LIST_REMOVE(srv_conc_queue, slot);
-
-	trx->declared_to_be_inside_innodb = TRUE;
-	trx->n_tickets_to_enter_innodb = srv_n_free_tickets_to_enter;
-
-	 mutex_exit(&srv_conc_mutex);
-}
-#endif /* HAVE_ATOMIC_BUILTINS */
 
 /*********************************************************************//**
 Puts an OS thread to wait if there are too many concurrent threads
 (>= srv_thread_concurrency) inside InnoDB. The threads wait in a FIFO queue.
 @param[in,out]	prebuilt	row prebuilt handler */
-
 void
 srv_conc_enter_innodb(
 	row_prebuilt_t*	prebuilt)
 {
 	trx_t*	trx	= prebuilt->trx;
 
+#ifdef UNIV_DEBUG
 	{
 		btrsea_sync_check	check(trx->has_search_latch);
 
 		ut_ad(!sync_check_iterate(check));
 	}
+#endif /* UNIV_DEBUG */
 
-#ifdef HAVE_ATOMIC_BUILTINS
 	srv_conc_enter_innodb_with_atomics(trx);
-#else
-	srv_conc_enter_innodb_without_atomics(trx);
-#endif /* HAVE_ATOMIC_BUILTINS */
 }
 
 /*********************************************************************//**
 This lets a thread enter InnoDB regardless of the number of threads inside
 InnoDB. This must be called when a thread ends a lock wait. */
-
 void
 srv_conc_force_enter_innodb(
 /*========================*/
 	trx_t*	trx)	/*!< in: transaction object associated with the
 			thread */
 {
+#ifdef UNIV_DEBUG
 	{
 		btrsea_sync_check	check(trx->has_search_latch);
 
 		ut_ad(!sync_check_iterate(check));
 	}
+#endif /* UNIV_DEBUG */
 
 	if (!srv_thread_concurrency) {
 
@@ -563,13 +283,7 @@ srv_conc_force_enter_innodb(
 
 	ut_ad(srv_conc.n_active >= 0);
 
-#ifdef HAVE_ATOMIC_BUILTINS
 	(void) os_atomic_increment_lint(&srv_conc.n_active, 1);
-#else
-	mutex_enter(&srv_conc_mutex);
-	++srv_conc.n_active;
-	mutex_exit(&srv_conc_mutex);
-#endif /* HAVE_ATOMIC_BUILTINS */
 
 	trx->n_tickets_to_enter_innodb = 1;
 	trx->declared_to_be_inside_innodb = TRUE;
@@ -578,7 +292,6 @@ srv_conc_force_enter_innodb(
 /*********************************************************************//**
 This must be called when a thread exits InnoDB in a lock wait or at the
 end of an SQL statement. */
-
 void
 srv_conc_force_exit_innodb(
 /*=======================*/
@@ -592,22 +305,19 @@ srv_conc_force_exit_innodb(
 		return;
 	}
 
-#ifdef HAVE_ATOMIC_BUILTINS
 	srv_conc_exit_innodb_with_atomics(trx);
-#else
-	srv_conc_exit_innodb_without_atomics(trx);
-#endif /* HAVE_ATOMIC_BUILTINS */
 
+#ifdef UNIV_DEBUG
 	{
 		btrsea_sync_check	check(trx->has_search_latch);
 
 		ut_ad(!sync_check_iterate(check));
 	}
+#endif /* UNIV_DEBUG */
 }
 
 /*********************************************************************//**
 Get the count of threads waiting inside InnoDB. */
-
 ulint
 srv_conc_get_waiting_threads(void)
 /*==============================*/
@@ -617,7 +327,6 @@ srv_conc_get_waiting_threads(void)
 
 /*********************************************************************//**
 Get the count of threads active inside InnoDB. */
-
 ulint
 srv_conc_get_active_threads(void)
 /*==============================*/

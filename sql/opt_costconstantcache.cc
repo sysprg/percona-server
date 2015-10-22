@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -24,7 +24,6 @@
 #include "my_dbug.h"                            // DBUG_ASSERT
 #include "opt_costconstants.h"
 #include "opt_costconstantcache.h"
-#include "my_pthread.h"
 #include "template_utils.h"                     // pointer_cast
 #include "records.h"                            // READ_RECORD
 #include "sql_base.h"                           // open_and_lock_tables
@@ -33,6 +32,7 @@
 #include "table.h"                              // TABLE
 #include "thr_lock.h"                           // TL_READ
 #include "transaction.h"
+#include "sql_tmp_table.h"                // init_cache_tmp_engine_properties
 
 Cost_constant_cache *cost_constant_cache= NULL;
 
@@ -295,7 +295,7 @@ static void read_server_cost_constants(THD *thd, TABLE *table,
         cost_name[cost_name.length()]= 0; // Null-terminate
 
         // Read the value this cost constant should have
-        const float value= table->field[1]->val_real();
+        const float value= static_cast<float>(table->field[1]->val_real());
 
         // Update the cost model with this cost constant
         const LEX_CSTRING cost_constant= cost_name.lex_cstring();
@@ -375,14 +375,14 @@ static void read_engine_cost_constants(THD *thd, TABLE *table,
         engine_name[engine_name.length()]= 0; // Null-terminate
 
         // Read the device type
-        const int device_type= table->field[1]->val_int();
+        const int device_type= static_cast<int>(table->field[1]->val_int());
 
         // Read the name of the cost constant
         table->field[2]->val_str(&cost_name);
         cost_name[cost_name.length()]= 0; // Null-terminate
 
         // Read the value this cost constant should have
-        const float value= table->field[3]->val_real();
+        const float value= static_cast<float>(table->field[3]->val_real());
 
         // Update the cost model with this cost constant
         const LEX_CSTRING engine= engine_name.lex_cstring();
@@ -445,7 +445,7 @@ static void read_cost_constants(Cost_model_constants* cost_constants)
   tables[0].next_global= tables[0].next_local=
     tables[0].next_name_resolution_table= &tables[1];
 
-  if (!open_and_lock_tables(thd, tables, false, MYSQL_LOCK_IGNORE_TIMEOUT))
+  if (!open_and_lock_tables(thd, tables, MYSQL_LOCK_IGNORE_TIMEOUT))
   {
     DBUG_ASSERT(tables[0].table != NULL);
     DBUG_ASSERT(tables[1].table != NULL);
@@ -474,11 +474,17 @@ static void read_cost_constants(Cost_model_constants* cost_constants)
 }
 
 
-void init_optimizer_cost_module()
+void init_optimizer_cost_module(bool enable_plugins)
 {
   DBUG_ASSERT(cost_constant_cache == NULL);
   cost_constant_cache= new Cost_constant_cache();
   cost_constant_cache->init();
+  /*
+    Initialize max_key_length and max_key_part_length for internal temporary
+    table engines.
+  */
+  if (enable_plugins)
+    init_cache_tmp_engine_properties();
 }
 
 

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,15 +17,18 @@
 #define MYSYS_PRIV_INCLUDED
 
 #include "my_global.h"
-#include "my_pthread.h"
+#include "mysql/psi/mysql_thread.h"
 
 #ifdef HAVE_PSI_INTERFACE
+
+#include <mysql/psi/mysql_file.h>
+#include <mysql/psi/mysql_thread.h>
 
 C_MODE_START
 
 extern PSI_mutex_key key_BITMAP_mutex, key_IO_CACHE_append_buffer_lock,
   key_IO_CACHE_SHARE_mutex, key_KEY_CACHE_cache_lock,
-  key_my_thread_var_mutex, key_THR_LOCK_charset, key_THR_LOCK_heap,
+  key_THR_LOCK_charset, key_THR_LOCK_heap,
   key_THR_LOCK_lock, key_THR_LOCK_malloc,
   key_THR_LOCK_mutex, key_THR_LOCK_myisam, key_THR_LOCK_net,
   key_THR_LOCK_open, key_THR_LOCK_threads,
@@ -45,8 +48,6 @@ extern mysql_mutex_t THR_LOCK_malloc, THR_LOCK_open, THR_LOCK_keycache;
 extern mysql_mutex_t THR_LOCK_lock, THR_LOCK_net;
 extern mysql_mutex_t THR_LOCK_charset;
 
-#include <mysql/psi/mysql_file.h>
-
 #ifdef HAVE_PSI_INTERFACE
 #ifdef HAVE_LINUX_LARGE_PAGES
 extern PSI_file_key key_file_proc_meminfo;
@@ -61,7 +62,6 @@ C_MODE_END
 
 C_MODE_START
 
-extern PSI_memory_key key_memory_array_buffer;
 extern PSI_memory_key key_memory_charset_file;
 extern PSI_memory_key key_memory_charset_loader;
 extern PSI_memory_key key_memory_lf_node;

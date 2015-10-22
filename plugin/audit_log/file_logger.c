@@ -16,8 +16,8 @@
 #include <my_global.h>
 #include <mysql/plugin.h>
 #include <my_sys.h>
-#include <my_pthread.h>
 #include <string.h>
+#include <my_thread_local.h>
 
 #include "logger.h"
 #include "audit_log.h"

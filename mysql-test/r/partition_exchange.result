@@ -4,6 +4,8 @@ DROP TABLE IF EXISTS t1, t2, t3, t, tp, tsp, tmp;
 #               ROW_FORMAT WAS SET EXPLICITLY
 #
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 # Same definition (both have ROW_FORMAT set)
 CREATE TABLE t1 (
 id int(11) NOT NULL AUTO_INCREMENT,
@@ -1515,12 +1517,13 @@ a	b
 163	163
 164	164
 200	Two hundred, end of values
+call mtr.add_suppression("Cannot find index .PRIMARY. in InnoDB index translation table.");
 ALTER TABLE tsp REBUILD PARTITION p1;
-ERROR 23000: Duplicate entry '162' for key 'PRIMARY'
+Got one of the listed errors
 ALTER TABLE tsp REORGANIZE PARTITION p1 INTO
 (PARTITION p1 VALUES LESS THAN (162),
 PARTITION p2 VALUES LESS THAN MAXVALUE);
-ERROR 23000: Duplicate entry '162' for key 'PRIMARY'
+Got one of the listed errors
 ALTER TABLE tsp ANALYZE PARTITION sp3;
 Table	Op	Msg_type	Msg_text
 test.tsp	analyze	status	OK

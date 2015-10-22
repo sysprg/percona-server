@@ -11,17 +11,8 @@
 -- source include/have_innodb.inc
 
 --disable_query_log
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."slave_master_info" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."slave_relay_log_info" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."slave_worker_info" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."server_cost" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."engine_cost" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."time_zone" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."time_zone_leap_second" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."time_zone_name" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."time_zone_transition" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "mysql"."time_zone_transition_type" in the cache');
-call mtr.add_suppression('InnoDB: Failed to find tablespace for table "test"."t1" in the cache');
+call mtr.add_suppression('InnoDB: Failed to find tablespace for table `mysql`\..* in the cache');
+call mtr.add_suppression('InnoDB: Failed to find tablespace for table `test`\.`t1` in the cache');
 call mtr.add_suppression('InnoDB: Allocated tablespace [0-9]+, old maximum was [0-9]+');
 --enable_query_log
 
@@ -43,6 +34,14 @@ SELECT @@innodb_force_recovery;
 CREATE TABLE t1(c1 INT PRIMARY KEY) ENGINE=InnoDB STATS_PERSISTENT=0;
 BEGIN;
 INSERT INTO t1 VALUES(1), (2), (3), (4);
+
+# Ensure that the above data is flushed to the InnoDB redo log,
+# by committing transactions (which will force a log flush).
+connect (con1, localhost, root);
+CREATE TABLE t2(c2 INT PRIMARY KEY) ENGINE=InnoDB STATS_PERSISTENT=0;
+DROP TABLE t2;
+disconnect con1;
+connection default;
 
 --echo # Restart the server in force recovery mode (3)
 let $restart_parameters = restart: --innodb-force-recovery=3;

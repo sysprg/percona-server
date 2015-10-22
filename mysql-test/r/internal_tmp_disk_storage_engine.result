@@ -1,10 +1,9 @@
 #
 # wl#6711:User can choose tmp table engine between MyISAM and InnoDB
 #
-drop table if exists t1, t2;
+SET GLOBAL innodb_large_prefix=OFF;
 Warnings:
-Note	1051	Unknown table 'test.t1'
-Note	1051	Unknown table 'test.t2'
+Warning	131	Using innodb_large_prefix is deprecated and the parameter may be removed in future releases. See http://dev.mysql.com/doc/refman/5.7/en/innodb-file-format.html
 create table t1(a int, b varchar(20));
 create table t2(a int, b varchar(20));
 insert into t1 values(1, 'a'), (2, 'b'), (3, 'c'), (3, 'c'), (4, 'c');
@@ -20,6 +19,8 @@ set @old_internal_tmp_disk_storage_engine= @@internal_tmp_disk_storage_engine;
 set global internal_tmp_disk_storage_engine='innodb';
 set @old_big_tables= @@big_tables;
 set big_tables= on;
+set @old_optimizer_switch= @@optimizer_switch;
+set optimizer_switch='derived_merge=off';
 explain format=json select SQL_BUFFER_RESULT * from t1;
 EXPLAIN
 {
@@ -35,7 +36,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 5,
         "rows_produced_per_join": 5,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "1.00",
@@ -80,7 +81,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 5,
             "rows_produced_per_join": 5,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "1.00",
@@ -99,7 +100,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 7,
             "rows_produced_per_join": 35,
-            "filtered": 100,
+            "filtered": "100.00",
             "using_join_buffer": "Block Nested Loop",
             "cost_info": {
               "read_cost": "1.00",
@@ -157,7 +158,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 5,
         "rows_produced_per_join": 5,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "1.00",
@@ -209,7 +210,7 @@ EXPLAIN
           "key_length": "23",
           "rows_examined_per_scan": 5,
           "rows_produced_per_join": 5,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "1.00",
@@ -253,7 +254,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 5,
               "rows_produced_per_join": 5,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "1.00",
@@ -272,7 +273,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 7,
               "rows_produced_per_join": 35,
-              "filtered": 100,
+              "filtered": "100.00",
               "using_join_buffer": "Block Nested Loop",
               "cost_info": {
                 "read_cost": "1.00",
@@ -342,7 +343,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 5,
               "rows_produced_per_join": 5,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "1.00",
@@ -360,7 +361,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 7,
               "rows_produced_per_join": 35,
-              "filtered": 100,
+              "filtered": "100.00",
               "using_join_buffer": "Block Nested Loop",
               "cost_info": {
                 "read_cost": "1.00",
@@ -408,7 +409,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 5,
                 "rows_produced_per_join": 5,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "1.00",
@@ -427,7 +428,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 7,
                 "rows_produced_per_join": 35,
-                "filtered": 100,
+                "filtered": "100.00",
                 "distinct": true,
                 "using_join_buffer": "Block Nested Loop",
                 "cost_info": {
@@ -472,7 +473,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 5,
             "rows_produced_per_join": 5,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "1.00",
@@ -491,7 +492,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 7,
             "rows_produced_per_join": 5,
-            "filtered": 14.286,
+            "filtered": "14.29",
             "using_join_buffer": "Block Nested Loop",
             "cost_info": {
               "read_cost": "1.00",
@@ -534,7 +535,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 5,
             "rows_produced_per_join": 5,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "1.00",
@@ -553,7 +554,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 7,
             "rows_produced_per_join": 5,
-            "filtered": 14.286,
+            "filtered": "14.29",
             "distinct": true,
             "using_join_buffer": "Block Nested Loop",
             "cost_info": {
@@ -598,7 +599,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 5,
           "rows_produced_per_join": 5,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "1.00",
@@ -664,7 +665,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 1536,
           "rows_produced_per_join": 1536,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "5.00",
             "eval_cost": "307.20",
@@ -723,7 +724,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 1,
               "rows_produced_per_join": 1,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "0.20",
@@ -743,7 +744,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 5,
               "rows_produced_per_join": 5,
-              "filtered": 100,
+              "filtered": "100.00",
               "distinct": true,
               "using_join_buffer": "Block Nested Loop",
               "cost_info": {
@@ -785,7 +786,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 5,
               "rows_produced_per_join": 5,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "1.00",
@@ -812,7 +813,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 7,
               "rows_produced_per_join": 7,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "1.40",
@@ -868,7 +869,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 5,
               "rows_produced_per_join": 5,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "1.00",
@@ -895,7 +896,7 @@ EXPLAIN
               "access_type": "ALL",
               "rows_examined_per_scan": 7,
               "rows_produced_per_join": 7,
-              "filtered": 100,
+              "filtered": "100.00",
               "cost_info": {
                 "read_cost": "1.00",
                 "eval_cost": "1.40",
@@ -940,7 +941,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 5,
       "rows_produced_per_join": 5,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "2.00",
         "eval_cost": "1.00",
@@ -965,7 +966,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 5,
             "rows_produced_per_join": 5,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "1.00",
@@ -1006,7 +1007,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 5,
           "rows_produced_per_join": 5,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "2.00",
             "eval_cost": "1.00",
@@ -1030,7 +1031,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 5,
                 "rows_produced_per_join": 5,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "1.00",
@@ -1051,7 +1052,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 7,
           "rows_produced_per_join": 35,
-          "filtered": 100,
+          "filtered": "100.00",
           "using_join_buffer": "Block Nested Loop",
           "cost_info": {
             "read_cost": "2.00",
@@ -1076,7 +1077,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 7,
                 "rows_produced_per_join": 7,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "1.40",
@@ -1168,7 +1169,7 @@ EXPLAIN
           ],
           "rows_examined_per_scan": 1,
           "rows_produced_per_join": 1,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "0.20",
@@ -1195,7 +1196,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 1,
                 "rows_produced_per_join": 1,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "0.20",
@@ -1219,7 +1220,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 5,
           "rows_produced_per_join": 5,
-          "filtered": 100,
+          "filtered": "100.00",
           "using_join_buffer": "Block Nested Loop",
           "cost_info": {
             "read_cost": "1.00",
@@ -1256,7 +1257,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 5,
           "rows_produced_per_join": 5,
-          "filtered": 100,
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "1.00",
@@ -1288,7 +1289,7 @@ EXPLAIN
                 "access_type": "ALL",
                 "rows_examined_per_scan": 7,
                 "rows_produced_per_join": 7,
-                "filtered": 100,
+                "filtered": "100.00",
                 "cost_info": {
                   "read_cost": "1.00",
                   "eval_cost": "1.40",
@@ -1314,6 +1315,7 @@ a	b
 3	c
 3	c
 4	c
+set @tmp_optimizer_switch= @@optimizer_switch;
 set optimizer_switch='materialization=off';
 set optimizer_switch='firstmatch=off';
 set optimizer_switch='loosescan=off';
@@ -1334,7 +1336,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 5,
             "rows_produced_per_join": 5,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "1.00",
@@ -1353,7 +1355,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 7,
             "rows_produced_per_join": 5,
-            "filtered": 14.286,
+            "filtered": "14.29",
             "using_join_buffer": "Block Nested Loop",
             "cost_info": {
               "read_cost": "1.00",
@@ -1379,7 +1381,7 @@ a	b
 3	c
 3	c
 4	c
-set optimizer_switch=default;
+set optimizer_switch= @tmp_optimizer_switch;
 explain format=json select * from information_schema.character_sets order by 1 limit 3;
 EXPLAIN
 {
@@ -1429,7 +1431,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 5,
           "rows_produced_per_join": 1,
-          "filtered": 20,
+          "filtered": "20.00",
           "cost_info": {
             "read_cost": "1.80",
             "eval_cost": "0.20",
@@ -1450,8 +1452,7 @@ EXPLAIN
           "access_type": "ALL",
           "rows_examined_per_scan": 7,
           "rows_produced_per_join": 7,
-          "filtered": 100,
-          "using_join_buffer": "Block Nested Loop",
+          "filtered": "100.00",
           "cost_info": {
             "read_cost": "1.00",
             "eval_cost": "1.40",
@@ -1480,7 +1481,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 5,
       "rows_produced_per_join": 5,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "1.00",
         "eval_cost": "1.00",
@@ -1511,7 +1512,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 5,
       "rows_produced_per_join": 5,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "1.00",
         "eval_cost": "1.00",
@@ -1561,7 +1562,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 4,
             "rows_produced_per_join": 4,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "0.80",
@@ -1580,7 +1581,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 7,
             "rows_produced_per_join": 28,
-            "filtered": 100,
+            "filtered": "100.00",
             "using_join_buffer": "Block Nested Loop",
             "cost_info": {
               "read_cost": "1.06",
@@ -1626,7 +1627,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 4,
         "rows_produced_per_join": 4,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "0.80",
@@ -1664,7 +1665,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 4,
         "rows_produced_per_join": 4,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "0.80",
@@ -1714,7 +1715,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 3,
         "rows_produced_per_join": 3,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "0.60",
@@ -1754,7 +1755,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 3,
         "rows_produced_per_join": 3,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "0.60",
@@ -1788,7 +1789,7 @@ EXPLAIN
       "access_type": "ALL",
       "rows_examined_per_scan": 3,
       "rows_produced_per_join": 3,
-      "filtered": 100,
+      "filtered": "100.00",
       "cost_info": {
         "read_cost": "1.00",
         "eval_cost": "0.60",
@@ -1831,7 +1832,7 @@ EXPLAIN
         "access_type": "ALL",
         "rows_examined_per_scan": 1,
         "rows_produced_per_join": 1,
-        "filtered": 100,
+        "filtered": "100.00",
         "cost_info": {
           "read_cost": "1.00",
           "eval_cost": "0.20",
@@ -1906,13 +1907,15 @@ analyze table t1,t3;
 Table	Op	Msg_type	Msg_text
 test.t1	analyze	status	OK
 test.t3	analyze	status	OK
+set @old_optimizer_switch=@@optimizer_switch;
+set optimizer_switch='materialization=off';
 explain format=json select * from t3 where b in (select a from t1);
 EXPLAIN
 {
   "query_block": {
     "select_id": 1,
     "cost_info": {
-      "query_cost": "8.00"
+      "query_cost": "8.40"
     },
     "duplicates_removal": {
       "using_temporary_table": true,
@@ -1923,7 +1926,7 @@ EXPLAIN
             "access_type": "ALL",
             "rows_examined_per_scan": 3,
             "rows_produced_per_join": 3,
-            "filtered": 100,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "1.00",
               "eval_cost": "0.60",
@@ -1952,13 +1955,13 @@ EXPLAIN
               "test.t1.a"
             ],
             "rows_examined_per_scan": 1,
-            "rows_produced_per_join": 1,
-            "filtered": 100,
+            "rows_produced_per_join": 3,
+            "filtered": "100.00",
             "cost_info": {
               "read_cost": "3.00",
-              "eval_cost": "0.20",
-              "prefix_cost": "8.00",
-              "data_read_per_join": "616"
+              "eval_cost": "0.60",
+              "prefix_cost": "8.40",
+              "data_read_per_join": "1K"
             },
             "used_columns": [
               "a",
@@ -1979,6 +1982,39 @@ select * from t3 where b in (select a from t1);
 a	b	pk1	pk2	pk3
 1	1	1	1	1
 2	2	2	2	2
+set @@optimizer_switch=@old_optimizer_switch;
+update t1, t3 set t3.b=10, t1.a=20;
+select * from t1 order by 1,2;
+a	b
+20	1
+20	1
+20	2
+select * from t3 order by 1,2;
+a	b	pk1	pk2	pk3
+0	10	0	0	0
+1	10	1	1	1
+2	10	2	2	2
+3	10	3	3	3
+4	10	4	4	4
+5	10	5	5	5
+6	10	6	6	6
+7	10	7	7	7
+8	10	8	8	8
+9	10	9	9	9
+create trigger trg before update on t3 for each row set new.b=new.b+1;
+update t1, t3 set t3.b=10, t1.a=20;
+select * from t3 order by 1,2;
+a	b	pk1	pk2	pk3
+0	11	0	0	0
+1	11	1	1	1
+2	11	2	2	2
+3	11	3	3	3
+4	11	4	4	4
+5	11	5	5	5
+6	11	6	6	6
+7	11	7	7	7
+8	11	8	8	8
+9	11	9	9	9
 drop table t0, t1, t3;
 create table t1(f1 text);
 insert into t1 values ('a'),('a'),('mn');
@@ -2006,6 +2042,8 @@ drop table t2;
 SET @old_big_tables=@@big_tables;
 SET big_tables=on;
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE TABLE N (
 col_int_key int(11) DEFAULT NULL,
 pk int(11) NOT NULL AUTO_INCREMENT,
@@ -2327,6 +2365,8 @@ DROP TABLE t1,E,H;
 #               WITH ORDER BY GIVING INCORRECT RESULTS 
 #
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE TABLE t(a BLOB, b INT);
 INSERT INTO t VALUES('1',3);
 INSERT INTO t VALUES('1',2);
@@ -2922,6 +2962,164 @@ no	no
 not	not
 really	really
 DROP TABLE t1,t2;
+#
+# BUG#19191377: WL#6737: NOT NULL COLUMN IS BEING PROJECTED
+#              AS NULLABLE IN TEMPORARY TABLES.
+#
+CREATE TABLE t1(f1 INT NOT NULL);
+INSERT INTO t1 VALUES (16777214), (0);
+SELECT COUNT(*) FROM t1 LEFT JOIN t1 t2 ON 1 WHERE t2.f1 > 1 GROUP BY t2.f1;
+COUNT(*)
+2
+DROP TABLE t1;
+#
+# BUG#20059644: WL#6737: CRASH AT OPERATOR<< IN DICT/DICT0MEM.CC 
+#
+CREATE TABLE C (
+pk int(11) NOT NULL AUTO_INCREMENT,
+col_varchar_key varchar(1) NOT NULL,
+col_varchar_nokey varchar(1) NOT NULL,
+PRIMARY KEY (pk),
+KEY col_varchar_key (col_varchar_key)
+);
+INSERT INTO C VALUES (7,'y','y');
+CREATE TABLE CC (
+pk int(11) NOT NULL AUTO_INCREMENT,
+col_varchar_key varchar(1) NOT NULL,
+col_varchar_nokey varchar(1) NOT NULL,
+PRIMARY KEY (pk),
+KEY col_varchar_key (col_varchar_key)
+);
+INSERT INTO CC VALUES (13,'y','y');
+SELECT
+DISTINCT CONCAT( table2 . col_varchar_key , table1 . col_varchar_key )
+AS field1
+FROM
+( CC AS table1 RIGHT OUTER JOIN C AS table2 ON (table2 . col_varchar_key =
+table1 . col_varchar_nokey  ) )
+WHERE
+(
+table1 . pk = 13
+)
+ORDER BY field1 , field1;
+field1
+yy
+DROP TABLE C,CC;
+#
+# BUG#19627741: SELECT DISTINCT SUM() RETURNS DUPLICATE ROWS
+#
+CREATE TABLE t1 (
+a int(11) DEFAULT NULL,
+b int(11) DEFAULT NULL,
+c1 int(11) DEFAULT NULL,
+c2 int(11) DEFAULT NULL,
+c3 int(11) DEFAULT NULL,
+c4 int(11) DEFAULT NULL,
+c5 int(11) DEFAULT NULL,
+c6 int(11) DEFAULT NULL,
+c7 int(11) DEFAULT NULL,
+c8 int(11) DEFAULT NULL,
+c9 int(11) DEFAULT NULL,
+c10 int(11) DEFAULT NULL,
+c11 int(11) DEFAULT NULL,
+c12 int(11) DEFAULT NULL,
+c13 int(11) DEFAULT NULL,
+c14 int(11) DEFAULT NULL,
+c15 int(11) DEFAULT NULL,
+c16 int(11) DEFAULT NULL,
+c17 int(11) DEFAULT NULL,
+c18 int(11) DEFAULT NULL,
+c19 int(11) DEFAULT NULL,
+c20 int(11) DEFAULT NULL,
+c21 int(11) DEFAULT NULL,
+c22 int(11) DEFAULT NULL,
+c23 int(11) DEFAULT NULL,
+c24 int(11) DEFAULT NULL,
+c25 int(11) DEFAULT NULL,
+c26 int(11) DEFAULT NULL,
+c27 int(11) DEFAULT NULL,
+c28 int(11) DEFAULT NULL,
+c29 int(11) DEFAULT NULL,
+c30 int(11) DEFAULT NULL,
+c31 int(11) DEFAULT NULL,
+c32 int(11) DEFAULT NULL,
+c33 int(11) DEFAULT NULL,
+c34 int(11) DEFAULT NULL,
+c35 int(11) DEFAULT NULL
+);
+INSERT INTO t1 (a,b) VALUES (1,4),(2,2),(2,2),(4,1),(4,1),(4,1),(4,1);
+SELECT sum(b) FROM t1 GROUP BY a, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25,
+c26, c27, c28, c29, c30, c31, c32, c33, c34, c35;
+sum(b)
+4
+4
+4
+SELECT DISTINCT sum(b) FROM t1 GROUP BY a, c1, c2, c3, c4, c5, c6, c7, c8,
+c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23,
+c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35;
+sum(b)
+4
+DROP TABLE t1;
+#
+# Bug#20454833 PREFIX INDEX FIELD, ON AN INAPPROPRIATE DATA TYPE
+#
+set sql_mode='';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
+create table t1 (a blob,b int) engine=innodb;
+create table t2 (b blob) engine=innodb;
+select t2.b,t1.b,t1.a
+from t2 inner join t1 on 1 cross join t2 a  on 1
+group by t1.b;
+b	b	a
+set sql_mode=default;
+drop table t1,t2;
+#
+# Bug#20506527 FAILING ASSERTION: !MBMAXLEN || !(PREFIX_LEN % MBMAXLEN)
+#
+set names utf8, sql_mode='';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
+create table t1(a date,b text charset utf8,c linestring not null);
+insert into t1 values ('2015-01-01','a',linestring(point(1,1),point(2,2)));
+select distinct nullif(a,b) as c from t1 z order by z.c;
+c
+201
+Warnings:
+Warning	1292	Incorrect date value: 'a' for column 'a' at row 1
+set names default, sql_mode=default;
+drop table t1;
+#
+# Bug#20752543 INNODB:FAILING ASSERTION:FLAGS & BUF_PAGE_PRINT_NO_CRASH
+#
+SET @old_big_tables=@@big_tables;
+SET big_tables=on;
+set @old_limit_optimistic_insert_debug= @@innodb_limit_optimistic_insert_debug;
+set global innodb_limit_optimistic_insert_debug=2;
+select 1 as a union all select 1 union all select 2 union select 1 union all
+select 2;
+a
+1
+2
+2
+set big_tables= @old_big_tables;
+set global innodb_limit_optimistic_insert_debug=
+@old_limit_optimistic_insert_debug;
+#
+# Bug#20454979 CRASH IN ACTUAL_KEY_PARTS 
+#
+create table t1(a blob);
+insert into t1 values ('a');
+# The query result is not correct until bug#20692219 is fixed
+select distinct least(1,count(distinct a)) from t1 group by a;
+least(1,count(distinct a))
+0
+drop table t1;
+SET GLOBAL innodb_large_prefix=default;
+Warnings:
+Warning	131	Using innodb_large_prefix is deprecated and the parameter may be removed in future releases. See http://dev.mysql.com/doc/refman/5.7/en/innodb-file-format.html
 set @@global.internal_tmp_disk_storage_engine= @old_internal_tmp_disk_storage_engine;
 set big_tables= @old_big_tables;
+set optimizer_switch= @old_optimizer_switch;
 #

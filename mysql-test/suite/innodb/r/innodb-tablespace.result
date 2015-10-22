@@ -95,68 +95,25 @@ t1	CREATE TABLE `t1` (
   PRIMARY KEY (`a`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir/'
 # Show that the new system tables have this table in them correctly
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%';
-name	n_cols	file_format	row_format
-test/t1	5	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/t1	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/t1	test/t1	65	5	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t1	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t1	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
 #
 # Show that the system tables are updated on drop table
 #
 DROP TABLE t1;
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
 #
 # Create the same table a second time in the same place
 #
@@ -172,37 +129,15 @@ t1	CREATE TABLE `t1` (
   `b` text,
   PRIMARY KEY (`a`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir/'
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/t1	5	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/t1	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/t1	test/t1	65	5	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t1	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t1	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
 ---- MYSQLD_DATADIR/test
 t1.frm
 t1.isl
@@ -216,37 +151,15 @@ INSERT INTO t1 VALUES (3, "Truncate the table, then insert");
 SELECT * FROM t1;
 a	b
 3	Truncate the table, then insert
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/t1	5	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/t1	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/t1	test/t1	65	5	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t1	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t1	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
 ---- MYSQLD_DATADIR/test
 t1.frm
 t1.isl
@@ -261,37 +174,15 @@ SELECT * FROM t2;
 a	b
 3	Truncate the table, then insert
 4	Rename the table, then insert
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/t2	5	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/t2	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t2.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/t2	test/t2	65	5	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t2	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t2.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t2	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t2.ibd
 ---- MYSQLD_DATADIR/test
 t2.frm
 t2.isl
@@ -305,40 +196,18 @@ INSERT INTO t3 VALUES (5, "CREATE TABLE LIKE");
 SELECT * FROM t3;
 a	b
 5	CREATE TABLE LIKE
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/t2	5	Antelope	Compact
-test/t3	5	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/t2	Antelope	Compact or Redundant
-test/t3	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t2.ibd
-MYSQLD_DATADIR/test/t3.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/t2	test/t2	65	5	Compact	0	Single
+test/t3	test/t3	1	5	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t2	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t2.ibd
+test/t3	Single	DEFAULT	0	Compact or Redundant	MYSQLD_DATADIR/test/t3.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t2	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t2.ibd
+test/t3	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQLD_DATADIR/test/t3.ibd
 ---- MYSQLD_DATADIR/test
 t2.frm
 t2.isl
@@ -348,34 +217,12 @@ t3.ibd
 # Now make sure the tables can be fully dropped.
 #
 DROP TABLE t2, t3;
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
 ---- MYSQLD_DATADIR/test
 ---- MYSQL_TMP_DIR/alt_dir/test
 #
@@ -383,6 +230,8 @@ path
 #
 SET @org_mode=@@sql_mode;
 SET @@sql_mode='NO_DIR_IN_CREATE';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 SELECT @@sql_mode;
 @@sql_mode
 NO_DIR_IN_CREATE
@@ -395,6 +244,8 @@ Warning	1618	<DATA DIRECTORY> option ignored
 INSERT INTO t1 VALUES (6, "SQL MODE NO_DIR_IN_CREATE prevents DATA DIRECTORY");
 DROP TABLE t1;
 set @@sql_mode=@org_mode;
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 #
 # MySQL engine does not allow DATA DIRECTORY to be
 # within --datadir for any engine, including InnoDB
@@ -403,22 +254,24 @@ CREATE TABLE t1 (a int KEY, b text) DATA DIRECTORY 'MYSQLD_DATADIR/test';
 ERROR HY000: Incorrect arguments to DATA DIRECTORY
 # TEMPORARY tables are incompatible with DATA DIRECTORY
 SET SESSION innodb_strict_mode = ON;
+# CREATE TEMPORARY TABLE with DATA DIRECTORY is rejected in strict mode.
 CREATE TEMPORARY TABLE t1 (a int KEY, b text) engine=InnoDB DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
 ERROR HY000: Table storage engine for 't1' doesn't have this option
 SHOW WARNINGS;
 Level	Code	Message
-Warning	1478	InnoDB: DATA DIRECTORY requires innodb_file_per_table.
+Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
+Error	1031	Table storage engine for 't1' doesn't have this option
+# CREATE TEMPORARY compressed TABLE with DATA DIRECTORY is rejected in strict mode.
+CREATE TEMPORARY TABLE t1 (a int KEY, b text) engine=InnoDB row_format=compressed DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
+ERROR HY000: Table storage engine for 't1' doesn't have this option
+SHOW WARNINGS;
+Level	Code	Message
 Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
 Error	1031	Table storage engine for 't1' doesn't have this option
 SET SESSION innodb_strict_mode = OFF;
+# DATA DIRECTORY is ignored in CREATE TEMPORARY TABLE in non-strict mode.
 CREATE TEMPORARY TABLE t1 (a int KEY, b text) engine=InnoDB DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
 Warnings:
-Warning	1478	InnoDB: DATA DIRECTORY requires innodb_file_per_table.
-Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
-Warning	1618	<DATA DIRECTORY> option ignored
-SHOW WARNINGS;
-Level	Code	Message
-Warning	1478	InnoDB: DATA DIRECTORY requires innodb_file_per_table.
 Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
 Warning	1618	<DATA DIRECTORY> option ignored
 SHOW CREATE TABLE t1;
@@ -429,6 +282,40 @@ t1	CREATE TEMPORARY TABLE `t1` (
   PRIMARY KEY (`a`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 DROP TABLE t1;
+# DATA DIRECTORY is ignored in CREATE TEMPORARY compressed TABLE in non-strict mode.
+CREATE TEMPORARY TABLE t1 (a int KEY, b text) engine=InnoDB row_format=compressed DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
+Warnings:
+Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
+Warning	1618	<DATA DIRECTORY> option ignored
+SHOW CREATE TABLE t1;
+Table	Create Table
+t1	CREATE TEMPORARY TABLE `t1` (
+  `a` int(11) NOT NULL,
+  `b` text,
+  PRIMARY KEY (`a`)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1 ROW_FORMAT=COMPRESSED
+DROP TABLE t1;
+#
+# A warning should be issued if DATA DIR and TEMP is used without
+# innodb_file_per_table
+#
+SET GLOBAL innodb_file_per_table=OFF;
+CREATE TEMPORARY TABLE t1 (a int KEY, b text) engine=InnoDB DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
+Warnings:
+Warning	1478	InnoDB: DATA DIRECTORY requires innodb_file_per_table.
+Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
+Warning	1618	<DATA DIRECTORY> option ignored
+DROP TABLE t1;
+SET SESSION innodb_strict_mode = ON;
+CREATE TEMPORARY TABLE t1 (a int KEY, b text) engine=InnoDB DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
+ERROR HY000: Table storage engine for 't1' doesn't have this option
+SHOW WARNINGS;
+Level	Code	Message
+Warning	1478	InnoDB: DATA DIRECTORY requires innodb_file_per_table.
+Warning	1478	InnoDB: DATA DIRECTORY cannot be used for TEMPORARY tables.
+Error	1031	Table storage engine for 't1' doesn't have this option
+SET SESSION innodb_strict_mode = OFF;
+SET GLOBAL innodb_file_per_table=ON;
 ---- MYSQLD_DATADIR/test
 ---- MYSQL_TMP_DIR/alt_dir/test
 #
@@ -436,10 +323,12 @@ DROP TABLE t1;
 #
 CREATE PROCEDURE static_proc() BEGIN CREATE TABLE t1 (a int KEY, b text) DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir'; END |
 CALL static_proc;
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t1	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t1	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
 INSERT INTO t1 VALUES (7, "Create the remote table via static DDL statements");
 SELECT * FROM t1;
 a	b
@@ -463,10 +352,12 @@ DROP TABLE t1;
 #
 CREATE PROCEDURE dynamic_proc() BEGIN PREPARE stmt1 FROM "CREATE TABLE t1 (a int KEY, b text) DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir'"; EXECUTE stmt1; END |
 CALL dynamic_proc;
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/t1	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/t1	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/t1.ibd
 INSERT INTO t1 VALUES (8, "Create the remote table via dynamic DDL statements");
 SELECT * FROM t1;
 a	b
@@ -515,47 +406,24 @@ emp	CREATE TABLE `emp` (
   `store_id` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 /*!50100 PARTITION BY LIST (store_id)
-(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east' ENGINE = InnoDB,
- PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north' ENGINE = InnoDB,
- PARTITION west VALUES IN (70,80,100) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_west' ENGINE = InnoDB) */
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables
-WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/emp#p#east	7	Antelope	Compact
-test/emp#p#north	7	Antelope	Compact
-test/emp#p#west	7	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/emp#p#east	Antelope	Compact or Redundant
-test/emp#p#north	Antelope	Compact or Redundant
-test/emp#p#west	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
-MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
-MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
+(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east/' ENGINE = InnoDB,
+ PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north/' ENGINE = InnoDB,
+ PARTITION west VALUES IN (70,80,100) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_west/' ENGINE = InnoDB) */
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/emp#p#east	test/emp#p#east	65	7	Compact	0	Single
+test/emp#p#north	test/emp#p#north	65	7	Compact	0	Single
+test/emp#p#west	test/emp#p#west	65	7	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/emp#p#east	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+test/emp#p#west	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/emp#p#east	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+test/emp#p#west	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
 SELECT * FROM emp;
 id	store_name	parts	store_id
 1	Oracle	NUTT	10
@@ -566,7 +434,6 @@ emp#p#east.isl
 emp#p#north.isl
 emp#p#west.isl
 emp.frm
-emp.par
 ---- MYSQL_TMP_DIR/alt_dir_east/test
 emp#p#east.ibd
 ---- MYSQL_TMP_DIR/alt_dir_north/test
@@ -586,43 +453,20 @@ emp	CREATE TABLE `emp` (
   `store_id` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 /*!50100 PARTITION BY LIST (store_id)
-(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east' ENGINE = InnoDB,
- PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north' ENGINE = InnoDB) */
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables
-WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/emp#p#east	7	Antelope	Compact
-test/emp#p#north	7	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/emp#p#east	Antelope	Compact or Redundant
-test/emp#p#north	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
-MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east/' ENGINE = InnoDB,
+ PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north/' ENGINE = InnoDB) */
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/emp#p#east	test/emp#p#east	65	7	Compact	0	Single
+test/emp#p#north	test/emp#p#north	65	7	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/emp#p#east	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/emp#p#east	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
 SELECT * FROM emp;
 id	store_name	parts	store_id
 1	Oracle	NUTT	10
@@ -631,7 +475,6 @@ id	store_name	parts	store_id
 emp#p#east.isl
 emp#p#north.isl
 emp.frm
-emp.par
 ---- MYSQL_TMP_DIR/alt_dir_east/test
 emp#p#east.ibd
 ---- MYSQL_TMP_DIR/alt_dir_north/test
@@ -652,47 +495,24 @@ emp	CREATE TABLE `emp` (
   `store_id` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 /*!50100 PARTITION BY LIST (store_id)
-(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east' ENGINE = InnoDB,
- PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north' ENGINE = InnoDB,
+(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east/' ENGINE = InnoDB,
+ PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north/' ENGINE = InnoDB,
  PARTITION west VALUES IN (70,80,100) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_west' ENGINE = InnoDB) */
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables
-WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/emp#p#east	7	Antelope	Compact
-test/emp#p#north	7	Antelope	Compact
-test/emp#p#west	7	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/emp#p#east	Antelope	Compact or Redundant
-test/emp#p#north	Antelope	Compact or Redundant
-test/emp#p#west	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
-MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
-MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/emp#p#east	test/emp#p#east	65	7	Compact	0	Single
+test/emp#p#north	test/emp#p#north	65	7	Compact	0	Single
+test/emp#p#west	test/emp#p#west	65	7	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/emp#p#east	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+test/emp#p#west	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/emp#p#east	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+test/emp#p#west	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
 INSERT INTO emp VALUES(3,'IBM','NAIL',70);
 SELECT * FROM emp;
 id	store_name	parts	store_id
@@ -704,7 +524,6 @@ emp#p#east.isl
 emp#p#north.isl
 emp#p#west.isl
 emp.frm
-emp.par
 ---- MYSQL_TMP_DIR/alt_dir_east/test
 emp#p#east.ibd
 ---- MYSQL_TMP_DIR/alt_dir_north/test
@@ -724,47 +543,24 @@ emp	CREATE TABLE `emp` (
   `store_id` int(11) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 /*!50100 PARTITION BY LIST (store_id)
-(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east' ENGINE = InnoDB,
- PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north' ENGINE = InnoDB,
+(PARTITION east VALUES IN (10,20,30) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_east/' ENGINE = InnoDB,
+ PARTITION north VALUES IN (40,50,60) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_north/' ENGINE = InnoDB,
  PARTITION west VALUES IN (70,80,100) DATA DIRECTORY = 'MYSQL_TMP_DIR/alt_dir_west' ENGINE = InnoDB) */
-SELECT name,n_cols,file_format,row_format
-FROM information_schema.innodb_sys_tables
-WHERE name LIKE 'test%'
-       ORDER BY name;
-name	n_cols	file_format	row_format
-test/emp#p#east	7	Antelope	Compact
-test/emp#p#north	7	Antelope	Compact
-test/emp#p#west	7	Antelope	Compact
-SELECT name,file_format,row_format
-FROM information_schema.innodb_sys_tablespaces
-ORDER BY name;
-name	file_format	row_format
-mysql/engine_cost	Antelope	Compact or Redundant
-mysql/gtid_executed	Antelope	Compact or Redundant
-mysql/help_category	Antelope	Compact or Redundant
-mysql/help_keyword	Antelope	Compact or Redundant
-mysql/help_relation	Antelope	Compact or Redundant
-mysql/help_topic	Antelope	Compact or Redundant
-mysql/innodb_index_stats	Antelope	Compact or Redundant
-mysql/innodb_table_stats	Antelope	Compact or Redundant
-mysql/server_cost	Antelope	Compact or Redundant
-mysql/slave_master_info	Antelope	Compact or Redundant
-mysql/slave_relay_log_info	Antelope	Compact or Redundant
-mysql/slave_worker_info	Antelope	Compact or Redundant
-mysql/time_zone	Antelope	Compact or Redundant
-mysql/time_zone_leap_second	Antelope	Compact or Redundant
-mysql/time_zone_name	Antelope	Compact or Redundant
-mysql/time_zone_transition	Antelope	Compact or Redundant
-mysql/time_zone_transition_type	Antelope	Compact or Redundant
-test/emp#p#east	Antelope	Compact or Redundant
-test/emp#p#north	Antelope	Compact or Redundant
-test/emp#p#west	Antelope	Compact or Redundant
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
-MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
-MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
+=== information_schema.innodb_sys_tables  and innodb_sys_tablespaces ===
+Table Name	Tablespace	Table Flags	Columns	Row Format	Zip Size	Space Type
+test/emp#p#east	test/emp#p#east	65	7	Compact	0	Single
+test/emp#p#north	test/emp#p#north	65	7	Compact	0	Single
+test/emp#p#west	test/emp#p#west	65	7	Compact	0	Single
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/emp#p#east	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+test/emp#p#west	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/emp#p#east	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_east/test/emp#p#east.ibd
+test/emp#p#north	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_north/test/emp#p#north.ibd
+test/emp#p#west	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir_west/test/emp#p#west.ibd
 SELECT * FROM emp;
 id	store_name	parts	store_id
 1	Oracle	NUTT	10
@@ -780,7 +576,6 @@ emp#p#east.isl
 emp#p#north.isl
 emp#p#west.isl
 emp.frm
-emp.par
 ---- MYSQL_TMP_DIR/alt_dir_east/test
 emp#p#east.ibd
 ---- MYSQL_TMP_DIR/alt_dir_north/test

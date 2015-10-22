@@ -1,4 +1,4 @@
-/* Copyright (c) 2004, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2004, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -207,6 +207,74 @@ static const dec1 frac_max[DIG_PER_DEC1-1]={
           (to)=a;                                                       \
         } while(0)
 
+
+/*
+  This is a direct loop unrolling of code that used to look like this:
+  for (; *buf_beg < powers10[i--]; start++) ;
+
+  @param   i    start index
+  @param   val  value to compare against list of powers of 10
+
+  @retval  Number of leading zeroes that can be removed from fraction.
+
+  @note Why unroll? To get rid of lots of compiler warnings [-Warray-bounds]
+        Nice bonus: unrolled code is significantly faster.
+ */
+static inline int count_leading_zeroes(int i, dec1 val)
+{
+  int ret= 0;
+  switch (i)
+  {
+  /* @note Intentional fallthrough in all case labels */
+  case 9: if (val >= 1000000000) break; ++ret;
+  case 8: if (val >= 100000000) break; ++ret;
+  case 7: if (val >= 10000000) break; ++ret;
+  case 6: if (val >= 1000000) break; ++ret;
+  case 5: if (val >= 100000) break; ++ret;
+  case 4: if (val >= 10000) break; ++ret;
+  case 3: if (val >= 1000) break; ++ret;
+  case 2: if (val >= 100) break; ++ret;
+  case 1: if (val >= 10) break; ++ret;
+  case 0: if (val >= 1) break; ++ret;
+  default: { DBUG_ASSERT(FALSE); }
+  }
+  return ret;
+}
+
+/*
+  This is a direct loop unrolling of code that used to look like this:
+  for (; *buf_end % powers10[i++] == 0; stop--) ;
+
+  @param   i    start index
+  @param   val  value to compare against list of powers of 10
+
+  @retval  Number of trailing zeroes that can be removed from fraction.
+
+  @note Why unroll? To get rid of lots of compiler warnings [-Warray-bounds]
+        Nice bonus: unrolled code is significantly faster.
+ */
+static inline int count_trailing_zeroes(int i, dec1 val)
+{
+  int ret= 0;
+  switch(i)
+  {
+  /* @note Intentional fallthrough in all case labels */
+  case 0: if ((val % 1) != 0) break; ++ret;
+  case 1: if ((val % 10) != 0) break; ++ret;
+  case 2: if ((val % 100) != 0) break; ++ret;
+  case 3: if ((val % 1000) != 0) break; ++ret;
+  case 4: if ((val % 10000) != 0) break; ++ret;
+  case 5: if ((val % 100000) != 0) break; ++ret;
+  case 6: if ((val % 1000000) != 0) break; ++ret;
+  case 7: if ((val % 10000000) != 0) break; ++ret;
+  case 8: if ((val % 100000000) != 0) break; ++ret;
+  case 9: if ((val % 1000000000) != 0) break; ++ret;
+  default: { DBUG_ASSERT(FALSE); }
+  }
+  return ret;
+}
+
+
 /*
   Get maximum value for given precision and scale
 
@@ -257,7 +325,7 @@ static dec1 *remove_leading_zeroes(const decimal_t *from, int *intg_result)
   }
   if (intg > 0)
   {
-    for (i= (intg - 1) % DIG_PER_DEC1; *buf0 < powers10[i--]; intg--) ;
+    intg-= count_leading_zeroes((intg - 1) % DIG_PER_DEC1, *buf0);
     DBUG_ASSERT(intg > 0);
   }
   else
@@ -292,9 +360,8 @@ int decimal_actual_fraction(decimal_t *from)
   }
   if (frac > 0)
   {
-    for (i= DIG_PER_DEC1 - ((frac - 1) % DIG_PER_DEC1);
-         *buf0 % powers10[i++] == 0;
-         frac--) ;
+    frac-=
+      count_trailing_zeroes(DIG_PER_DEC1 - ((frac - 1) % DIG_PER_DEC1), *buf0);
   }
   return frac;
 }
@@ -480,7 +547,8 @@ static void digits_bounds(decimal_t *from, int *start_result, int *end_result)
     start= (int) ((buf_beg - from->buf) * DIG_PER_DEC1);
   }
   if (buf_beg < end)
-    for (; *buf_beg < powers10[i--]; start++) ;
+    start+= count_leading_zeroes(i, *buf_beg);
+
   *start_result= start; /* index of first decimal digit (from 0) */
 
   /* find non-zero digit at the end */
@@ -498,7 +566,7 @@ static void digits_bounds(decimal_t *from, int *start_result, int *end_result)
     stop= (int) ((buf_end - from->buf + 1) * DIG_PER_DEC1);
     i= 1;
   }
-  for (; *buf_end % powers10[i++] == 0; stop--) ;
+  stop-= count_trailing_zeroes(i, *buf_end);
   *end_result= stop; /* index of position after last decimal digit (from 0) */
 }
 
@@ -928,6 +996,9 @@ internal_str2dec(const char *from, decimal_t *to, char **end, my_bool fixed)
         error= decimal_shift(to, (int) exponent);
     }
   }
+  /* Avoid returning negative zero, cfr. decimal_cmp() */
+  if (to->sign && decimal_is_zero(to))
+    to->sign= FALSE;
   return error;
 
 fatal_error:
@@ -992,26 +1063,34 @@ int double2decimal(double from, decimal_t *to)
 
 static int ull2dec(ulonglong from, decimal_t *to)
 {
-  int intg1, error=E_DEC_OK;
-  ulonglong x=from;
+  int intg1;
+  int error= E_DEC_OK;
+  ulonglong x= from;
   dec1 *buf;
 
   sanity(to);
 
-  for (intg1=1; from >= DIG_BASE; intg1++, from/=DIG_BASE) ;
+  if (from == 0)
+    intg1= 1;
+  else
+  {
+    /* Count the number of decimal_digit_t's we need. */
+    for (intg1= 0; from != 0; intg1++, from/= DIG_BASE)
+      ;
+  }
   if (unlikely(intg1 > to->len))
   {
-    intg1=to->len;
-    error=E_DEC_OVERFLOW;
+    intg1= to->len;
+    error= E_DEC_OVERFLOW;
   }
-  to->frac=0;
-  to->intg=intg1*DIG_PER_DEC1;
+  to->frac= 0;
+  to->intg= intg1 * DIG_PER_DEC1;
 
-  for (buf=to->buf+intg1; intg1; intg1--)
+  for (buf= to->buf + intg1; intg1; intg1--)
   {
-    ulonglong y=x/DIG_BASE;
-    *--buf=(dec1)(x-y*DIG_BASE);
-    x=y;
+    ulonglong y= x / DIG_BASE;
+    *--buf=(dec1)(x - y * DIG_BASE);
+    x= y;
   }
   return error;
 }
@@ -1037,7 +1116,7 @@ int decimal2ulonglong(decimal_t *from, ulonglong *to)
 
   if (from->sign)
   {
-      *to=ULL(0);
+      *to=0ULL;
       return E_DEC_OVERFLOW;
   }
 
@@ -1045,9 +1124,9 @@ int decimal2ulonglong(decimal_t *from, ulonglong *to)
   {
     ulonglong y=x;
     x=x*DIG_BASE + *buf++;
-    if (unlikely(y > ((ulonglong) ULONGLONG_MAX/DIG_BASE) || x < y))
+    if (unlikely(y > ((ulonglong) ULLONG_MAX/DIG_BASE) || x < y))
     {
-      *to=ULONGLONG_MAX;
+      *to=ULLONG_MAX;
       return E_DEC_OVERFLOW;
     }
   }
@@ -1070,24 +1149,24 @@ int decimal2longlong(decimal_t *from, longlong *to)
     /*
       Attention: trick!
       we're calculating -|from| instead of |from| here
-      because |LONGLONG_MIN| > LONGLONG_MAX
+      because |LLONG_MIN| > LLONG_MAX
       so we can convert -9223372036854775808 correctly
     */
     x=x*DIG_BASE - *buf++;
-    if (unlikely(y < (LONGLONG_MIN/DIG_BASE) || x > y))
+    if (unlikely(y < (LLONG_MIN/DIG_BASE) || x > y))
     {
       /*
         the decimal is bigger than any possible integer
         return border integer depending on the sign
       */
-      *to= from->sign ? LONGLONG_MIN : LONGLONG_MAX;
+      *to= from->sign ? LLONG_MIN : LLONG_MAX;
       return E_DEC_OVERFLOW;
     }
   }
   /* boundary case: 9223372036854775808 */
-  if (unlikely(from->sign==0 && x == LONGLONG_MIN))
+  if (unlikely(from->sign==0 && x == LLONG_MIN))
   {
-    *to= LONGLONG_MAX;
+    *to= LLONG_MAX;
     return E_DEC_OVERFLOW;
   }
 
@@ -1488,7 +1567,6 @@ int bin2decimal(const uchar *from, decimal_t *to, int precision, int scale)
       goto err;
     buf++;
   }
-  my_afree(d_copy);
 
   /*
     No digits? We have read the number zero, of unspecified precision.
@@ -1499,7 +1577,6 @@ int bin2decimal(const uchar *from, decimal_t *to, int precision, int scale)
   return error;
 
 err:
-  my_afree(d_copy);
   decimal_make_zero(to);
   return(E_DEC_BAD_NUM);
 }
@@ -2049,6 +2126,11 @@ int decimal_cmp(const decimal_t *from1, const decimal_t *from2)
 {
   if (likely(from1->sign == from2->sign))
     return do_sub(from1, from2, 0);
+
+  // Reject negative zero, cfr. internal_str2dec()
+  DBUG_ASSERT(!(decimal_is_zero(from1) && from1->sign));
+  DBUG_ASSERT(!(decimal_is_zero(from2) && from2->sign));
+
   return from1->sign > from2->sign ? -1 : 1;
 }
 
@@ -2254,7 +2336,7 @@ static int do_div_mod(const decimal_t *from1, const decimal_t *from2,
     the above while loop removes 9 zeroes and the result will have 0.0001
     these remaining zeroes are removed here
    */
-  for (i= (prec2 - 1) % DIG_PER_DEC1; *buf2 < powers10[i--]; prec2--) ;
+  prec2-= count_leading_zeroes((prec2 - 1) % DIG_PER_DEC1, *buf2);
   DBUG_ASSERT(prec2 > 0);
 
   /*
@@ -2274,7 +2356,7 @@ static int do_div_mod(const decimal_t *from1, const decimal_t *from2,
     decimal_make_zero(to);
     return E_DEC_OK;
   }
-  for (i=(prec1-1) % DIG_PER_DEC1; *buf1 < powers10[i--]; prec1--) ;
+  prec1-= count_leading_zeroes((prec1-1) % DIG_PER_DEC1, *buf1);
   DBUG_ASSERT(prec1 > 0);
 
   /* let's fix scale_incr, taking into account frac1,frac2 increase */
@@ -2490,7 +2572,6 @@ static int do_div_mod(const decimal_t *from1, const decimal_t *from2,
         *buf0++=*start1++;
   }
 done:
-  my_afree(tmp1);
   tmp1= remove_leading_zeroes(to, &to->intg);
   if(to->buf != tmp1)
     memmove(to->buf, tmp1,

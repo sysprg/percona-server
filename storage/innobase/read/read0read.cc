@@ -230,11 +230,6 @@ ReadView::ids_t::reserve(ulint n)
 
 	m_ptr = UT_NEW_ARRAY_NOKEY(value_type, n);
 
-	if (m_ptr == NULL) {
-		ib_logf(IB_LOG_LEVEL_FATAL,
-			"Out of memory: read0read.cc:%d", __LINE__);
-	}
-
 	m_reserved = n;
 
 	ut_ad(size() < capacity());
@@ -250,7 +245,7 @@ ReadView::ids_t::reserve(ulint n)
 /**
 Copy and overwrite this array contents
 @param start		Source array
-@paran end		Pointer to end of array */
+@param end		Pointer to end of array */
 
 void
 ReadView::ids_t::assign(const value_type* start, const value_type* end)
@@ -353,12 +348,6 @@ MVCC::MVCC(ulint size)
 
 	for (ulint i = 0; i < size; ++i) {
 		ReadView*	view = UT_NEW_NOKEY(ReadView());
-
-		if (view == NULL) {
-			ib_logf(IB_LOG_LEVEL_FATAL,
-				"Failed to allocate MVCC view:"
-				" read0read.cc:%d", __LINE__);
-		}
 
 		UT_LIST_ADD_FIRST(m_free, view);
 	}
@@ -518,8 +507,7 @@ MVCC::get_view()
 		view = UT_NEW_NOKEY(ReadView());
 
 		if (view == NULL) {
-			ib_logf(IB_LOG_LEVEL_ERROR,
-				"Failed to allocate MVCC view");
+			ib::error() << "Failed to allocate MVCC view";
 		}
 	}
 
@@ -620,7 +608,7 @@ MVCC::view_open(ReadView*& view, trx_t* trx)
 }
 
 /**
-Get the oldest (active) view in the system. 
+Get the oldest (active) view in the system.
 @return oldest view if found or NULL */
 
 ReadView*

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -24,21 +24,20 @@
   @{
 */
 
-#include "sql_select.h"
 #include "sql_executor.h"
-#include "sql_optimizer.h"
-#include "sql_join_buffer.h"
-#include "opt_trace.h"
-#include "sql_test.h"
-#include "sql_base.h"
-#include "key.h"
-#include "sql_derived.h"
-#include "sql_show.h"
-#include "filesort.h"
-#include "sql_tmp_table.h"
-#include "records.h"          // rr_sequential
-#include "opt_explain_format.h" // Explain_format_flags
-#include "debug_sync.h"
+
+#include "debug_sync.h"       // DEBUG_SYNC
+#include "item_sum.h"         // Item_sum
+#include "key.h"              // key_cmp
+#include "log.h"              // sql_print_error
+#include "opt_trace.h"        // Opt_trace_object
+#include "sql_base.h"         // fill_record
+#include "sql_join_buffer.h"  // st_cache_field
+#include "sql_optimizer.h"    // JOIN
+#include "sql_show.h"         // get_schema_tables_result
+#include "sql_tmp_table.h"    // create_tmp_table
+#include "json_binary.h"    // json_binary::Value
+#include "json_dom.h"    // Json_wrapper
 
 #include <algorithm>
 using std::max;
@@ -106,15 +105,29 @@ JOIN::exec()
   List<Item> *columns_list= &fields_list;
   DBUG_ENTER("JOIN::exec");
 
-  DBUG_ASSERT(!tables || thd->lex->is_query_tables_locked());
+  DBUG_ASSERT(select_lex == thd->lex->current_select());
+
+  /*
+    Check that we either
+    - have no tables, or
+    - have tables and have locked them, or
+    - called for fake_select_lex, which may have temporary tables which do
+      not need locking up front.
+  */
+  DBUG_ASSERT(!tables || thd->lex->is_query_tables_locked() ||
+              select_lex == unit->fake_select_lex);
 
   THD_STAGE_INFO(thd, stage_executing);
   DEBUG_SYNC(thd, "before_join_exec");
 
-  executed= true;
+  set_executed();
 
   if (prepare_result())
     DBUG_VOID_RETURN;
+
+  Query_result *const query_result= select_lex->query_result();
+
+  do_send_rows = unit->select_limit_cnt > 0;
 
   if (!tables_list && (tables || !select_lex->with_sum_func))
   {                                           // Only test of functions
@@ -130,12 +143,10 @@ JOIN::exec()
     if (select_lex->cond_value != Item::COND_FALSE &&
         (!where_cond || where_cond->val_int()))
     {
-      if (result->send_result_set_metadata(*columns_list,
-                                           Protocol::SEND_NUM_ROWS |
-                                           Protocol::SEND_EOF))
-      {
+      if (query_result->send_result_set_metadata(*columns_list,
+                                                 Protocol::SEND_NUM_ROWS |
+                                                 Protocol::SEND_EOF))
         DBUG_VOID_RETURN;
-      }
 
       /*
         If the HAVING clause is either impossible or always true, then
@@ -145,13 +156,12 @@ JOIN::exec()
       */
       if (((select_lex->having_value != Item::COND_FALSE) &&
            (!having_cond || having_cond->val_int()))
-          && do_send_rows && result->send_data(fields_list))
+          && do_send_rows && query_result->send_data(fields_list))
         error= 1;
       else
       {
-        error= (int) result->send_eof();
-        send_records= ((select_options & OPTION_FOUND_ROWS) ? 1 :
-                       thd->get_sent_row_count());
+        error= (int) query_result->send_eof();
+        send_records= calc_found_rows ? 1 : thd->get_sent_row_count();
       }
       /* Query block (without union) always returns 0 or 1 row */
       thd->limit_found_rows= send_records;
@@ -185,7 +195,7 @@ JOIN::exec()
 
   THD_STAGE_INFO(thd, stage_sending_data);
   DBUG_PRINT("info", ("%s", thd->proc_info));
-  result->send_result_set_metadata(*fields,
+  query_result->send_result_set_metadata(*fields,
                                    Protocol::SEND_NUM_ROWS | Protocol::SEND_EOF);
   error= do_select(this);
   /* Accumulate the counts from all join iterations of all join parts. */
@@ -221,8 +231,8 @@ JOIN::create_intermediate_table(QEP_TAB *const tab,
   tab->tmp_table_param->skip_create_table= true;
   TABLE* table= create_tmp_table(thd, tab->tmp_table_param, *tmp_table_fields,
                                tmp_table_group, select_distinct && !group_list,
-                               save_sum_fields, select_options, tmp_rows_limit, 
-                               "");
+                               save_sum_fields, select_lex->active_options(),
+                               tmp_rows_limit, "");
   if (!table)
     DBUG_RETURN(true);
   tmp_table_param.using_outer_summary_function=
@@ -244,7 +254,8 @@ JOIN::create_intermediate_table(QEP_TAB *const tab,
     explain_flags.set(ESC_DISTINCT, ESP_USING_TMPTABLE);
   }
   if ((!group_list && !order && !select_distinct) ||
-      (select_options & (SELECT_BIG_RESULT | OPTION_BUFFER_RESULT)))
+      (select_lex->active_options() &
+       (SELECT_BIG_RESULT | OPTION_BUFFER_RESULT)))
   {
     explain_flags.set(ESC_BUFFER_RESULT, ESP_USING_TMPTABLE);
   }
@@ -331,7 +342,7 @@ int JOIN::rollup_send_data(uint idx)
     if ((!having_cond || having_cond->val_int()))
     {
       if (send_records < unit->select_limit_cnt && do_send_rows &&
-	  result->send_data(rollup.fields[i]))
+	  select_lex->query_result()->send_data(rollup.fields[i]))
 	return 1;
       send_records++;
     }
@@ -491,7 +502,7 @@ static void
 copy_sum_funcs(Item_sum **func_ptr, Item_sum **end_ptr)
 {
   for (; func_ptr != end_ptr ; func_ptr++)
-    (void) (*func_ptr)->save_in_result_field(1);
+    (*func_ptr)->save_in_result_field(1);
   return;
 }
 
@@ -518,7 +529,7 @@ static bool
 update_sum_func(Item_sum **func_ptr)
 {
   Item_sum *func;
-  for (; (func= (Item_sum*) *func_ptr) ; func_ptr++)
+  for (; (func= *func_ptr) ; func_ptr++)
     if (func->aggregator_add())
       return 1;
   return 0;
@@ -601,12 +612,12 @@ end_sj_materialize(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
       if (item->is_null())
         DBUG_RETURN(NESTED_LOOP_OK);
     }
-    fill_record(thd, table->field, sjm->sj_nest->nested_join->sj_inner_exprs,
-                (table->hash_field ?
-                    &table->hash_field_bitmap : NULL), NULL);
+    fill_record(thd, table->visible_field_ptr(),
+                sjm->sj_nest->nested_join->sj_inner_exprs,
+                NULL, NULL);
     if (thd->is_error())
       DBUG_RETURN(NESTED_LOOP_ERROR); /* purecov: inspected */
-    if (!check_unique_constraint(table, 0))
+    if (!check_unique_constraint(table))
       DBUG_RETURN(NESTED_LOOP_OK);
     if ((error= table->file->ha_write_row(table->record[0])))
     {
@@ -721,7 +732,9 @@ return_zero_rows(JOIN *join, List<Item> &fields)
     join->thd->limit_found_rows= 0;
   }
 
-  if (!(join->result->send_result_set_metadata(fields,
+  SELECT_LEX *const select= join->select_lex;
+
+  if (!(select->query_result()->send_result_set_metadata(fields,
                                                Protocol::SEND_NUM_ROWS | 
                                                Protocol::SEND_EOF)))
   {
@@ -729,7 +742,7 @@ return_zero_rows(JOIN *join, List<Item> &fields)
     if (join->send_row_on_empty_set())
     {
       // Mark tables as containing only NULL values
-      for (TABLE_LIST *table= join->select_lex->leaf_tables; table;
+      for (TABLE_LIST *table= select->leaf_tables; table;
            table= table->next_leaf)
         mark_as_null_row(table->table);
 
@@ -746,10 +759,10 @@ return_zero_rows(JOIN *join, List<Item> &fields)
         item->no_rows_in_result();
 
       if (!join->having_cond || join->having_cond->val_int())
-        send_error= join->result->send_data(fields);
+        send_error= select->query_result()->send_data(fields);
     }
     if (!send_error)
-      join->result->send_eof();                 // Should be safe
+      select->query_result()->send_eof();                 // Should be safe
   }
   DBUG_VOID_RETURN;
 }
@@ -899,13 +912,16 @@ do_select(JOIN *join)
         item->no_rows_in_result();
 
       // Mark tables as containing only NULL values
-      join->clear();
+      if (join->clear())
+        error= NESTED_LOOP_ERROR;
+      else
+      {
+        if (!join->having_cond || join->having_cond->val_int())
+          rc= join->select_lex->query_result()->send_data(*join->fields);
 
-      if (!join->having_cond || join->having_cond->val_int())
-        rc= join->result->send_data(*join->fields);
-
-      if (save_nullinfo)
-        restore_const_null_info(join, save_nullinfo);
+        if (save_nullinfo)
+          restore_const_null_info(join, save_nullinfo);
+      }
     }
     /*
       An error can happen when evaluating the conds 
@@ -947,7 +963,7 @@ do_select(JOIN *join)
       sort_tab= &join->qep_tab[const_tables];
     }
     if (sort_tab->filesort &&
-        join->select_options & OPTION_FOUND_ROWS &&
+        join->calc_found_rows &&
         sort_tab->filesort->sortorder &&
         sort_tab->filesort->limit != HA_POS_ERROR)
     {
@@ -968,7 +984,7 @@ do_select(JOIN *join)
       Sic: this branch works even if rc != 0, e.g. when
       send_data above returns an error.
     */
-    if (join->result->send_eof())
+    if (join->select_lex->query_result()->send_eof())
       rc= 1;                                  // Don't send error
     DBUG_PRINT("info",("%ld records output", (long) join->send_records));
   }
@@ -1351,10 +1367,11 @@ int do_sj_dups_weedout(THD *thd, SJ_TMP_TABLE *sjtbl)
     }
   }
 
-  uchar *ptr= sjtbl->tmp_table->record[0] + 1;
+  uchar *ptr= sjtbl->tmp_table->visible_field_ptr()[0]->ptr;
   // Put the rowids tuple into table->record[0]:
   // 1. Store the length 
-  if (((Field_varstring*)(sjtbl->tmp_table->field[0]))->length_bytes == 1)
+  if (((Field_varstring*)(sjtbl->tmp_table->visible_field_ptr()[0]))->
+                          length_bytes == 1)
   {
     *ptr= (uchar)(sjtbl->rowid_len + sjtbl->null_bytes);
     ptr++;
@@ -1377,7 +1394,7 @@ int do_sj_dups_weedout(THD *thd, SJ_TMP_TABLE *sjtbl)
   for (uint i=0; tab != tab_end; tab++, i++)
   {
     handler *h= tab->qep_tab->table()->file;
-    if (tab->qep_tab->table()->maybe_null &&
+    if (tab->qep_tab->table()->is_nullable() &&
         tab->qep_tab->table()->null_row)
     {
       /* It's a NULL-complemented row */
@@ -1391,7 +1408,7 @@ int do_sj_dups_weedout(THD *thd, SJ_TMP_TABLE *sjtbl)
     }
   }
 
-  if (!check_unique_constraint(sjtbl->tmp_table, 0))
+  if (!check_unique_constraint(sjtbl->tmp_table))
       DBUG_RETURN(1);
   error= sjtbl->tmp_table->file->ha_write_row(sjtbl->tmp_table->record[0]);
   if (error)
@@ -1486,20 +1503,20 @@ evaluate_join_record(JOIN *join, QEP_TAB *const qep_tab)
       */
       QEP_TAB *first_unmatched= &QEP_AT(qep_tab, first_unmatched);
       /*
-        Mark that a match for current outer table is found.
-        This activates push down conditional predicates attached
-        to the all inner tables of the outer join.
+        Mark that a match for the current row of the outer table is found.
+        This activates WHERE clause predicates attached the inner tables of
+        the outer join.
       */
       first_unmatched->found= true;
       for (QEP_TAB *tab= first_unmatched; tab <= qep_tab; tab++)
       {
-        /* Check all predicates that has just been activated. */
         /*
+          Check all predicates that have just been activated.
+
           Actually all predicates non-guarded by first_unmatched->found
           will be re-evaluated again. It could be fixed, but, probably,
           it's not worth doing now.
-        */
-        /*
+
           not_exists_optimize has been created from a
           condition containing 'is_null'. This 'is_null'
           predicate is still present on any 'tab' with
@@ -1569,8 +1586,15 @@ evaluate_join_record(JOIN *join, QEP_TAB *const qep_tab)
     else if (qep_tab->do_loosescan() &&
              QEP_AT(qep_tab, match_tab).found_match)
     { 
-      /* Loosescan algorithm requires 'sorted' retrieval of keys. */
-      DBUG_ASSERT(qep_tab->use_order());
+      /*
+         Loosescan algorithm requires an access method that gives 'sorted'
+         retrieval of keys, or an access method that provides only one
+         row (which is inherently sorted).
+         EQ_REF and LooseScan may happen if dependencies in subquery (e.g.,
+         outer join) prevents table pull-out.
+       */  
+      DBUG_ASSERT(qep_tab->use_order() || qep_tab->type() == JT_EQ_REF);
+
       /* 
          Previous row combination for duplicate-generating range,
          generated a match.  Compare keys of this row and previous row
@@ -1588,8 +1612,6 @@ evaluate_join_record(JOIN *join, QEP_TAB *const qep_tab)
         found= false;
     }
 
-    qep_tab->found_match= true;
-
     /*
       It was not just a return to lower loop level when one
       of the newly activated predicates is evaluated as false
@@ -1602,7 +1624,9 @@ evaluate_join_record(JOIN *join, QEP_TAB *const qep_tab)
     if (found)
     {
       enum enum_nested_loop_state rc;
-      /* A match from join_tab is found for the current partial join. */
+      // A match is found for the current partial join prefix.
+      qep_tab->found_match= true;
+
       rc= (*qep_tab->next_select)(join, qep_tab+1, 0);
       join->thd->get_stmt_da()->inc_current_row_for_condition();
       if (rc != NESTED_LOOP_OK)
@@ -1830,6 +1854,9 @@ join_read_const_table(JOIN_TAB *tab, POSITION *pos)
         the reading now, so we must read all columns.
       */
       bitmap_set_all(table->read_set);
+      /* Virtual generated columns must be writable */
+      for (Field **vfield_ptr= table->vfield; vfield_ptr && *vfield_ptr; vfield_ptr++)
+        bitmap_set_bit(table->write_set, (*vfield_ptr)->field_index);
       table->file->column_bitmaps_signal();
     }
   }
@@ -1867,8 +1894,6 @@ join_read_const_table(JOIN_TAB *tab, POSITION *pos)
     if ((table->null_row= (tab->join_cond()->val_int() == 0)))
       mark_as_null_row(table);  
   }
-  if (!table->null_row)
-    table->maybe_null=0;
 
   /* Check appearance of new constant items in Item_equal objects */
   JOIN *const join= tab->join();
@@ -1957,7 +1982,7 @@ static int read_const(TABLE *table, TABLE_REF *ref)
     else
     {
       error=table->file->ha_index_read_idx_map(table->record[0],ref->key,
-                                               (uchar*) ref->key_buff,
+                                               ref->key_buff,
                                                make_prev_keypart_map(ref->key_parts),
                                                HA_READ_KEY_EXACT);
     }
@@ -2328,7 +2353,7 @@ join_init_quick_read_record(QEP_TAB *tab)
 
   Opt_trace_object wrapper(trace);
   Opt_trace_object trace_table(trace, "rows_estimation_per_outer_row");
-  trace_table.add_utf8_table(tab->table());
+  trace_table.add_utf8_table(tab->table_ref);
 #endif
 
   /* 
@@ -2342,9 +2367,10 @@ join_init_quick_read_record(QEP_TAB *tab)
       (tab->table()->file->inited != handler::NONE))
       tab->table()->file->ha_index_or_rnd_end();
 
-  delete tab->quick();
   key_map needed_reg_dummy;
+  QUICK_SELECT_I *old_qck= tab->quick();
   QUICK_SELECT_I *qck;
+  DEBUG_SYNC(thd, "quick_not_created");
   const int rc= test_quick_select(thd,
                                   tab->keys(),
                                   0,          // empty table map
@@ -2352,6 +2378,7 @@ join_init_quick_read_record(QEP_TAB *tab)
                                   false,      // don't force quick range
                                   ORDER::ORDER_NOT_RELEVANT, tab,
                                   tab->condition(), &needed_reg_dummy, &qck);
+  DBUG_ASSERT(old_qck == NULL || old_qck != qck) ;
   tab->set_quick(qck);
 
   /*
@@ -2362,10 +2389,15 @@ join_init_quick_read_record(QEP_TAB *tab)
     that, we need to take mutex and change type and quick_optim.
   */
 
-  mysql_mutex_lock(&thd->LOCK_query_plan);
+  DEBUG_SYNC(thd, "quick_created_before_mutex");
+
+  thd->lock_query_plan();
   tab->set_type(qck ? calc_join_type(qck->get_type()) : JT_ALL);
   tab->set_quick_optim();
-  mysql_mutex_unlock(&thd->LOCK_query_plan);
+  thd->unlock_query_plan();
+
+  delete old_qck;
+  DEBUG_SYNC(thd, "quick_droped_after_mutex");
 
   return (rc == -1) ?
     -1 :				/* No possible records */
@@ -2437,9 +2469,8 @@ int join_materialize_derived(QEP_TAB *tab)
   if (derived->materializable_is_const()) // Has been materialized by optimizer
     return NESTED_LOOP_OK;
 
-  bool res= mysql_handle_single_derived(thd->lex,
-                                        derived, &mysql_derived_materialize);
-  res|= mysql_handle_single_derived(thd->lex, derived, &mysql_derived_cleanup);
+  bool res= derived->materialize_derived(thd);
+  res|= derived->cleanup_derived();
   DEBUG_SYNC(thd, "after_materialize_derived");
   return res ? NESTED_LOOP_ERROR : NESTED_LOOP_OK;
 }
@@ -2722,25 +2753,6 @@ void QEP_TAB::pick_table_access_method(const JOIN_TAB *join_tab)
   ASSERT_BEST_REF_IN_JOIN_ORDER(join());
   DBUG_ASSERT(join_tab == join()->best_ref[idx()]);
   DBUG_ASSERT(table());
-
-  /**
-    Set up modified access function for children of pushed joins.
-  */
-  const TABLE *pushed_root= table()->file->root_of_pushed_join();
-  if (pushed_root && pushed_root != table())
-  {
-    /**
-      Is child of a pushed join operation:
-      Replace access functions with its linked counterpart.
-      ... Which is effectively a NOOP as the row is already fetched 
-      together with the root of the linked operation.
-     */
-    DBUG_ASSERT(type() != JT_REF_OR_NULL);
-    read_first_record= join_read_linked_first;
-    read_record.read_record= join_read_linked_next;
-    return;
-  }
-
   DBUG_ASSERT(read_first_record == NULL);
   // Only some access methods support reversed access:
   DBUG_ASSERT(!join_tab->reversed_access || type() == JT_REF ||
@@ -2799,6 +2811,39 @@ void QEP_TAB::pick_table_access_method(const JOIN_TAB *join_tab)
 }
 
 
+/**
+  Install the appropriate 'linked' access method functions
+  if this part of the join have been converted to pushed join.
+*/
+
+void QEP_TAB::set_pushed_table_access_method(void)
+{
+  DBUG_ENTER("set_pushed_table_access_method");
+  DBUG_ASSERT(table());
+
+  /**
+    Setup modified access function for children of pushed joins.
+  */
+  const TABLE *pushed_root= table()->file->root_of_pushed_join();
+  if (pushed_root && pushed_root != table())
+  {
+    /**
+      Is child of a pushed join operation:
+      Replace access functions with its linked counterpart.
+      ... Which is effectively a NOOP as the row is already fetched
+      together with the root of the linked operation.
+     */
+    DBUG_PRINT("info", ("Modifying table access method for '%s'",
+                        table()->s->table_name.str));
+    DBUG_ASSERT(type() != JT_REF_OR_NULL);
+    read_first_record= join_read_linked_first;
+    read_record.read_record= join_read_linked_next;
+    // Use the default unlock_row function
+    read_record.unlock_row = rr_unlock_row;
+  }
+  DBUG_VOID_RETURN;
+}
+
 /*****************************************************************************
   DESCRIPTION
     Functions that end one nested loop iteration. Different functions
@@ -2829,20 +2874,35 @@ end_send(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
   if (!end_of_records)
   {
     int error;
+
+    /*
+      If group ref array exist then set it as current ref array. Result values
+      of non-deterministic expressions are saved here and corresponding Item_ref
+      should look for their values here rather than re-evaluation of the same.
+      Example : Loose index scan with having, where having refers to
+                non-deterministic function like rand() in select.
+    */
+    if (!join->items3.is_null() && !join->set_group_rpa)
+    {
+      join->set_group_rpa= true;
+      join->set_items_ref_array(join->items3);
+    }
+
     if (join->tables &&
         // In case filesort has been used and zeroed quick():
         (join->qep_tab[0].quick_optim() &&
          join->qep_tab[0].quick_optim()->is_loose_index_scan()))
     {
       // Copy non-aggregated fields when loose index scan is used.
-      copy_fields(&join->tmp_table_param);
+      if (copy_fields(&join->tmp_table_param, join->thd))
+        DBUG_RETURN(NESTED_LOOP_ERROR); /* purecov: inspected */
     }
     // Use JOIN's HAVING for the case of tableless SELECT.
     if (join->having_cond && join->having_cond->val_int() == 0)
       DBUG_RETURN(NESTED_LOOP_OK);               // Didn't match having
     error=0;
     if (join->do_send_rows)
-      error=join->result->send_data(*fields);
+      error= join->select_lex->query_result()->send_data(*fields);
     if (error)
       DBUG_RETURN(NESTED_LOOP_ERROR); /* purecov: inspected */
 
@@ -2857,7 +2917,7 @@ end_send(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
         join_tab.
       */
       if (join->order &&
-          join->select_options & OPTION_FOUND_ROWS &&
+          join->calc_found_rows &&
           qep_tab > join->qep_tab &&
           qep_tab[-1].filesort &&
           qep_tab[-1].filesort->using_pq)
@@ -2869,7 +2929,7 @@ end_send(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
     if (join->send_records >= join->unit->select_limit_cnt &&
         join->do_send_rows)
     {
-      if (join->select_options & OPTION_FOUND_ROWS)
+      if (join->calc_found_rows)
       {
         QEP_TAB *first= &join->qep_tab[0];
 	if ((join->primary_tables == 1) &&
@@ -2939,7 +2999,7 @@ end_send_group(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
   {
     if (!join->group_sent &&
         (join->first_record ||
-         (end_of_records && !join->group && !join->group_optimized_away)))
+         (end_of_records && !join->grouped && !join->group_optimized_away)))
     {
       if (idx < (int) join->send_group_parts)
       {
@@ -2966,14 +3026,15 @@ end_send_group(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
               item->no_rows_in_result();
 
             // Mark tables as containing only NULL values
-            join->clear();
+            if (join->clear())
+              DBUG_RETURN(NESTED_LOOP_ERROR);        /* purecov: inspected */
 	  }
 	  if (join->having_cond && join->having_cond->val_int() == 0)
 	    error= -1;				// Didn't satisfy having
 	  else
 	  {
 	    if (join->do_send_rows)
-	      error=join->result->send_data(*fields) ? 1 : 0;
+	      error= join->select_lex->query_result()->send_data(*fields);
 	    join->send_records++;
             join->group_sent= true;
 	  }
@@ -2993,7 +3054,7 @@ end_send_group(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
 	if (join->send_records >= join->unit->select_limit_cnt &&
 	    join->do_send_rows)
 	{
-	  if (!(join->select_options & OPTION_FOUND_ROWS))
+	  if (!join->calc_found_rows)
 	    DBUG_RETURN(NESTED_LOOP_QUERY_LIMIT); // Abort nicely
 	  join->do_send_rows=0;
 	  join->unit->select_limit_cnt = HA_POS_ERROR;
@@ -3025,7 +3086,8 @@ end_send_group(JOIN *join, QEP_TAB *qep_tab, bool end_of_records)
         This branch is executed also for cursors which have finished their
         fetch limit - the reason for ok_code.
       */
-      copy_fields(&join->tmp_table_param);
+      if (copy_fields(&join->tmp_table_param, join->thd))
+        DBUG_RETURN(NESTED_LOOP_ERROR);
       if (init_sum_functions(join->sum_funcs, join->sum_funcs_end[idx+1]))
 	DBUG_RETURN(NESTED_LOOP_ERROR);
       join->group_sent= false;
@@ -3051,6 +3113,43 @@ static bool cmp_field_value(Field *field, my_ptrdiff_t diff)
 
   const size_t src_len= field->data_length();
   const size_t dst_len= field->data_length(diff);
+
+  if (field->type() == MYSQL_TYPE_JSON)
+  {
+    if (field->is_real_null())
+    {
+      return false;
+    }
+
+    Field_json *json_field= down_cast<Field_json *>(field);
+
+    char *left_data;
+    json_field->get_ptr(pointer_cast<uchar **>(&left_data));
+    json_binary::Value left_value(json_binary::parse_binary(left_data, src_len));
+    if (left_value.type() == json_binary::Value::ERROR)
+    {
+      /* purecov: begin inspected */
+      my_error(ER_INVALID_JSON_BINARY_DATA, MYF(0));
+      return true;
+      /* purecov: end */
+    }
+    Json_wrapper left_wrapper(left_value);
+
+    char *right_data;
+    json_field->get_ptr(pointer_cast<uchar **>(&right_data), diff);
+    json_binary::Value right_value(json_binary::parse_binary(right_data, dst_len));
+    if (right_value.type() == json_binary::Value::ERROR)
+    {
+      /* purecov: begin inspected */
+      my_error(ER_INVALID_JSON_BINARY_DATA, MYF(0));
+      return true;
+      /* purecov: end */
+    }
+    Json_wrapper right_wrapper(right_value);
+
+    return (left_wrapper.compare(right_wrapper) != 0);
+  }
+
   // Trailing space can't be skipped and length is different
   if (!field->is_text_key_type() && src_len != dst_len)     // 2
     return true;
@@ -3093,15 +3192,14 @@ bool group_rec_cmp(ORDER *group, uchar *rec0, uchar *rec1)
     false records are the same
 */
 
-bool table_rec_cmp(TABLE *table, int hidden_field_count)
+bool table_rec_cmp(TABLE *table)
 {
   my_ptrdiff_t diff= table->record[1] - table->record[0];
+  Field **fields= table->visible_field_ptr();
 
-  int field_count= table->s->fields - 1;
-
-  for (int i= hidden_field_count; i < field_count ; i++)
+  for (uint i= 0; i < table->visible_field_count() ; i++)
   {
-    Field *field= table->field[i];
+    Field *field= fields[i];
     if (cmp_field_value(field, diff))
       return true;
   }
@@ -3135,7 +3233,14 @@ ulonglong unique_hash(Field *field, ulonglong *hash_val)
 
   field->get_ptr(&pos);
   end= pos + field->data_length();
-  if (field->key_type() == HA_KEYTYPE_TEXT ||
+
+  if (field->type() == MYSQL_TYPE_JSON)
+  {
+    Field_json *json_field= down_cast<Field_json *>(field);
+
+    crc= json_field->make_hash_key(hash_val);
+  }
+  else if (field->key_type() == HA_KEYTYPE_TEXT ||
       field->key_type() == HA_KEYTYPE_VARTEXT1 ||
       field->key_type() == HA_KEYTYPE_VARTEXT2)
   {
@@ -3173,13 +3278,14 @@ ulonglong unique_hash_group(ORDER *group)
 }
 
 
-/* Generate hash for unique_constraint according to fields list */
+/* Generate hash for unique_constraint for all visible fields of a table */
 
-ulonglong unique_hash_fields(Field **fields, int start, int field_count)
+ulonglong unique_hash_fields(TABLE *table)
 {
   ulonglong crc= 0;
+  Field **fields= table->visible_field_ptr();
 
-  for (int i= start; i < field_count ; i++)
+  for (uint i=0 ; i < table->visible_field_count() ; i++)
     unique_hash(fields[i], &crc);
 
   return crc;
@@ -3203,7 +3309,7 @@ ulonglong unique_hash_fields(Field **fields, int start, int field_count)
     true  record wasn't found
 */
 
-bool check_unique_constraint(TABLE *table, int hidden_field_count)
+bool check_unique_constraint(TABLE *table)
 {
   ulonglong hash;
 
@@ -3216,21 +3322,21 @@ bool check_unique_constraint(TABLE *table, int hidden_field_count)
   if (table->group)
     hash= unique_hash_group(table->group);
   else
-    hash= unique_hash_fields(table->field, hidden_field_count, table->s->fields - 1);
+    hash= unique_hash_fields(table);
   table->hash_field->store(hash, true);
   int res= table->file->ha_index_read_map(table->record[1],
-                                          (uchar*)table->hash_field->ptr,
+                                          table->hash_field->ptr,
                                           HA_WHOLE_KEY,
                                           HA_READ_KEY_EXACT);
   while (!res)
   {
     // Check whether records are the same.
     if (!(table->distinct ?
-          table_rec_cmp(table, hidden_field_count) :
+          table_rec_cmp(table) :
           group_rec_cmp(table->group, table->record[0], table->record[1])))
       return false; // skip it
     res= table->file->ha_index_next_same(table->record[1],
-                                         (uchar*)table->hash_field->ptr,
+                                         table->hash_field->ptr,
                                          sizeof(hash));
   }
   return true;
@@ -3251,8 +3357,17 @@ end_write(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
   }
   if (!end_of_records)
   {
+    /*
+      Set the ref_ptrs to current temp table ref_array. Below we evaluate
+      having, Item_ref of non-deterministic expressions in having should refer
+      to their result values in temp table instead of re-evaluating the same.
+    */
+    if (join->current_ref_ptrs != *(qep_tab->ref_array))
+      join->set_items_ref_array(*(qep_tab->ref_array));
+
     Temp_table_param *const tmp_tbl= qep_tab->tmp_table_param;
-    copy_fields(tmp_tbl);
+    if (copy_fields(tmp_tbl, join->thd))
+      DBUG_RETURN(NESTED_LOOP_ERROR);           /* purecov: inspected */
     if (copy_funcs(tmp_tbl->items_to_copy, join->thd))
       DBUG_RETURN(NESTED_LOOP_ERROR);           /* purecov: inspected */
 
@@ -3261,7 +3376,7 @@ end_write(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
       int error;
       join->found_records++;
 
-      if (!check_unique_constraint(table, tmp_tbl->hidden_field_count))
+      if (!check_unique_constraint(table))
         goto end; // skip it
 
       if ((error=table->file->ha_write_row(table->record[0])))
@@ -3279,7 +3394,7 @@ end_write(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
             tmp_tbl->end_write_records &&
 	  join->do_send_rows)
       {
-	if (!(join->select_options & OPTION_FOUND_ROWS))
+	if (!join->calc_found_rows)
 	  DBUG_RETURN(NESTED_LOOP_QUERY_LIMIT);
 	join->do_send_rows=0;
 	join->unit->select_limit_cnt = HA_POS_ERROR;
@@ -3314,7 +3429,9 @@ end_update(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
 
   Temp_table_param *const tmp_tbl= qep_tab->tmp_table_param;
   join->found_records++;
-  copy_fields(tmp_tbl);	// Groups are copied twice.
+  if (copy_fields(tmp_tbl, join->thd))	// Groups are copied twice.
+    DBUG_RETURN(NESTED_LOOP_ERROR);           /* purecov: inspected */
+      
   /* Make a key of group index */
   if (table->hash_field)
   {
@@ -3327,7 +3444,7 @@ end_update(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
     */
     if (copy_funcs(tmp_tbl->items_to_copy, join->thd))
       DBUG_RETURN(NESTED_LOOP_ERROR);           /* purecov: inspected */
-    if (!check_unique_constraint(table, tmp_tbl->hidden_field_count))
+    if (!check_unique_constraint(table))
       group_found= true;
   }
   else
@@ -3420,7 +3537,7 @@ end_write_group(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
       (idx=test_if_item_cache_changed(join->group_fields)) >= 0)
   {
     Temp_table_param *const tmp_tbl= qep_tab->tmp_table_param;
-    if (join->first_record || (end_of_records && !join->group))
+    if (join->first_record || (end_of_records && !join->grouped))
     {
       int send_group_parts= join->send_group_parts;
       if (idx < send_group_parts)
@@ -3447,7 +3564,8 @@ end_write_group(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
             item->no_rows_in_result();
 
           // Mark tables as containing only NULL values
-          join->clear();
+          if (join->clear())
+            DBUG_RETURN(NESTED_LOOP_ERROR);
         }
         copy_sum_funcs(join->sum_funcs,
                        join->sum_funcs_end[send_group_parts]);
@@ -3478,15 +3596,24 @@ end_write_group(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
       if (end_of_records)
 	DBUG_RETURN(NESTED_LOOP_OK);
       join->first_record=1;
+
+      /*
+        Set the ref_ptrs to current temp table ref_array. Below we evaluate
+        having, Item_ref of non-deterministic expressions in having should refer
+        to their result values in temp table instead of re-evaluating the same.
+      */
+      join->set_items_ref_array(*(qep_tab->ref_array));
+
       (void)(test_if_item_cache_changed(join->group_fields));
     }
     if (idx < (int) join->send_group_parts)
     {
-      copy_fields(tmp_tbl);
+      if (copy_fields(tmp_tbl, join->thd))
+        DBUG_RETURN(NESTED_LOOP_ERROR);
       if (copy_funcs(tmp_tbl->items_to_copy, join->thd))
-	DBUG_RETURN(NESTED_LOOP_ERROR);
+        DBUG_RETURN(NESTED_LOOP_ERROR);
       if (init_sum_functions(join->sum_funcs, join->sum_funcs_end[idx+1]))
-	DBUG_RETURN(NESTED_LOOP_ERROR);
+        DBUG_RETURN(NESTED_LOOP_ERROR);
       DBUG_RETURN(NESTED_LOOP_OK);
     }
   }
@@ -3524,10 +3651,9 @@ end_write_group(JOIN *join, QEP_TAB *const qep_tab, bool end_of_records)
 static int
 create_sort_index(THD *thd, JOIN *join, QEP_TAB *tab)
 {
-  ha_rows examined_rows;
-  ha_rows found_rows;
-  ha_rows filesort_retval= HA_POS_ERROR;
+  ha_rows examined_rows, found_rows, returned_rows;
   TABLE *table;
+  bool status;
   Filesort *fsort= tab->filesort;
   DBUG_ENTER("create_sort_index");
 
@@ -3553,15 +3679,15 @@ create_sort_index(THD *thd, JOIN *join, QEP_TAB *tab)
   }
 
   /* Fill schema tables with data before filesort if it's necessary */
-  if ((join->select_lex->options & OPTION_SCHEMA_TABLE) &&
+  if ((join->select_lex->active_options() & OPTION_SCHEMA_TABLE) &&
       get_schema_tables_result(join, PROCESSED_BY_CREATE_SORT_INDEX))
     goto err;
 
   if (table->s->tmp_table)
     table->file->info(HA_STATUS_VARIABLE);	// Get record count
-  filesort_retval= filesort(thd, tab, fsort, tab->keep_current_rowid,
-                            &examined_rows, &found_rows);
-  table->sort.found_records= filesort_retval;
+  status= filesort(thd, fsort, tab->keep_current_rowid,
+                   &examined_rows, &found_rows, &returned_rows);
+  table->sort.found_records= returned_rows;
   tab->set_records(found_rows);                     // For SQL_CALC_ROWS
   tab->join()->examined_rows+=examined_rows;
   table->set_keyread(FALSE); // Restore if we used indexes
@@ -3569,7 +3695,7 @@ create_sort_index(THD *thd, JOIN *join, QEP_TAB *tab)
     table->file->ft_end();
   else
     table->file->ha_index_or_rnd_end();
-  DBUG_RETURN(filesort_retval == HA_POS_ERROR);
+  DBUG_RETURN(status);
 err:
   DBUG_RETURN(-1);
 }
@@ -3609,7 +3735,7 @@ static void free_blobs(Field **ptr)
   for (; *ptr ; ptr++)
   {
     if ((*ptr)->flags & BLOB_FLAG)
-      ((Field_blob *) (*ptr))->free();
+      ((Field_blob *) (*ptr))->mem_free();
   }
 }
 
@@ -3640,7 +3766,9 @@ QEP_TAB::remove_duplicates()
       field_count++;
   }
 
-  if (!field_count && !(join()->select_options & OPTION_FOUND_ROWS) && !having)
+  if (!field_count &&
+      !join()->calc_found_rows &&
+      !having) 
   {                    // only const items with no OPTION_FOUND_ROWS
     join()->unit->select_limit_cnt= 1;		// Only send first row
     DBUG_RETURN(false);
@@ -3807,7 +3935,8 @@ static bool remove_dup_with_hash_index(THD *thd, TABLE *table,
   }
 
   if (my_hash_init(&hash, &my_charset_bin, (uint) file->stats.records, 0, 
-                   key_length, (my_hash_get_key) 0, 0, 0))
+                   key_length, (my_hash_get_key) 0, 0, 0,
+                   key_memory_hash_index_key_buffer))
   {
     my_free(key_buffer);
     DBUG_RETURN(true);
@@ -4206,10 +4335,11 @@ err2:
 
   This is done at the start of a new group so that we can retrieve
   these later when the group changes.
+  @returns false if OK, true on error.
 */
 
-void
-copy_fields(Temp_table_param *param)
+bool
+copy_fields(Temp_table_param *param, const THD *thd)
 {
   Copy_field *ptr=param->copy_field;
   Copy_field *end=param->copy_field_end;
@@ -4221,8 +4351,11 @@ copy_fields(Temp_table_param *param)
 
   List_iterator_fast<Item> it(param->copy_funcs);
   Item_copy *item;
-  while ((item = (Item_copy*) it++))
-    item->copy();
+  bool is_error= thd->is_error();
+  while (!is_error && (item= (Item_copy*) it++))
+    is_error= item->copy(thd);
+
+  return is_error;
 }
 
 
@@ -4480,7 +4613,7 @@ QEP_tmp_table::prepare_tmp_table()
     if (instantiate_tmp_table(table, tmp_tbl->keyinfo,
                               tmp_tbl->start_recinfo,
                               &tmp_tbl->recinfo,
-                              join->select_options,
+                              join->select_lex->active_options(),
                               join->thd->variables.big_tables,
                               &join->thd->opt_trace))
       return true;

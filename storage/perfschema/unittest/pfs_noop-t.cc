@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -14,7 +14,7 @@
   51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
 #include <my_global.h>
-#include <my_pthread.h>
+#include <my_thread.h>
 #include <pfs_server.h>
 #include <pfs_instr_class.h>
 #include <pfs_instr.h>
@@ -85,7 +85,7 @@ void test_noop()
   PSI_server->unbind_table(NULL);
   table= PSI_server->rebind_table(NULL, NULL, NULL);
   ok(table == NULL, "no table");
-  PSI_server->close_table(NULL);
+  PSI_server->close_table(NULL, NULL);
   PSI_server->create_file(1, NULL, 2);
   /* TODO: spawn thread */
   thread= PSI_server->new_thread(1, NULL, 2);
@@ -189,11 +189,11 @@ void test_noop()
   ok(sp_share == NULL, "no sp_share");
   PSI_server->release_sp_share(NULL);
   PSI_server->register_memory(NULL, NULL, 0);
-  memory_key= PSI_server->memory_alloc(0, 0);
+  memory_key= PSI_server->memory_alloc(0, 0, NULL);
   ok(memory_key == PSI_NOT_INSTRUMENTED, "no memory_key");
-  memory_key= PSI_server->memory_realloc(0, 0, 0);
+  memory_key= PSI_server->memory_realloc(0, 0, 0, NULL);
   ok(memory_key == PSI_NOT_INSTRUMENTED, "no memory_key");
-  PSI_server->memory_free(0, 0);
+  PSI_server->memory_free(0, 0, NULL);
   PSI_server->unlock_table(NULL);
   metadata_lock= PSI_server->create_metadata_lock(NULL, NULL, 1, 2, 3, NULL, 0);
   ok(metadata_lock == NULL, "no metadata_lock");

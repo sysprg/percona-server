@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,8 +18,6 @@
 /* create and drop of databases */
 
 #include "my_global.h"                          /* NO_EMBEDDED_ACCESS_CHECKS */
-#include "sql_priv.h"
-#include "unireg.h"
 #include "sql_db.h"
 #include "sql_cache.h"                   // query_cache_*
 #include "lock.h"                        // lock_schema_name
@@ -44,9 +42,12 @@
 #endif
 #include "debug_sync.h"
 
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
+
 #define MAX_DROP_TABLE_Q_LEN      1024
 
-const char *del_exts[]= {".frm", ".BAK", ".TMD", ".opt", ".OLD", NullS};
+const char *del_exts[]= {".frm", ".BAK", ".TMD", ".opt", ".OLD", ".cfg", NullS};
 static TYPELIB deletable_extentions=
 {array_elements(del_exts)-1,"del_exts", del_exts, NULL};
 
@@ -103,7 +104,10 @@ static inline int write_to_binlog(THD *thd, char *query, size_t q_len,
   Query_log_event qinfo(thd, query, q_len, FALSE, TRUE, FALSE, 0);
   qinfo.db= db;
   qinfo.db_len= db_len;
-  return mysql_bin_log.write_event(&qinfo);
+  int error= mysql_bin_log.write_event(&qinfo);
+  if (!error)
+    error= mysql_bin_log.commit(thd, false);
+  return error;
 } 
 
 
@@ -163,7 +167,8 @@ bool my_dboptions_cache_init(void)
     error= my_hash_init(&dboptions, lower_case_table_names ?
                         system_charset_info : &my_charset_bin,
                         32, 0, 0, (my_hash_get_key) dboptions_get_key,
-                        free_dbopt,0);
+                        free_dbopt, 0,
+                        key_memory_dboptions_hash);
   }
   return error;
 }
@@ -200,7 +205,8 @@ void my_dbopt_cleanup(void)
   my_hash_init(&dboptions, lower_case_table_names ? 
                system_charset_info : &my_charset_bin,
                32, 0, 0, (my_hash_get_key) dboptions_get_key,
-               free_dbopt,0);
+               free_dbopt, 0,
+               key_memory_dboptions_hash);
   mysql_rwlock_unlock(&LOCK_dboptions);
 }
 
@@ -892,9 +898,7 @@ bool mysql_rm_db(THD *thd,const LEX_CSTRING &db,bool if_exists, bool silent)
       If the directory is a symbolic link, remove the link first, then
       remove the directory the symbolic link pointed at
     */
-    if (found_other_files)
-      my_error(ER_DB_DROP_RMDIR, MYF(0), path, EEXIST);
-    else
+    if (!found_other_files)
       error= rm_dir_w_symlink(path, true);
   }
   thd->pop_internal_handler();
@@ -956,7 +960,27 @@ update_binlog:
     TABLE_LIST *tbl;
     size_t id_length=0;
 
+    /*
+      If GTID_NEXT=='UUID:NUMBER', we must not log an incomplete
+      statement.  However, the incomplete DROP has already 'committed'
+      (some tables were removed).  So we generate an error and let
+      user fix the situation.
+    */
+    if (thd->variables.gtid_next.type == GTID_GROUP)
+    {
+      char gtid_buf[Gtid::MAX_TEXT_LENGTH + 1];
+      thd->variables.gtid_next.gtid.to_string(global_sid_map, gtid_buf,
+                                              true);
+      my_error(ER_CANNOT_LOG_PARTIAL_DROP_DATABASE_WITH_GTID, MYF(0),
+               path, gtid_buf, db.str);
+      error= true;
+      goto exit;
+    }
+
+    DBUG_PRINT("info", ("DROP DATABASE failed; generating DROP TABLE statement(s) in the binlog"));
+
     if (!(query= (char*) thd->alloc(MAX_DROP_TABLE_Q_LEN)))
+      // @todo: abort on out of memory instead
       goto exit; /* not much else we can do */
     query_pos= query_data_start= my_stpcpy(query,"DROP TABLE IF EXISTS ");
     query_end= query + MAX_DROP_TABLE_Q_LEN;
@@ -979,12 +1003,18 @@ update_binlog:
       tbl_name_len= strlen(tbl->table_name) + 3;
       if (query_pos + tbl_name_len + 1 >= query_end)
       {
+        DBUG_PRINT("info", ("Need multiple DROP TABLE statements in the binlog"));
+        thd->variables.gtid_next.dbug_print("gtid_next", true);
         /*
           These DDL methods and logging are protected with the exclusive
           metadata lock on the schema.
         */
-        if (write_to_binlog(thd, query, query_pos -1 - query, db.str,
-                            db.length))
+
+        thd->is_commit_in_middle_of_statement= true;
+        int ret= write_to_binlog(thd, query, query_pos -1 - query, db.str,
+                                 db.length);
+        thd->is_commit_in_middle_of_statement= false;
+        if (ret)
         {
           error= true;
           goto exit;
@@ -1014,6 +1044,18 @@ update_binlog:
     }
   }
 
+  /*
+    We have postponed generating the error until now, since if the
+    error ER_CANNOT_LOG_PARTIAL_DROP_DATABASE_WITH_GTID occurs we
+    should report that instead.
+   */
+  if (found_other_files)
+  {
+    my_error(ER_DB_DROP_RMDIR, MYF(0), path, EEXIST);
+    error= true;
+    goto exit;
+  }
+
 exit:
   /*
     If this database was the client's selected database, we silently
@@ -1031,7 +1073,7 @@ exit:
     {
       LEX_CSTRING dummy= { C_STRING_WITH_LEN("") };
       dummy.length= dummy.length*1;
-      thd->session_tracker.get_tracker(CURRENT_SCHEMA_TRACKER)->mark_as_changed(&dummy);
+      thd->session_tracker.get_tracker(CURRENT_SCHEMA_TRACKER)->mark_as_changed(thd, &dummy);
     }
   }
   my_dirend(dirp);
@@ -1054,7 +1096,7 @@ static bool find_db_tables_and_rm_known_files(THD *thd, MY_DIR *dirp,
   tot_list_next_local= tot_list_next_global= &tot_list;
 
   for (uint idx=0 ;
-       idx < (uint) dirp->number_off_files && !thd->killed ;
+       idx < dirp->number_off_files && !thd->killed ;
        idx++)
   {
     FILEINFO *file=dirp->dir_entry+idx;
@@ -1102,7 +1144,7 @@ static bool find_db_tables_and_rm_known_files(THD *thd, MY_DIR *dirp,
       /* Drop the table nicely */
       *extension= 0;			// Remove extension
       TABLE_LIST *table_list=(TABLE_LIST*)
-                              thd->calloc(sizeof(*table_list) + 
+                              thd->mem_calloc(sizeof(*table_list) + 
                                           strlen(db) + 1 +
                                           MYSQL50_TABLE_NAME_PREFIX_LENGTH + 
                                           strlen(file->name) + 1);
@@ -1237,7 +1279,7 @@ long mysql_rm_arc_files(THD *thd, MY_DIR *dirp, const char *org_path)
   DBUG_PRINT("enter", ("path: %s", org_path));
 
   for (uint idx=0 ;
-       idx < (uint) dirp->number_off_files && !thd->killed ;
+       idx < dirp->number_off_files && !thd->killed ;
        idx++)
   {
     FILEINFO *file=dirp->dir_entry+idx;
@@ -1347,7 +1389,7 @@ static void mysql_change_db_impl(THD *thd,
   /* 2. Update security context. */
 
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
-  thd->security_ctx->db_access= new_db_access;
+  thd->security_context()->set_db_access(new_db_access);
 #endif
 
   /* 3. Update db-charset environment variables. */
@@ -1484,8 +1526,8 @@ bool mysql_change_db(THD *thd, const LEX_CSTRING &new_db_name,
   LEX_STRING new_db_file_name;
   LEX_CSTRING new_db_file_name_cstr;
 
-  Security_context *sctx= thd->security_ctx;
-  ulong db_access= sctx->db_access;
+  Security_context *sctx= thd->security_context();
+  ulong db_access= sctx->db_access();
   const CHARSET_INFO *db_default_cl;
 
   DBUG_ENTER("mysql_change_db");
@@ -1563,27 +1605,26 @@ bool mysql_change_db(THD *thd, const LEX_CSTRING &new_db_name,
   DBUG_PRINT("info",("Use database: %s", new_db_file_name.str));
 
 #ifndef NO_EMBEDDED_ACCESS_CHECKS
-  db_access=
-    test_all_bits(sctx->master_access, DB_ACLS) ?
+  db_access= sctx->check_access(DB_ACLS) ?
     DB_ACLS :
-    acl_get(sctx->get_host()->ptr(),
-            sctx->get_ip()->ptr(),
-            sctx->priv_user,
+    acl_get(sctx->host().str,
+            sctx->ip().str,
+            sctx->priv_user().str,
             new_db_file_name.str,
-            FALSE) | sctx->master_access;
+            false) | sctx->master_access();
 
   if (!force_switch &&
       !(db_access & DB_ACLS) &&
       check_grant_db(thd, new_db_file_name.str))
   {
     my_error(ER_DBACCESS_DENIED_ERROR, MYF(0),
-             sctx->priv_user,
-             sctx->priv_host,
+             sctx->priv_user().str,
+             sctx->priv_host().str,
              new_db_file_name.str);
     query_logger.general_log_print(thd, COM_INIT_DB,
                                    ER(ER_DBACCESS_DENIED_ERROR),
-                                   sctx->priv_user,
-                                   sctx->priv_host,
+                                   sctx->priv_user().str,
+                                   sctx->priv_host().str,
                                    new_db_file_name.str);
     my_free(new_db_file_name.str);
     DBUG_RETURN(TRUE);
@@ -1642,10 +1683,10 @@ done:
   {
     LEX_CSTRING dummy= { C_STRING_WITH_LEN("") };
     dummy.length= dummy.length*1;
-    thd->session_tracker.get_tracker(CURRENT_SCHEMA_TRACKER)->mark_as_changed(&dummy);
+    thd->session_tracker.get_tracker(CURRENT_SCHEMA_TRACKER)->mark_as_changed(thd, &dummy);
   }
   if (thd->session_tracker.get_tracker(SESSION_STATE_CHANGE_TRACKER)->is_enabled())
-    thd->session_tracker.get_tracker(SESSION_STATE_CHANGE_TRACKER)->mark_as_changed(NULL);
+    thd->session_tracker.get_tracker(SESSION_STATE_CHANGE_TRACKER)->mark_as_changed(thd, NULL);
   DBUG_RETURN(FALSE);
 }
 

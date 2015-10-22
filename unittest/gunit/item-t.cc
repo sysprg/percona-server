@@ -1,4 +1,4 @@
-/* Copyright (c) 2011, 2014, Oracle and/or its affiliates. All rights reserved. 
+/* Copyright (c) 2011, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -21,6 +21,10 @@
 #include "test_utils.h"
 
 #include "item.h"
+#include "item_cmpfunc.h"
+#include "item_create.h"
+#include "item_strfunc.h"
+#include "item_timefunc.h"
 #include "sql_class.h"
 #include "tztime.h"
 
@@ -437,8 +441,8 @@ TEST_F(ItemTest, ItemFuncExportSet)
   }
   {
     // Testing overflow caused by 'on-string'.
-    longlong max_size= 1024LL * 1024LL * 1024LL;
-    thd()->variables.max_allowed_packet= max_size;
+    longlong max_size= 1024LL;
+    thd()->variables.max_allowed_packet= static_cast<ulong>(max_size);
     Mock_error_handler error_handler(thd(), ER_WARN_ALLOWED_PACKET_OVERFLOWED);
     Item *lpad=
       new Item_func_lpad(POS(),
@@ -501,7 +505,7 @@ TEST_F(ItemTest, ItemFuncIntDivUnderflow)
 TEST_F(ItemTest, ItemFuncNegLongLongMin)
 {
   // Bug#14314156 MAIN.FUNC_MATH TEST FAILS ON MYSQL-TRUNK ON PB2
-  const longlong longlong_min= LONGLONG_MIN;
+  const longlong longlong_min= LLONG_MIN;
   Item_func_neg *item_neg= new Item_func_neg(new Item_int(longlong_min));
 
   EXPECT_FALSE(item_neg->fix_fields(thd(), NULL));
@@ -835,6 +839,21 @@ TEST_F(ItemTest, ItemDecimalTypecast)
     EXPECT_EQ(null_item, create_func_cast(thd(), pos, NULL, &type));
   }
 
+}
+
+TEST_F(ItemTest, NormalizedPrint)
+{
+  Item_null *item_null= new Item_null;
+  {
+    String s;
+    item_null->print(&s, QT_ORDINARY);
+    EXPECT_STREQ("NULL", s.c_ptr());
+  }
+  {
+    String s;
+    item_null->print(&s, QT_NORMALIZED_FORMAT);
+    EXPECT_STREQ("?", s.c_ptr());
+  }
 }
 
 }

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2007, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2007, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -53,6 +53,9 @@ static const ulint FTS_OPTIMIZE_INTERVAL_IN_SECS = 300;
 
 /** Server is shutting down, so does we exiting the optimize thread */
 static bool fts_opt_start_shutdown = false;
+
+/** Event to wait for shutdown of the optimize thread */
+static os_event_t fts_opt_shutdown_event = NULL;
 
 /** Initial size of nodes in fts_word_t. */
 static const ulint FTS_WORD_NODES_INIT_SIZE = 64;
@@ -190,6 +193,8 @@ cycle for a table. */
 struct fts_slot_t {
 	dict_table_t*	table;		/*!< Table to optimize */
 
+	table_id_t	table_id;	/*!< Table id */
+
 	fts_state_t	state;		/*!< State of this slot */
 
 	ulint		added;		/*!< Number of doc ids added since the
@@ -213,11 +218,6 @@ struct fts_msg_del_t {
 	os_event_t	event;		/*!< Event to synchronize acknowledgement
 					of receipt and processing of the
 					this message by the consumer */
-};
-
-/** Stop the optimize thread. */
-struct fts_msg_optimize_t {
-	dict_table_t*	table;		/*!< Table to optimize */
 };
 
 /** The FTS optimize message work queue message type. */
@@ -341,7 +341,6 @@ fts_zip_init(
 /**********************************************************************//**
 Create a fts_optimizer_word_t instance.
 @return new instance */
-
 fts_word_t*
 fts_word_init(
 /*==========*/
@@ -426,7 +425,6 @@ fts_optimize_read_node(
 /**********************************************************************//**
 Callback function to fetch the rows in an FTS INDEX record.
 @return always returns non-NULL */
-
 ibool
 fts_optimize_index_fetch_node(
 /*==========================*/
@@ -484,7 +482,6 @@ fts_optimize_index_fetch_node(
 /**********************************************************************//**
 Read the rows from the FTS inde.
 @return DB_SUCCESS or error code */
-
 dberr_t
 fts_index_fetch_nodes(
 /*==================*/
@@ -558,15 +555,13 @@ fts_index_fetch_nodes(
 			fts_sql_rollback(trx);
 
 			if (error == DB_LOCK_WAIT_TIMEOUT) {
-				ib_logf(IB_LOG_LEVEL_WARN,
-					"lock wait timeout reading"
-					" FTS index. Retrying!");
+				ib::warn() << "lock wait timeout reading"
+					" FTS index. Retrying!";
 
 				trx->error_state = DB_SUCCESS;
 			} else {
-				ib_logf(IB_LOG_LEVEL_ERROR,
-					"(%s) while reading FTS index.",
-					ut_strerr(error));
+				ib::error() << "(" << ut_strerr(error)
+					<< ") while reading FTS index.";
 
 				break;			/* Exit the loop. */
 			}
@@ -834,18 +829,13 @@ fts_index_fetch_words(
 	}
 
 	for (selected = fts_select_index(
-		optim->fts_index_table.charset, word->f_str, word->f_len);
-	     fts_index_selector[selected].value;
+		     optim->fts_index_table.charset, word->f_str, word->f_len);
+	     selected < FTS_NUM_AUX_INDEX;
 	     selected++) {
 
 		char	table_name[MAX_FULL_NAME_LEN];
 
 		optim->fts_index_table.suffix = fts_get_suffix(selected);
-
-		/* We've search all indexes. */
-		if (optim->fts_index_table.suffix == NULL) {
-			return(DB_TABLE_NOT_FOUND);
-		}
 
 		info = pars_info_create();
 
@@ -885,8 +875,8 @@ fts_index_fetch_words(
 
 			if (!inited && ((err = deflateInit(zip->zp, 9))
 					!= Z_OK)) {
-				ib_logf(IB_LOG_LEVEL_ERROR,
-					"ZLib deflateInit() failed: %d", err);
+				ib::error() << "ZLib deflateInit() failed: "
+					<< err;
 
 				error = DB_ERROR;
 				break;
@@ -902,9 +892,8 @@ fts_index_fetch_words(
 				//FIXME fts_sql_rollback(optim->trx);
 
 				if (error == DB_LOCK_WAIT_TIMEOUT) {
-					ib_logf(IB_LOG_LEVEL_WARN,
-						"Lock wait timeout reading"
-						" document. Retrying!");
+					ib::warn() << "Lock wait timeout"
+						" reading document. Retrying!";
 
 					/* We need to reset the ZLib state. */
 					inited = FALSE;
@@ -913,9 +902,8 @@ fts_index_fetch_words(
 
 					optim->trx->error_state = DB_SUCCESS;
 				} else {
-					ib_logf(IB_LOG_LEVEL_ERROR,
-						"(%s) while reading document.",
-						ut_strerr(error));
+					ib::error() << "(" << ut_strerr(error)
+						<< ") while reading document.";
 
 					break;	/* Exit the loop. */
 				}
@@ -989,7 +977,6 @@ fts_fetch_doc_ids(
 /**********************************************************************//**
 Read the rows from a FTS common auxiliary table.
 @return DB_SUCCESS or error code */
-
 dberr_t
 fts_table_fetch_doc_ids(
 /*====================*/
@@ -1060,7 +1047,6 @@ fts_table_fetch_doc_ids(
 Do a binary search for a doc id in the array
 @return +ve index if found -ve index where it should be inserted
         if not found */
-
 int
 fts_bsearch(
 /*========*/
@@ -1168,6 +1154,7 @@ fts_optimize_encode_node(
 	}
 
 	/* Calculate the space required to store the ilist. */
+	ut_ad(doc_id > node->last_doc_id);
 	doc_id_delta = doc_id - node->last_doc_id;
 	enc_len = fts_get_encoded_len(static_cast<ulint>(doc_id_delta));
 
@@ -1400,8 +1387,8 @@ fts_optimize_word(
 
 	if (fts_enable_diag_print) {
 		word->text.f_str[word->text.f_len] = 0;
-		ib_logf(IB_LOG_LEVEL_INFO, "FTS_OPTIMIZE: optimize \"%s\"",
-			word->text.f_str);
+		ib::info() << "FTS_OPTIMIZE: optimize \"" << word->text.f_str
+			<< "\"";
 	}
 
 	while (i < size) {
@@ -1410,7 +1397,8 @@ fts_optimize_word(
 
 		src_node = (fts_node_t*) ib_vector_get(word->nodes, i);
 
-		if (!dst_node) {
+		if (dst_node == NULL
+		    || dst_node->last_doc_id > src_node->first_doc_id) {
 
 			dst_node = static_cast<fts_node_t*>(
 				ib_vector_push(nodes, NULL));
@@ -1481,8 +1469,8 @@ fts_optimize_write_word(
 	ut_ad(fts_table->charset);
 
 	if (fts_enable_diag_print) {
-		ib_logf(IB_LOG_LEVEL_INFO, "FTS_OPTIMIZE: processed \"%s\"",
-			word->f_str);
+		ib::info() << "FTS_OPTIMIZE: processed \"" << word->f_str
+			<< "\"";
 	}
 
 	pars_info_bind_varchar_literal(
@@ -1503,10 +1491,8 @@ fts_optimize_write_word(
 	error = fts_eval_sql(trx, graph);
 
 	if (error != DB_SUCCESS) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"(%s) during optimize, when deleting a word"
-			" from the FTS index.",
-			ut_strerr(error));
+		ib::error() << "(" << ut_strerr(error) << ") during optimize,"
+			" when deleting a word from the FTS index.";
 	}
 
 	fts_que_graph_free(graph);
@@ -1523,10 +1509,9 @@ fts_optimize_write_word(
 				trx, &graph, fts_table, word, node);
 
 			if (error != DB_SUCCESS) {
-				ib_logf(IB_LOG_LEVEL_ERROR,
-					"(%s) during optimize, while adding a"
-					" word to the FTS index.",
-					ut_strerr(error));
+				ib::error() << "(" << ut_strerr(error) << ")"
+					" during optimize, while adding a"
+					" word to the FTS index.";
 			}
 		}
 
@@ -1544,7 +1529,6 @@ fts_optimize_write_word(
 
 /**********************************************************************//**
 Free fts_optimizer_word_t instanace.*/
-
 void
 fts_word_free(
 /*==========*/
@@ -1636,12 +1620,12 @@ fts_optimize_create(
 
 	optim->trx = trx_allocate_for_background();
 
-	optim->fts_common_table.parent = table->name;
+	optim->fts_common_table.parent = table->name.m_name;
 	optim->fts_common_table.table_id = table->id;
 	optim->fts_common_table.type = FTS_COMMON_TABLE;
 	optim->fts_common_table.table = table;
 
-	optim->fts_index_table.parent = table->name;
+	optim->fts_index_table.parent = table->name.m_name;
 	optim->fts_index_table.table_id = table->id;
 	optim->fts_index_table.type = FTS_INDEX_TABLE;
 	optim->fts_index_table.table = table;
@@ -1816,7 +1800,7 @@ fts_optimize_words(
 	fetch.read_arg = optim->words;
 	fetch.read_record = fts_optimize_index_fetch_node;
 
-	ib_logf(IB_LOG_LEVEL_INFO, "%.*s", (int) word->f_len, word->f_str);
+	ib::info().write(word->f_str, word->f_len);
 
 	while (!optim->done) {
 		dberr_t	error;
@@ -1865,13 +1849,12 @@ fts_optimize_words(
 				}
 			}
 		} else if (error == DB_LOCK_WAIT_TIMEOUT) {
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Lock wait timeout during optimize. Retrying!");
+			ib::warn() << "Lock wait timeout during optimize."
+				" Retrying!";
 
 			trx->error_state = DB_SUCCESS;
 		} else if (error == DB_DEADLOCK) {
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Deadlock during optimize. Retrying!");
+			ib::warn() << "Deadlock during optimize. Retrying!";
 
 			trx->error_state = DB_SUCCESS;
 		} else {
@@ -1882,42 +1865,6 @@ fts_optimize_words(
 	if (graph != NULL) {
 		fts_que_graph_free(graph);
 	}
-}
-
-/**********************************************************************//**
-Select the FTS index to search.
-@return TRUE if last index */
-static
-ibool
-fts_optimize_set_next_word(
-/*=======================*/
-	CHARSET_INFO*	charset,	/*!< in: charset */
-	fts_string_t*	word)		/*!< in: current last word */
-{
-	ulint		selected;
-	ibool		last = FALSE;
-
-	selected = fts_select_next_index(charset, word->f_str, word->f_len);
-
-	/* If this was the last index then reset to start. */
-	if (fts_index_selector[selected].value == 0) {
-		/* Reset the last optimized word to '' if no
-		more words could be read from the FTS index. */
-		word->f_len = 0;
-		*word->f_str = 0;
-
-		last = TRUE;
-	} else {
-		ulint	value = fts_index_selector[selected].value;
-
-		ut_a(value <= 0xff);
-
-		/* Set to the first character of the next slot. */
-		word->f_len = 1;
-		*word->f_str = (byte) value;
-	}
-
-	return(last);
 }
 
 /**********************************************************************//**
@@ -1952,9 +1899,8 @@ fts_optimize_index_completed(
 
 	if (error != DB_SUCCESS) {
 
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"(%s) while updating last optimized word!",
-			ut_strerr(error));
+		ib::error() << "(" << ut_strerr(error) << ") while updating"
+			" last optimized word!";
 	}
 
 	return(error);
@@ -1997,21 +1943,14 @@ fts_optimize_index_read_words(
 			optim, word, fts_num_word_optimize);
 
 		if (error == DB_SUCCESS) {
-
-			/* If the search returned an empty set
-			try the next index in the horizontal split. */
-			if (optim->zip->n_words > 0) {
-				break;
-			} else {
-
-				fts_optimize_set_next_word(
-					optim->fts_index_table.charset,
-					word);
-
-				if (word->f_len == 0) {
-					break;
-				}
+			/* Reset the last optimized word to '' if no
+			more words could be read from the FTS index. */
+			if (optim->zip->n_words == 0) {
+				word->f_len = 0;
+				*word->f_str = 0;
 			}
+
+			break;
 		}
 	}
 
@@ -2495,7 +2434,6 @@ fts_optimize_table_bk(
 /*********************************************************************//**
 Run OPTIMIZE on the given table.
 @return DB_SUCCESS if all OK */
-
 dberr_t
 fts_optimize_table(
 /*===============*/
@@ -2506,8 +2444,7 @@ fts_optimize_table(
 	fts_t*		fts = table->fts;
 
 	if (fts_enable_diag_print) {
-		ib_logf(IB_LOG_LEVEL_INFO, "FTS start optimize %s",
-			table->name);
+		ib::info() << "FTS start optimize " << table->name;
 	}
 
 	optim = fts_optimize_create(table);
@@ -2559,9 +2496,8 @@ fts_optimize_table(
 		    && optim->n_completed == ib_vector_size(fts->indexes)) {
 
 			if (fts_enable_diag_print) {
-				ib_logf(IB_LOG_LEVEL_INFO,
-					"FTS_OPTIMIZE: Completed"
-					" Optimize, cleanup DELETED table");
+				ib::info() << "FTS_OPTIMIZE: Completed"
+					" Optimize, cleanup DELETED table";
 			}
 
 			if (ib_vector_size(optim->to_delete->doc_ids) > 0) {
@@ -2583,7 +2519,7 @@ fts_optimize_table(
 	fts_optimize_free(optim);
 
 	if (fts_enable_diag_print) {
-		ib_logf(IB_LOG_LEVEL_INFO, "FTS end optimize %s", table->name);
+		ib::info() << "FTS end optimize " << table->name;
 	}
 
 	return(error);
@@ -2614,7 +2550,6 @@ fts_optimize_create_msg(
 
 /**********************************************************************//**
 Add the table to add to the OPTIMIZER's list. */
-
 void
 fts_optimize_add_table(
 /*===================*/
@@ -2636,7 +2571,6 @@ fts_optimize_add_table(
 
 /**********************************************************************//**
 Optimize a table. */
-
 void
 fts_optimize_do_table(
 /*==================*/
@@ -2657,7 +2591,6 @@ fts_optimize_do_table(
 /**********************************************************************//**
 Remove the table from the OPTIMIZER's list. We do wait for
 acknowledgement from the consumer of the message. */
-
 void
 fts_optimize_remove_table(
 /*======================*/
@@ -2674,9 +2607,8 @@ fts_optimize_remove_table(
 
 	/* FTS optimizer thread is already exited */
 	if (fts_opt_start_shutdown) {
-		ib_logf(IB_LOG_LEVEL_INFO,
-			"Try to remove table %s after FTS optimize"
-			" thread exiting.", table->name);
+		ib::info() << "Try to remove table " << table->name
+			<< " after FTS optimize thread exiting.";
 		return;
 	}
 
@@ -2716,7 +2648,7 @@ fts_optimize_find_slot(
 
 		slot = static_cast<fts_slot_t*>(ib_vector_get(tables, i));
 
-		if (slot->table->id == table->id) {
+		if (slot->table == table) {
 			return(slot);
 		}
 	}
@@ -2738,9 +2670,8 @@ fts_optimize_start_table(
 	slot = fts_optimize_find_slot(tables, table);
 
 	if (slot == NULL) {
-		ib_logf(IB_LOG_LEVEL_ERROR,
-			"Table %s not registered with the optimize thread.",
-			table->name);
+		ib::error() << "Table " << table->name << " not registered"
+			" with the optimize thread.";
 	} else {
 		slot->last_run = 0;
 		slot->completed = 0;
@@ -2768,7 +2699,7 @@ fts_optimize_new_table(
 
 		if (slot->state == FTS_STATE_EMPTY) {
 			empty_slot = i;
-		} else if (slot->table->id == table->id) {
+		} else if (slot->table == table) {
 			/* Already exists in our optimize queue. */
 			return(FALSE);
 		}
@@ -2790,6 +2721,7 @@ fts_optimize_new_table(
 	memset(slot, 0x0, sizeof(*slot));
 
 	slot->table = table;
+	slot->table_id = table->id;
 	slot->state = FTS_STATE_LOADED;
 	slot->interval_time = FTS_OPTIMIZE_INTERVAL_IN_SECS;
 
@@ -2813,14 +2745,12 @@ fts_optimize_del_table(
 
 		slot = static_cast<fts_slot_t*>(ib_vector_get(tables, i));
 
-		/* FIXME: Should we assert on this ? */
 		if (slot->state != FTS_STATE_EMPTY
-		    && slot->table->id == table->id) {
+		    && slot->table == table) {
 
 			if (fts_enable_diag_print) {
-				ib_logf(IB_LOG_LEVEL_INFO,
-					"FTS Optimize Removing table %s",
-					table->name);
+				ib::info() << "FTS Optimize Removing table "
+					<< table->name;
 			}
 
 			slot->table = NULL;
@@ -2916,7 +2846,8 @@ fts_is_sync_needed(
 		slot = static_cast<const fts_slot_t*>(
 			ib_vector_get_const(tables, i));
 
-		if (slot->table && slot->table->fts) {
+		if (slot->state != FTS_STATE_EMPTY && slot->table
+		    && slot->table->fts && slot->table->fts->cache) {
 			total_memory += slot->table->fts->cache->total_size;
 		}
 
@@ -2982,7 +2913,6 @@ fts_optimize_need_sync(
 /**********************************************************************//**
 Optimize all FTS tables.
 @return Dummy return */
-
 os_thread_ret_t
 fts_optimize_thread(
 /*================*/
@@ -2994,11 +2924,11 @@ fts_optimize_thread(
 	ulint		current = 0;
 	ibool		done = FALSE;
 	ulint		n_tables = 0;
-	os_event_t	exit_event = 0;
 	ulint		n_optimize = 0;
 	ib_wqueue_t*	wq = (ib_wqueue_t*) arg;
 
 	ut_ad(!srv_read_only_mode);
+	my_thread_init();
 
 	heap = mem_heap_create(sizeof(dict_table_t*) * 64);
 	heap_alloc = ib_heap_allocator_create(heap);
@@ -3064,7 +2994,6 @@ fts_optimize_thread(
 
 			case FTS_MSG_STOP:
 				done = TRUE;
-				exit_event = (os_event_t) msg->ptr;
 				break;
 
 			case FTS_MSG_ADD_TABLE:
@@ -3127,9 +3056,11 @@ fts_optimize_thread(
 			if (slot->state != FTS_STATE_EMPTY) {
 				dict_table_t*	table = NULL;
 
-			        table = dict_table_open_on_name(
-					slot->table->name, FALSE, FALSE,
-					DICT_ERR_IGNORE_INDEX_ROOT);
+				/*slot->table may be freed, so we try to open
+				table by slot->table_id.*/
+			        table = dict_table_open_on_id(
+					slot->table_id, FALSE,
+					DICT_TABLE_OP_NORMAL);
 
 				if (table) {
 
@@ -3149,9 +3080,10 @@ fts_optimize_thread(
 
 	ib_vector_free(tables);
 
-	ib_logf(IB_LOG_LEVEL_INFO, "FTS optimize thread exiting.");
+	ib::info() << "FTS optimize thread exiting.";
 
-	os_event_set(exit_event);
+	os_event_set(fts_opt_shutdown_event);
+	my_thread_end();
 
 	/* We count the number of threads in os_thread_exit(). A created
 	thread should always use that to exit and not use return() to exit. */
@@ -3162,7 +3094,6 @@ fts_optimize_thread(
 
 /**********************************************************************//**
 Startup the optimize thread and create the work queue. */
-
 void
 fts_optimize_init(void)
 /*===================*/
@@ -3173,6 +3104,7 @@ fts_optimize_init(void)
 	ut_a(fts_optimize_wq == NULL);
 
 	fts_optimize_wq = ib_wqueue_create();
+	fts_opt_shutdown_event = os_event_create(0);
 	ut_a(fts_optimize_wq != NULL);
 	last_check_sync_time = ut_time();
 
@@ -3182,7 +3114,6 @@ fts_optimize_init(void)
 /**********************************************************************//**
 Check whether the work queue is initialized.
 @return TRUE if optimze queue is initialized. */
-
 ibool
 fts_optimize_is_init(void)
 /*======================*/
@@ -3192,7 +3123,6 @@ fts_optimize_is_init(void)
 
 /**********************************************************************//**
 Signal the optimize thread to prepare for shutdown. */
-
 void
 fts_optimize_start_shutdown(void)
 /*=============================*/
@@ -3200,7 +3130,6 @@ fts_optimize_start_shutdown(void)
 	ut_ad(!srv_read_only_mode);
 
 	fts_msg_t*	msg;
-	os_event_t	event;
 
 	/* If there is an ongoing activity on dictionary, such as
 	srv_master_evict_from_table_cache(), wait for it */
@@ -3215,23 +3144,20 @@ fts_optimize_start_shutdown(void)
 	/* We tell the OPTIMIZE thread to switch to state done, we
 	can't delete the work queue here because the add thread needs
 	deregister the FTS tables. */
-	event = os_event_create(0);
 
 	msg = fts_optimize_create_msg(FTS_MSG_STOP, NULL);
-	msg->ptr = event;
 
 	ib_wqueue_add(fts_optimize_wq, msg, msg->heap);
 
-	os_event_wait(event);
+	os_event_wait(fts_opt_shutdown_event);
 
-	os_event_destroy(event);
+	os_event_destroy(fts_opt_shutdown_event);
 
 	ib_wqueue_free(fts_optimize_wq);
 }
 
 /**********************************************************************//**
 Reset the work queue. */
-
 void
 fts_optimize_end(void)
 /*==================*/

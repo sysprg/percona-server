@@ -3,7 +3,8 @@
 # Taken FROM the select test
 #
 -- source include/have_archive.inc
--- source include/have_binlog_format_mixed_or_statement.inc
+-- source include/force_binlog_format_statement.inc
+-- source include/have_innodb_16k.inc
 
 CALL mtr.add_suppression("Unsafe statement written to the binary log using statement format since BINLOG_FORMAT = STATEMENT");
 
@@ -1766,10 +1767,12 @@ CREATE TABLE t1 (c1 decimal(19,14) NOT NULL) ENGINE=ARCHIVE;
 #Suppressing error message in server error log.
 CALL mtr.add_suppression("Found wrong key definition in #sql.* Please do \"ALTER TABLE `#sql.*` FORCE \" to fix it!");
 --replace_regex /#sql-[0-9a-f_]*/#sql-temporary/
+SET sql_mode='NO_ENGINE_SUBSTITUTION';
 --error ER_GET_ERRNO
 CREATE INDEX i1 ON t1(c1);
 --replace_regex /#sql-[0-9a-f_]*/#sql-temporary/
-SHOW WARNINGS; 
+SHOW WARNINGS;
+SET sql_mode= default;
 DROP TABLE t1;
 
 --echo #
@@ -1793,3 +1796,5 @@ CREATE TABLE t1 (a INT) ENGINE=ARCHIVE;
 CREATE TABLE t2 SELECT * FROM t1;
 SELECT * FROM t2;
 DROP TABLE t1, t2;
+
+--source include/restore_default_binlog_format.inc

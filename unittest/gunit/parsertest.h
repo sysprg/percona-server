@@ -1,6 +1,6 @@
 #ifndef PARSERTEST_INCLUDED
 #define PARSERTEST_INCLUDED
-/* Copyright (c) 2012, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -59,7 +59,7 @@ protected:
       without executing.
     */
     initializer.set_expected_error(ER_MUST_CHANGE_PASSWORD);
-    thd()->security_ctx->password_expired= true;
+    thd()->security_context()->set_password_expired(true);
 
     Mock_error_handler handler(thd(), expected_error_code);
     lex_start(thd());
@@ -79,6 +79,8 @@ protected:
     EXPECT_FALSE(err);
     return thd()->lex->current_select();
   }
+
+  SELECT_LEX *parse(const char *query) { return parse(query, 0); }
 
 };
 

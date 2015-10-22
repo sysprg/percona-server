@@ -219,28 +219,26 @@ select @query, @trace;
 select * from v1 where v1.col = 'ÁÂÃÄÅ'	{
   "steps": [
     {
-      "view": {
-        "database": "test",
-        "view": "v1",
-        "in_select#": 1,
-        "select#": 2,
-        "materialized": true
-      } /* view */
-    },
-    {
-      "join_preparation": {
-        "select#": 2,
-        "steps": [
-          {
-            "expanded_query": "/* select#2 */ select 'ÁÂÃÄÅ' AS `col` from `t1` limit 1"
-          }
-        ] /* steps */
-      } /* join_preparation */
-    },
-    {
       "join_preparation": {
         "select#": 1,
         "steps": [
+          {
+            "join_preparation": {
+              "select#": 2,
+              "steps": [
+                {
+                  "expanded_query": "/* select#2 */ select 'ÁÂÃÄÅ' AS `col` from `t1` limit 1"
+                }
+              ] /* steps */
+            } /* join_preparation */
+          },
+          {
+            "view": {
+              "table": "`v1`",
+              "select#": 2,
+              "materialized": true
+            } /* view */
+          },
           {
             "expanded_query": "/* select#1 */ select `v1`.`col` AS `col` from `v1` where (`v1`.`col` = 'ÁÂÃÄÅ')"
           }
@@ -364,6 +362,10 @@ select * from v1 where v1.col = 'ÁÂÃÄÅ'	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`v1`",
@@ -470,6 +472,10 @@ select * from t1 where c < 'ÁÂÃÄÅ'	{
             } /* condition_processing */
           },
           {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
+          },
+          {
             "table_dependencies": [
               {
                 "table": "`t1`",
@@ -524,8 +530,8 @@ select * from t1 where c < 'ÁÂÃÄÅ'	{
                         "rowid_ordered": true,
                         "using_mrr": false,
                         "index_only": true,
-                        "rows": 3,
-                        "cost": 1.612,
+                        "rows": 2,
+                        "cost": 2.41,
                         "chosen": false,
                         "cause": "cost"
                       }
@@ -622,18 +628,26 @@ select `col
 1	a` < 6	{
   "steps": [
     {
-      "view": {
-        "database": "test",
-        "view": "v\n1\ta",
-        "in_select#": 1,
-        "select#": 2,
-        "merged": true
-      } /* view */
-    },
-    {
       "join_preparation": {
         "select#": 1,
         "steps": [
+          {
+            "join_preparation": {
+              "select#": 2,
+              "steps": [
+                {
+                  "expanded_query": "/* select#2 */ select `t\n1\ta`.`col\n1\ta` AS `col\n1\ta` from `t\n1\ta`"
+                }
+              ] /* steps */
+            } /* join_preparation */
+          },
+          {
+            "view": {
+              "table": "`v\n1\ta`",
+              "select#": 2,
+              "merged": true
+            } /* view */
+          },
           {
             "expanded_query": "/* select#1 */ select `t\n1\ta`.`col\n1\ta` AS `col\n1\ta` from (`t\n1\ta`) where (`t\n1\ta`.`col\n1\ta` < 6)"
           },
@@ -671,6 +685,10 @@ select `col
                 }
               ] /* steps */
             } /* condition_processing */
+          },
+          {
+            "substitute_generated_columns": {
+            } /* substitute_generated_columns */
           },
           {
             "table_dependencies": [
@@ -727,29 +745,17 @@ select `col
                         "rowid_ordered": false,
                         "using_mrr": false,
                         "index_only": true,
-                        "rows": 1,
-                        "cost": 1.21,
-                        "chosen": true
+                        "rows": 2,
+                        "cost": 1.4113,
+                        "chosen": false,
+                        "cause": "cost"
                       }
                     ] /* range_scan_alternatives */,
                     "analyzing_roworder_intersect": {
                       "usable": false,
                       "cause": "too_few_roworder_scans"
                     } /* analyzing_roworder_intersect */
-                  } /* analyzing_range_alternatives */,
-                  "chosen_range_access_summary": {
-                    "range_access_plan": {
-                      "type": "range_scan",
-                      "index": "index\n1\ta",
-                      "rows": 1,
-                      "ranges": [
-                        "NULL < col\n1\ta < 6"
-                      ] /* ranges */
-                    } /* range_access_plan */,
-                    "rows_for_plan": 1,
-                    "cost_for_plan": 1.21,
-                    "chosen": true
-                  } /* chosen_range_access_summary */
+                  } /* analyzing_range_alternatives */
                 } /* range_analysis */
               }
             ] /* rows_estimation */
@@ -763,20 +769,17 @@ select `col
                 "best_access_path": {
                   "considered_access_paths": [
                     {
-                      "rows_to_scan": 1,
-                      "access_type": "range",
-                      "range_details": {
-                        "used_index": "index\n1\ta"
-                      } /* range_details */,
-                      "resulting_rows": 1,
-                      "cost": 1.41,
+                      "rows_to_scan": 2,
+                      "access_type": "scan",
+                      "resulting_rows": 2,
+                      "cost": 1.4,
                       "chosen": true
                     }
                   ] /* considered_access_paths */
                 } /* best_access_path */,
                 "condition_filtering_pct": 100,
-                "rows_for_plan": 1,
-                "cost_for_plan": 1.41,
+                "rows_for_plan": 2,
+                "cost_for_plan": 1.4,
                 "chosen": true
               }
             ] /* considered_execution_plans */

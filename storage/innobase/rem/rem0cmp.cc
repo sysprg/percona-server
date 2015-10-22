@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1994, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -99,15 +99,13 @@ innobase_mysql_cmp(
 			       cs, a, a_length, b, b_length, 0));
 	}
 
-	ib_logf(IB_LOG_LEVEL_FATAL,
-		"Unable to find charset-collation %u", cs_num);
+	ib::fatal() << "Unable to find charset-collation " << cs_num;
 	return(0);
 }
 
 /*************************************************************//**
 Returns TRUE if two columns are equal for comparison purposes.
 @return TRUE if the columns are considered equal in comparisons */
-
 ibool
 cmp_cols_are_equal(
 /*===============*/
@@ -301,7 +299,7 @@ static
 int
 cmp_gis_field(
 /*============*/
-	ulint		mode,		/*!< in: compare mode */
+	page_cur_mode_t	mode,		/*!< in: compare mode */
 	const byte*	a,		/*!< in: data field */
 	unsigned int	a_length,	/*!< in: data field length,
 					not UNIV_SQL_NULL */
@@ -315,8 +313,7 @@ cmp_gis_field(
 		return(cmp_geometry_field(DATA_GEOMETRY, DATA_GIS_MBR,
 					  a, a_length, b, b_length));
 	} else {
-		return(rtree_key_cmp(static_cast<int>(mode),
-				     a, a_length, b, b_length));
+		return(rtree_key_cmp(mode, a, a_length, b, b_length));
 	}
 }
 
@@ -377,9 +374,8 @@ cmp_whole_field(
 			       a, a_length, b, b_length, 0));
 	case DATA_BLOB:
 		if (prtype & DATA_BINARY_TYPE) {
-			ib_logf(IB_LOG_LEVEL_ERROR,
-				"Comparing a binary BLOB"
-				" using a character set collation!");
+			ib::error() << "Comparing a binary BLOB"
+				" using a character set collation!";
 			ut_ad(0);
 		}
 		/* fall through */
@@ -393,9 +389,7 @@ cmp_whole_field(
 		return(cmp_geometry_field(mtype, prtype, a, a_length, b,
 				b_length));
 	default:
-		ib_logf(IB_LOG_LEVEL_FATAL,
-			"Unknown data type number %lu",
-			(ulong) mtype);
+		ib::fatal() << "Unknown data type number " << mtype;
 	}
 
 	return(0);
@@ -563,7 +557,6 @@ cmp_data(
 @param[in] offsets rec_get_offsets(rec)
 @param[in] mode compare mode
 @retval negative if dtuple is less than rec */
-
 int
 cmp_dtuple_rec_with_gis(
 /*====================*/
@@ -573,7 +566,7 @@ cmp_dtuple_rec_with_gis(
 				has an equal number or more fields than
 				dtuple */
 	const ulint*	offsets,/*!< in: array returned by rec_get_offsets() */
-	ulint		mode)	/*!< in: comprare mode */
+	page_cur_mode_t	mode)	/*!< in: compare mode */
 {
 	const dfield_t*	dtuple_field;	/* current field in logical record */
 	ulint		dtuple_f_len;	/* the length of the current field
@@ -605,7 +598,6 @@ cmp_dtuple_rec_with_gis(
 @retval 0 if data1 is equal to data2
 @retval negative if data1 is less than data2
 @retval positive if data1 is greater than data2 */
-
 int
 cmp_data_data(
 	ulint		mtype,
@@ -628,7 +620,6 @@ cmp_data_data(
 @retval 0 if dtuple is equal to rec
 @retval negative if dtuple is less than rec
 @retval positive if dtuple is greater than rec */
-
 int
 cmp_dtuple_rec_with_match_low(
 	const dtuple_t*	dtuple,
@@ -705,6 +696,213 @@ order_resolved:
 	return(ret);
 }
 
+/** Get the pad character code point for a type.
+@param[in]	type
+@return		pad character code point
+@retval		ULINT_UNDEFINED if no padding is specified */
+UNIV_INLINE
+ulint
+cmp_get_pad_char(
+	const dtype_t*	type)
+{
+	switch (type->mtype) {
+	case DATA_FIXBINARY:
+	case DATA_BINARY:
+		if (dtype_get_charset_coll(type->prtype)
+		    == DATA_MYSQL_BINARY_CHARSET_COLL) {
+			/* Starting from 5.0.18, do not pad
+			VARBINARY or BINARY columns. */
+			return(ULINT_UNDEFINED);
+		}
+		/* Fall through */
+	case DATA_CHAR:
+	case DATA_VARCHAR:
+	case DATA_MYSQL:
+	case DATA_VARMYSQL:
+		/* Space is the padding character for all char and binary
+		strings, and starting from 5.0.3, also for TEXT strings. */
+		return(0x20);
+	case DATA_GEOMETRY:
+                /* DATA_GEOMETRY is binary data, not ASCII-based. */
+	        return(ULINT_UNDEFINED);
+	case DATA_BLOB:
+		if (!(type->prtype & DATA_BINARY_TYPE)) {
+			return(0x20);
+		}
+		/* Fall through */
+	default:
+		/* No padding specified */
+		return(ULINT_UNDEFINED);
+	}
+}
+
+/** Compare a data tuple to a physical record.
+@param[in]	dtuple		data tuple
+@param[in]	rec		B-tree or R-tree index record
+@param[in]	index		index tree
+@param[in]	offsets		rec_get_offsets(rec)
+@param[in,out]	matched_fields	number of completely matched fields
+@param[in,out]	matched_bytes	number of matched bytes in the first
+field that is not matched
+@return the comparison result of dtuple and rec
+@retval 0 if dtuple is equal to rec
+@retval negative if dtuple is less than rec
+@retval positive if dtuple is greater than rec */
+int
+cmp_dtuple_rec_with_match_bytes(
+	const dtuple_t*		dtuple,
+	const rec_t*		rec,
+	const dict_index_t*	index,
+	const ulint*		offsets,
+	ulint*			matched_fields,
+	ulint*			matched_bytes)
+{
+	ulint		n_cmp	= dtuple_get_n_fields_cmp(dtuple);
+	ulint		cur_field;	/* current field number */
+	ulint		cur_bytes;
+	int		ret;		/* return value */
+
+	ut_ad(dtuple_check_typed(dtuple));
+	ut_ad(rec_offs_validate(rec, index, offsets));
+	//ut_ad(page_is_leaf(page_align(rec)));
+	ut_ad(!(REC_INFO_MIN_REC_FLAG
+		& dtuple_get_info_bits(dtuple)));
+	ut_ad(!(REC_INFO_MIN_REC_FLAG
+		& rec_get_info_bits(rec, rec_offs_comp(offsets))));
+
+	cur_field = *matched_fields;
+	cur_bytes = *matched_bytes;
+
+	ut_ad(n_cmp <= dtuple_get_n_fields(dtuple));
+	ut_ad(cur_field <= n_cmp);
+	ut_ad(cur_field + (cur_bytes > 0) <= rec_offs_n_fields(offsets));
+
+	/* Match fields in a loop; stop if we run out of fields in dtuple
+	or find an externally stored field */
+
+	while (cur_field < n_cmp) {
+		const dfield_t*	dfield		= dtuple_get_nth_field(
+			dtuple, cur_field);
+		const dtype_t*	type		= dfield_get_type(dfield);
+		ulint		dtuple_f_len	= dfield_get_len(dfield);
+		const byte*	dtuple_b_ptr;
+		const byte*	rec_b_ptr;
+		ulint		rec_f_len;
+
+		dtuple_b_ptr = static_cast<const byte*>(
+			dfield_get_data(dfield));
+		rec_b_ptr = rec_get_nth_field(rec, offsets,
+					      cur_field, &rec_f_len);
+		ut_ad(!rec_offs_nth_extern(offsets, cur_field));
+
+		/* If we have matched yet 0 bytes, it may be that one or
+		both the fields are SQL null, or the record or dtuple may be
+		the predefined minimum record. */
+		if (cur_bytes == 0) {
+			if (dtuple_f_len == UNIV_SQL_NULL) {
+				if (rec_f_len == UNIV_SQL_NULL) {
+
+					goto next_field;
+				}
+
+				ret = -1;
+				goto order_resolved;
+			} else if (rec_f_len == UNIV_SQL_NULL) {
+				/* We define the SQL null to be the
+				smallest possible value of a field
+				in the alphabetical order */
+
+				ret = 1;
+				goto order_resolved;
+			}
+		}
+
+		switch (type->mtype) {
+		case DATA_FIXBINARY:
+		case DATA_BINARY:
+		case DATA_INT:
+		case DATA_SYS_CHILD:
+		case DATA_SYS:
+			break;
+		case DATA_BLOB:
+			if (type->prtype & DATA_BINARY_TYPE) {
+				break;
+			}
+			/* fall through */
+		default:
+			ret = cmp_data(type->mtype, type->prtype,
+				       dtuple_b_ptr, dtuple_f_len,
+				       rec_b_ptr, rec_f_len);
+
+			if (!ret) {
+				goto next_field;
+			}
+
+			cur_bytes = 0;
+			goto order_resolved;
+		}
+
+		/* Set the pointers at the current byte */
+
+		rec_b_ptr += cur_bytes;
+		dtuple_b_ptr += cur_bytes;
+		/* Compare then the fields */
+
+		for (const ulint pad = cmp_get_pad_char(type);;
+		     cur_bytes++) {
+			ulint	rec_byte = pad;
+			ulint	dtuple_byte = pad;
+
+			if (rec_f_len <= cur_bytes) {
+				if (dtuple_f_len <= cur_bytes) {
+
+					goto next_field;
+				}
+
+				if (rec_byte == ULINT_UNDEFINED) {
+					ret = 1;
+
+					goto order_resolved;
+				}
+			} else {
+				rec_byte = *rec_b_ptr++;
+			}
+
+			if (dtuple_f_len <= cur_bytes) {
+				if (dtuple_byte == ULINT_UNDEFINED) {
+					ret = -1;
+
+					goto order_resolved;
+				}
+			} else {
+				dtuple_byte = *dtuple_b_ptr++;
+			}
+
+			if (dtuple_byte < rec_byte) {
+				ret = -1;
+				goto order_resolved;
+			} else if (dtuple_byte > rec_byte) {
+				ret = 1;
+				goto order_resolved;
+			}
+		}
+
+next_field:
+		cur_field++;
+		cur_bytes = 0;
+	}
+
+	ut_ad(cur_bytes == 0);
+
+	ret = 0;	/* If we ran out of fields, dtuple was equal to rec
+			up to the common fields */
+order_resolved:
+	*matched_fields = cur_field;
+	*matched_bytes = cur_bytes;
+
+	return(ret);
+}
+
 /** Compare a data tuple to a physical record.
 @see cmp_dtuple_rec_with_match
 @param[in] dtuple data tuple
@@ -715,7 +913,6 @@ for ROW_FORMAT=REDUNDANT
 @retval 0 if dtuple is equal to rec
 @retval negative if dtuple is less than rec
 @retval positive if dtuple is greater than rec */
-
 int
 cmp_dtuple_rec(
 	const dtuple_t*	dtuple,
@@ -733,7 +930,6 @@ cmp_dtuple_rec(
 Checks if a dtuple is a prefix of a record. The last field in dtuple
 is allowed to be a prefix of the corresponding field in the record.
 @return TRUE if prefix */
-
 ibool
 cmp_dtuple_is_prefix_of_rec(
 /*========================*/
@@ -793,7 +989,6 @@ none of which are stored externally.
 @retval positive if rec1 (including non-ordering columns) is greater than rec2
 @retval negative if rec1 (including non-ordering columns) is less than rec2
 @retval 0 if rec1 is a duplicate of rec2 */
-
 int
 cmp_rec_rec_simple(
 /*===============*/
@@ -881,7 +1076,6 @@ within the first field not completely matched
 @retval 0 if rec1 is equal to rec2
 @retval negative if rec1 is less than rec2
 @retval positive if rec2 is greater than rec2 */
-
 int
 cmp_rec_rec_with_match(
 	const rec_t*		rec1,
@@ -904,7 +1098,9 @@ cmp_rec_rec_with_match(
 	int		ret = 0;	/* return value */
 	ulint		comp;
 
-	ut_ad(rec1 && rec2 && index);
+	ut_ad(rec1 != NULL);
+	ut_ad(rec2 != NULL);
+	ut_ad(index != NULL);
 	ut_ad(rec_offs_validate(rec1, index, offsets1));
 	ut_ad(rec_offs_validate(rec2, index, offsets2));
 	ut_ad(rec_offs_comp(offsets1) == rec_offs_comp(offsets2));
@@ -942,20 +1138,21 @@ cmp_rec_rec_with_match(
 			break;
 		}
 
-		if (dict_index_is_univ(index)) {
+		/* If this is comparing non-leaf node record on Rtree,
+		then avoid comparing node-ptr field.*/
+		if (dict_index_is_spatial(index)
+		    && cur_field == DICT_INDEX_SPATIAL_NODEPTR_SIZE
+		    && (!page_is_leaf(page_align(rec1))
+			|| !page_is_leaf(page_align(rec2)))) {
+			break;
+		}
+
+		if (dict_index_is_ibuf(index)) {
 			/* This is for the insert buffer B-tree. */
 			mtype = DATA_BINARY;
 			prtype = 0;
 		} else {
 			const dict_col_t*	col;
-
-			/* This is comparing non-leaf node record, skip
-			the page no compare */
-			if (cur_field >= dict_index_get_n_fields(index)
-			    && dict_index_is_spatial(index)) {
-				cur_field--;
-				goto order_resolved;
-			}
 
 			col	= dict_index_get_nth_col(index, cur_field);
 

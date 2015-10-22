@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -26,6 +26,7 @@
 #include "sql_class.h"                   // THD
 #include "sql_connect.h"                 // close_connection
 #include "sql_parse.h"                   // do_command
+#include "sql_thd_internal_api.h"        // thd_set_thread_stack
 #include "log.h"                         // Error_log_throttle
 
 
@@ -205,7 +206,7 @@ static THD* init_new_thd(Channel_info *channel_info)
     need to know the start of the stack so that we could check for
     stack overruns.
   */
-  thd->thread_stack= (char*) &thd;
+  thd_set_thread_stack(thd, (char*) &thd);
   if (thd->store_globals())
   {
     close_connection(thd, ER_OUT_OF_RESOURCES);
@@ -238,7 +239,7 @@ static THD* init_new_thd(Channel_info *channel_info)
   - End thread  / Handle next connection using thread from thread cache
 */
 
-pthread_handler_t handle_connection(void *arg)
+extern "C" void *handle_connection(void *arg)
 {
   Global_THD_manager *thd_manager= Global_THD_manager::get_instance();
   Connection_handler_manager *handler_manager=
@@ -254,7 +255,7 @@ pthread_handler_t handle_connection(void *arg)
     Connection_handler_manager
       ::dec_connection_count(channel_info->is_on_extra_port());
     delete channel_info;
-    pthread_exit(0);
+    my_thread_exit(0);
     return NULL;
   }
 
@@ -287,7 +288,8 @@ pthread_handler_t handle_connection(void *arg)
 
     mysql_thread_set_psi_id(thd->thread_id());
     mysql_thread_set_psi_THD(thd);
-    mysql_socket_set_thread_owner(thd->net.vio->mysql_socket);
+    mysql_socket_set_thread_owner(
+      thd->get_protocol_classic()->get_vio()->mysql_socket);
 
     thd_manager->add_thd(thd);
 
@@ -313,7 +315,6 @@ pthread_handler_t handle_connection(void *arg)
     ERR_remove_state(0);
 
     thd_manager->remove_thd(thd);
-    delete thd;
 
 #ifdef HAVE_PSI_THREAD_INTERFACE
     /*
@@ -321,6 +322,8 @@ pthread_handler_t handle_connection(void *arg)
     */
     PSI_THREAD_CALL(delete_current_thread)();
 #endif
+
+    delete thd;
 
     if (abort_loop) // Server is shutting down so end the pthread.
       break;
@@ -332,7 +335,7 @@ pthread_handler_t handle_connection(void *arg)
   }
 
   my_thread_end();
-  pthread_exit(0);
+  my_thread_exit(0);
   return NULL;
 }
 
@@ -384,7 +387,7 @@ bool Per_thread_connection_handler::check_idle_thread_and_enqueue_connection(
 bool Per_thread_connection_handler::add_connection(Channel_info* channel_info)
 {
   int error= 0;
-  pthread_t id;
+  my_thread_handle id;
 
   DBUG_ENTER("Per_thread_connection_handler::add_connection");
 

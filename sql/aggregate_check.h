@@ -1,7 +1,7 @@
 #ifndef AGGREGATE_CHECK_INCLUDED
 #define AGGREGATE_CHECK_INCLUDED
 
-/* Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -431,8 +431,9 @@ the dependency NULL-friendly.
 
 #include "my_global.h"
 #include "mem_root_array.h"
-#include "item.h"
 #include "opt_trace.h"
+#include "item_cmpfunc.h"
+#include "item_sum.h"
 struct st_mem_root;
 class st_select_lex;
 struct TABLE_LIST;
@@ -644,6 +645,8 @@ private:
   bool is_in_fd_of_underlying(Item_ident *item);
   void analyze_conjunct(Item *cond, Item *conjunct, table_map weak_tables,
                         bool weak_side_upwards);
+  void analyze_scalar_eq(Item *cond, Item *left_item, Item *right_item,
+                         table_map weak_tables, bool weak_side_upwards);
   void find_fd_in_cond(Item *cond, table_map weak_tables,
                        bool weak_side_upwards);
   void find_fd_in_joined_table(List<TABLE_LIST> *join_list);

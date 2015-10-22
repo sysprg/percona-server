@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,12 +14,14 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "mysys_priv.h"
+#include "my_sys.h"
 #include "mysys_err.h"
 #include <my_dir.h>
 #include <errno.h>
 #ifdef HAVE_SYS_UN_H
 #include <sys/un.h>
 #endif
+#include "my_thread_local.h"
 
 
 /*
@@ -137,7 +139,7 @@ int my_close(File fd, myf MyFlags)
     if (MyFlags & (MY_FAE | MY_WME))
     {
       char errbuf[MYSYS_STRERROR_SIZE];
-      my_error(EE_BADCLOSE, MYF(ME_BELL+ME_WAITTANG), my_filename(fd),
+      my_error(EE_BADCLOSE, MYF(0), my_filename(fd),
                my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     }
   }
@@ -215,7 +217,7 @@ File my_register_filename(File fd, const char *FileName, enum file_type
     if (my_errno == EMFILE)
       error_message_number= EE_OUT_OF_FILERESOURCES;
     DBUG_PRINT("error",("print err: %d",error_message_number));
-    my_error(error_message_number, MYF(ME_BELL+ME_WAITTANG), FileName,
+    my_error(error_message_number, MYF(0), FileName,
              my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
   }
   DBUG_RETURN(-1);

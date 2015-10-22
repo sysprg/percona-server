@@ -189,7 +189,7 @@ log_group_archive_file_header_write(
 	const ulint	page_no
 		= (ulint) (dest_offset / univ_page_size.physical());
 
-	fil_io(OS_FILE_WRITE | OS_FILE_LOG, true,
+	fil_io(IORequestLogWrite, true,
 	       page_id_t(group->archive_space_id, page_no),
 	       univ_page_size,
 	       (ulint) (dest_offset % univ_page_size.physical()),
@@ -229,7 +229,7 @@ log_group_archive_completed_header_write(
 	const ulint	page_no
 		= (ulint) (dest_offset / univ_page_size.physical());
 
-	fil_io(OS_FILE_WRITE | OS_FILE_LOG, true,
+	fil_io(IORequestLogWrite, true,
 	       page_id_t(group->archive_space_id, page_no),
 	       univ_page_size,
 	       (ulint) (dest_offset % univ_page_size.physical()),
@@ -325,11 +325,11 @@ loop:
 
 		/* Add the archive file as a node to the space */
 		fil_space_t*	archive_space
-			= fil_tablespace_exists_in_mem(group->archive_space_id);
+			= fil_space_get(group->archive_space_id);
 		ut_a(archive_space);
 
 		ut_a(fil_node_create(name, group->file_size / UNIV_PAGE_SIZE,
-				     archive_space, false));
+				     archive_space, false, false));
 
 		if (next_offset % group->file_size == 0) {
 			log_group_archive_file_header_write(
@@ -363,7 +363,7 @@ loop:
 	const ulint	page_no
 		= (ulint) (next_offset / univ_page_size.physical());
 
-	fil_io(OS_FILE_WRITE | OS_FILE_LOG, false,
+	fil_io(IORequestLogWrite, false,
 	       page_id_t(group->archive_space_id, page_no),
 	       univ_page_size,
 	       (ulint) (next_offset % UNIV_PAGE_SIZE),

@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2012, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2012, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -413,18 +413,6 @@ typedef int (*ib_client_cmp_t)(
 /* This should be the same as univ.i */
 /** Represents SQL_NULL length */
 #define	IB_SQL_NULL		0xFFFFFFFF
-/** The number of system columns in a row. */
-#define IB_N_SYS_COLS		3
-
-/** The maximum length of a text column. */
-#define MAX_TEXT_LEN		4096
-
-/* MySQL uses 3 byte UTF-8 encoding. */
-/** The maximum length of a column name in a table schema. */
-#define IB_MAX_COL_NAME_LEN	(64 * 3)
-
-/** The maximum length of a table name (plus database name). */
-#define IB_MAX_TABLE_NAME_LEN	(64 * 3) * 2
 
 /*****************************************************************//**
 Start a transaction that's been rolled back. This special function
@@ -434,7 +422,6 @@ is still valid and can be reused by calling this function. If you
 don't want to reuse the transaction handle then you can free the handle
 by calling ib_trx_release().
 @return innobase txn handle */
-
 ib_err_t
 ib_trx_start(
 /*=========*/
@@ -450,7 +437,6 @@ ib_trx_start(
 Begin a transaction. This will allocate a new transaction handle and
 put the transaction in the active state.
 @return innobase txn handle */
-
 ib_trx_t
 ib_trx_begin(
 /*=========*/
@@ -461,11 +447,17 @@ ib_trx_begin(
 					single DML */
 
 /*****************************************************************//**
+Check if the transaction is read_only */
+ib_u32_t
+ib_trx_read_only(
+/*=============*/
+        ib_trx_t        ib_trx);         /*!< in: trx handle */
+
+/*****************************************************************//**
 Release the resources of the transaction. If the transaction was
 selected as a victim by InnoDB and rolled back then use this function
 to free the transaction handle.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_trx_release(
 /*===========*/
@@ -475,7 +467,6 @@ ib_trx_release(
 Commit a transaction. This function will release the schema latches too.
 It will also free the transaction handle.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_trx_commit(
 /*==========*/
@@ -485,7 +476,6 @@ ib_trx_commit(
 Rollback a transaction. This function will release the schema latches too.
 It will also free the transaction handle.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_trx_rollback(
 /*============*/
@@ -494,7 +484,6 @@ ib_trx_rollback(
 /*****************************************************************//**
 Open an InnoDB table and return a cursor handle to it.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_open_table_using_id(
 /*==========================*/
@@ -506,7 +495,6 @@ ib_cursor_open_table_using_id(
 /*****************************************************************//**
 Open an InnoDB secondary index cursor and return a cursor handle to it.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_open_index_using_name(
 /*============================*/
@@ -519,7 +507,6 @@ ib_cursor_open_index_using_name(
 /*****************************************************************//**
 Open an InnoDB table by name and return a cursor handle to it.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_open_table(
 /*=================*/
@@ -531,7 +518,6 @@ ib_cursor_open_table(
 /*****************************************************************//**
 Reset the cursor.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_reset(
 /*============*/
@@ -540,7 +526,6 @@ ib_cursor_reset(
 /*****************************************************************//**
 Close an InnoDB table and free the cursor.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_close(
 /*============*/
@@ -549,7 +534,6 @@ ib_cursor_close(
 /*****************************************************************//**
 Close the table, decrement n_ref_count count.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_close_table(
 /*==================*/
@@ -558,7 +542,6 @@ ib_cursor_close_table(
 /*****************************************************************//**
 update the cursor with new transactions and also reset the cursor
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_new_trx(
 /*==============*/
@@ -568,7 +551,6 @@ ib_cursor_new_trx(
 /*****************************************************************//**
 Commit the transaction in a cursor
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_commit_trx(
 /*=================*/
@@ -578,7 +560,6 @@ ib_cursor_commit_trx(
 /*****************************************************************//**
 Insert a row to a table.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_insert_row(
 /*=================*/
@@ -588,7 +569,6 @@ ib_cursor_insert_row(
 /*****************************************************************//**
 Update a row in a table.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_update_row(
 /*=================*/
@@ -599,7 +579,6 @@ ib_cursor_update_row(
 /*****************************************************************//**
 Delete a row in a table.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_delete_row(
 /*=================*/
@@ -608,7 +587,6 @@ ib_cursor_delete_row(
 /*****************************************************************//**
 Read current row.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_read_row(
 /*===============*/
@@ -620,7 +598,6 @@ ib_cursor_read_row(
 /*****************************************************************//**
 Move cursor to the first record in the table.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_first(
 /*============*/
@@ -629,7 +606,6 @@ ib_cursor_first(
 /*****************************************************************//**
 Move cursor to the next record in the table.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_next(
 /*===========*/
@@ -638,7 +614,6 @@ ib_cursor_next(
 /*****************************************************************//**
 Search for key.
 @return DB_SUCCESS or err code */
-
 ib_err_t
 ib_cursor_moveto(
 /*=============*/
@@ -648,7 +623,6 @@ ib_cursor_moveto(
 
 /*****************************************************************//**
 Set the match mode for ib_cursor_move(). */
-
 void
 ib_cursor_set_match_mode(
 /*=====================*/
@@ -658,7 +632,6 @@ ib_cursor_set_match_mode(
 /*****************************************************************//**
 Set a column of the tuple. Make a copy using the tuple's heap.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_col_set_value(
 /*=============*/
@@ -672,7 +645,6 @@ ib_col_set_value(
 /*****************************************************************//**
 Get the size of the data available in the column the tuple.
 @return bytes avail or IB_SQL_NULL */
-
 ib_ulint_t
 ib_col_get_len(
 /*===========*/
@@ -682,7 +654,6 @@ ib_col_get_len(
 /*****************************************************************//**
 Copy a column value from the tuple.
 @return bytes copied or IB_SQL_NULL */
-
 ib_ulint_t
 ib_col_copy_value(
 /*==============*/
@@ -694,7 +665,6 @@ ib_col_copy_value(
 /*************************************************************//**
 Read a signed int 8 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_i8(
 /*=============*/
@@ -705,7 +675,6 @@ ib_tuple_read_i8(
 /*************************************************************//**
 Read an unsigned int 8 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_u8(
 /*=============*/
@@ -716,7 +685,6 @@ ib_tuple_read_u8(
 /*************************************************************//**
 Read a signed int 16 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_i16(
 /*==============*/
@@ -727,7 +695,6 @@ ib_tuple_read_i16(
 /*************************************************************//**
 Read an unsigned int 16 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_u16(
 /*==============*/
@@ -738,7 +705,6 @@ ib_tuple_read_u16(
 /*************************************************************//**
 Read a signed int 32 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_i32(
 /*==============*/
@@ -749,7 +715,6 @@ ib_tuple_read_i32(
 /*************************************************************//**
 Read an unsigned int 32 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_u32(
 /*==============*/
@@ -760,7 +725,6 @@ ib_tuple_read_u32(
 /*************************************************************//**
 Read a signed int 64 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_i64(
 /*==============*/
@@ -771,7 +735,6 @@ ib_tuple_read_i64(
 /*************************************************************//**
 Read an unsigned int 64 bit column from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_u64(
 /*==============*/
@@ -782,7 +745,6 @@ ib_tuple_read_u64(
 /*****************************************************************//**
 Get a column value pointer from the tuple.
 @return NULL or pointer to buffer */
-
 const void*
 ib_col_get_value(
 /*=============*/
@@ -792,7 +754,6 @@ ib_col_get_value(
 /*****************************************************************//**
 Get a column type, length and attributes from the tuple.
 @return len of column data */
-
 ib_ulint_t
 ib_col_get_meta(
 /*============*/
@@ -803,7 +764,6 @@ ib_col_get_meta(
 /*****************************************************************//**
 "Clear" or reset an InnoDB tuple. We free the heap and recreate the tuple.
 @return new tuple, or NULL */
-
 ib_tpl_t
 ib_tuple_clear(
 /*============*/
@@ -814,7 +774,6 @@ Create a new cluster key search tuple and copy the contents of  the
 secondary index key tuple columns that refer to the cluster index record
 to the cluster key. It does a deep copy of the column data.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_tuple_get_cluster_key(
 /*=====================*/
@@ -825,7 +784,6 @@ ib_tuple_get_cluster_key(
 /*****************************************************************//**
 Create an InnoDB tuple used for index/table search.
 @return tuple for current index */
-
 ib_tpl_t
 ib_sec_search_tuple_create(
 /*=======================*/
@@ -834,7 +792,6 @@ ib_sec_search_tuple_create(
 /*****************************************************************//**
 Create an InnoDB tuple used for index/table search.
 @return tuple for current index */
-
 ib_tpl_t
 ib_sec_read_tuple_create(
 /*=====================*/
@@ -843,7 +800,6 @@ ib_sec_read_tuple_create(
 /*****************************************************************//**
 Create an InnoDB tuple used for table key operations.
 @return tuple for current table */
-
 ib_tpl_t
 ib_clust_search_tuple_create(
 /*=========================*/
@@ -852,7 +808,6 @@ ib_clust_search_tuple_create(
 /*****************************************************************//**
 Create an InnoDB tuple for table row operations.
 @return tuple for current table */
-
 ib_tpl_t
 ib_clust_read_tuple_create(
 /*=======================*/
@@ -861,7 +816,6 @@ ib_clust_read_tuple_create(
 /*****************************************************************//**
 Return the number of user columns in the tuple definition.
 @return number of user columns */
-
 ib_ulint_t
 ib_tuple_get_n_user_cols(
 /*=====================*/
@@ -870,7 +824,6 @@ ib_tuple_get_n_user_cols(
 /*****************************************************************//**
 Return the number of columns in the tuple definition.
 @return number of columns */
-
 ib_ulint_t
 ib_tuple_get_n_cols(
 /*================*/
@@ -878,7 +831,6 @@ ib_tuple_get_n_cols(
 
 /*****************************************************************//**
 Destroy an InnoDB tuple. */
-
 void
 ib_tuple_delete(
 /*============*/
@@ -888,7 +840,6 @@ ib_tuple_delete(
 Truncate a table. The cursor handle will be closed and set to NULL
 on success.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_cursor_truncate(
 /*===============*/
@@ -899,7 +850,6 @@ ib_cursor_truncate(
 /*****************************************************************//**
 Get a table id.
 @return DB_SUCCESS if found */
-
 ib_err_t
 ib_table_get_id(
 /*============*/
@@ -909,7 +859,6 @@ ib_table_get_id(
 /*****************************************************************//**
 Check if cursor is positioned.
 @return IB_TRUE if positioned */
-
 ib_bool_t
 ib_cursor_is_positioned(
 /*====================*/
@@ -919,7 +868,6 @@ ib_cursor_is_positioned(
 Checks if the data dictionary is latched in exclusive mode by a
 user transaction.
 @return TRUE if exclusive latch */
-
 ib_bool_t
 ib_schema_lock_is_exclusive(
 /*========================*/
@@ -928,7 +876,6 @@ ib_schema_lock_is_exclusive(
 /*****************************************************************//**
 Lock an InnoDB cursor/table.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_cursor_lock(
 /*===========*/
@@ -938,7 +885,6 @@ ib_cursor_lock(
 /*****************************************************************//**
 Set the Lock an InnoDB table using the table id.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_table_lock(
 /*===========*/
@@ -949,7 +895,6 @@ ib_table_lock(
 /*****************************************************************//**
 Set the Lock mode of the cursor.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_cursor_set_lock_mode(
 /*====================*/
@@ -958,7 +903,6 @@ ib_cursor_set_lock_mode(
 
 /*****************************************************************//**
 Set need to access clustered index record flag. */
-
 void
 ib_cursor_set_cluster_access(
 /*=========================*/
@@ -966,7 +910,6 @@ ib_cursor_set_cluster_access(
 
 /*****************************************************************//**
 Inform the cursor that it's the start of an SQL statement. */
-
 void
 ib_cursor_stmt_begin(
 /*=================*/
@@ -975,7 +918,6 @@ ib_cursor_stmt_begin(
 /*****************************************************************//**
 Write a double value to a column.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_write_double(
 /*==================*/
@@ -986,7 +928,6 @@ ib_tuple_write_double(
 /*************************************************************//**
 Read a double column value from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_double(
 /*=================*/
@@ -997,7 +938,6 @@ ib_tuple_read_double(
 /*****************************************************************//**
 Write a float value to a column.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_write_float(
 /*=================*/
@@ -1008,7 +948,6 @@ ib_tuple_write_float(
 /*************************************************************//**
 Read a float value from an InnoDB tuple.
 @return DB_SUCCESS or error */
-
 ib_err_t
 ib_tuple_read_float(
 /*================*/
@@ -1019,7 +958,6 @@ ib_tuple_read_float(
 /*****************************************************************//**
 Get a column type, length and attributes from the tuple.
 @return len of column data */
-
 const char*
 ib_col_get_name(
 /*============*/
@@ -1029,7 +967,6 @@ ib_col_get_name(
 /*****************************************************************//**
 Get an index field name from the cursor.
 @return name of the field */
-
 const char*
 ib_get_idx_field_name(
 /*==================*/
@@ -1039,7 +976,6 @@ ib_get_idx_field_name(
 /*****************************************************************//**
 Truncate a table.
 @return DB_SUCCESS or error code */
-
 ib_err_t
 ib_table_truncate(
 /*==============*/
@@ -1047,20 +983,8 @@ ib_table_truncate(
 	ib_id_u64_t*	table_id);	/*!< out: new table id */
 
 /*****************************************************************//**
-Frees a possible InnoDB trx object associated with the current THD.
-@return DB_SUCCESS or error number */
-
-ib_err_t
-ib_close_thd(
-/*=========*/
-	void*		thd);		/*!< in: handle to the MySQL
-					thread of the user whose resources
-					should be free'd */
-
-/*****************************************************************//**
 Get generic configure status
 @return configure status*/
-
 int
 ib_cfg_get_cfg();
 /*============*/
@@ -1076,19 +1000,8 @@ ib_cursor_set_memcached_sync(
 	ib_bool_t	flag);		/*!< in: true for increasing */
 
 /*****************************************************************//**
-Check whether the table name conforms to our requirements. Currently
-we only do a simple check for the presence of a '/'.
-@return DB_SUCCESS or err code */
-
-ib_err_t
-ib_table_name_check(
-/*================*/
-	const char*	name);		/*!< in: table name to check */
-
-/*****************************************************************//**
 Return isolation configuration set by "innodb_api_trx_level"
 @return trx isolation level*/
-
 ib_trx_level_t
 ib_cfg_trx_level();
 /*==============*/
@@ -1096,7 +1009,6 @@ ib_cfg_trx_level();
 /*****************************************************************//**
 Return configure value for background commit interval (in seconds)
 @return background commit interval (in seconds) */
-
 ib_ulint_t
 ib_cfg_bk_commit_interval();
 /*=======================*/
@@ -1104,7 +1016,6 @@ ib_cfg_bk_commit_interval();
 /*****************************************************************//**
 Get a trx start time.
 @return trx start_time */
-
 ib_u64_t
 ib_trx_get_start_time(
 /*==================*/
@@ -1114,7 +1025,6 @@ ib_trx_get_start_time(
 Wrapper of ut_strerr() which converts an InnoDB error number to a
 human readable text message.
 @return string, describing the error */
-
 const char*
 ib_ut_strerr(
 /*=========*/

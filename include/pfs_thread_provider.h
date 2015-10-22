@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -67,7 +67,7 @@ pfs_init_cond_v1(PSI_cond_key key, const void *identity);
 void pfs_destroy_cond_v1(PSI_cond* cond);
 
 int pfs_spawn_thread_v1(PSI_thread_key key,
-                        pthread_t *thread, const pthread_attr_t *attr,
+                        my_thread_handle *thread, const my_thread_attr_t *attr,
                         void *(*start_routine)(void*), void *arg);
 
 PSI_thread*
@@ -91,6 +91,8 @@ void pfs_set_thread_command_v1(int command);
 void pfs_set_thread_start_time_v1(time_t start_time);
 
 void pfs_set_thread_state_v1(const char* state);
+
+void pfs_set_connection_type_v1(opaque_vio_type conn_type);
 
 void pfs_set_thread_info_v1(const char* info, uint info_len);
 

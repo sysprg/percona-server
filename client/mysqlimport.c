@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -25,19 +25,14 @@
 #include "client_priv.h"
 #include "my_default.h"
 #include "mysql_version.h"
-#ifdef HAVE_LIBPTHREAD
-#include <my_pthread.h>
-#endif
 
 #include <welcome_copyright_notice.h>   /* ORACLE_WELCOME_COPYRIGHT_NOTICE */
 
 
 /* Global Thread counter */
 uint counter;
-#ifdef HAVE_LIBPTHREAD
 native_mutex_t counter_mutex;
 native_cond_t count_threshold;
-#endif
 
 static void db_error_with_table(MYSQL *mysql, char *table);
 static void db_error(MYSQL *mysql);
@@ -212,6 +207,7 @@ static void print_version(void)
 
 static void usage(void)
 {
+  struct my_option *optp;
   print_version();
   puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("\
@@ -223,6 +219,19 @@ file. The SQL command 'LOAD DATA INFILE' is used to import the rows.\n");
 
   printf("\nUsage: %s [OPTIONS] database textfile...",my_progname);
   print_defaults("my",load_default_groups);
+  /*
+    Turn default for zombies off so that the help on how to 
+    turn them off text won't show up.
+    This is safe to do since it's followed by a call to exit().
+  */
+  for (optp= my_long_options; optp->name; optp++)
+  {
+    if (optp->id == OPT_SECURE_AUTH)
+    {
+      optp->def_value= 0;
+      break;
+    }
+  }
   my_print_help(my_long_options);
   my_print_variables(my_long_options);
 }
@@ -271,12 +280,14 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
     usage();
     exit(0);
   case OPT_SECURE_AUTH:
-    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
+    /* --secure-auth is a zombie option. */
     if (!opt_secure_auth)
     {
-      usage();
+      fprintf(stderr, "mysqlimport: [ERROR] --skip-secure-auth is not supported.\n");
       exit(1);
     }
+    else
+      CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
     break;
   }
   return 0;
@@ -353,8 +364,8 @@ static int write_to_table(char *filename, MYSQL *mysql)
       fprintf(stdout, "Loading data from SERVER file: %s into %s\n",
 	      hard_path, tablename);
   }
-  mysql_real_escape_string(mysql, escaped_name, hard_path,
-                           (unsigned long) strlen(hard_path));
+  mysql_real_escape_string_quote(mysql, escaped_name, hard_path,
+                                 (unsigned long) strlen(hard_path), '\'');
   sprintf(sql_statement, "LOAD DATA %s %s INFILE '%s'",
 	  opt_low_priority ? "LOW_PRIORITY" : "",
 	  opt_local_file ? "LOCAL" : "", escaped_name);
@@ -568,8 +579,7 @@ static char *field_escape(char *to,const char *from,uint length)
 
 int exitcode= 0;
 
-#ifdef HAVE_LIBPTHREAD
-pthread_handler_t worker_thread(void *arg)
+void *worker_thread(void *arg)
 {
   int error;
   char *raw_table_name= (char *)arg;
@@ -608,7 +618,6 @@ error:
 
   return 0;
 }
-#endif
 
 
 int main(int argc, char **argv)
@@ -630,14 +639,14 @@ int main(int argc, char **argv)
     return(1);
   }
 
-#ifdef HAVE_LIBPTHREAD
   if (opt_use_threads && !lock_tables)
   {
-    pthread_t mainthread;            /* Thread descriptor */
-    pthread_attr_t attr;          /* Thread attributes */
-    pthread_attr_init(&attr);
-    pthread_attr_setdetachstate(&attr,
-                                PTHREAD_CREATE_DETACHED);
+    my_thread_handle mainthread;            /* Thread descriptor */
+    my_thread_attr_t attr;          /* Thread attributes */
+    my_thread_attr_init(&attr);
+#ifndef _WIN32
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+#endif
 
     native_mutex_init(&counter_mutex, NULL);
     native_cond_init(&count_threshold);
@@ -649,15 +658,15 @@ int main(int argc, char **argv)
       {
         struct timespec abstime;
 
-        set_timespec(abstime, 3);
+        set_timespec(&abstime, 3);
         native_cond_timedwait(&count_threshold, &counter_mutex, &abstime);
       }
       /* Before exiting the lock we set ourselves up for the next thread */
       counter++;
       native_mutex_unlock(&counter_mutex);
       /* now create the thread */
-      if (pthread_create(&mainthread, &attr, worker_thread, 
-                         (void *)*argv) != 0)
+      if (my_thread_create(&mainthread, &attr, worker_thread, 
+                           (void *)*argv) != 0)
       {
         native_mutex_lock(&counter_mutex);
         counter--;
@@ -675,16 +684,15 @@ int main(int argc, char **argv)
     {
       struct timespec abstime;
 
-      set_timespec(abstime, 3);
+      set_timespec(&abstime, 3);
       native_cond_timedwait(&count_threshold, &counter_mutex, &abstime);
     }
     native_mutex_unlock(&counter_mutex);
     native_mutex_destroy(&counter_mutex);
     native_cond_destroy(&count_threshold);
-    pthread_attr_destroy(&attr);
+    my_thread_attr_destroy(&attr);
   }
   else
-#endif
   {
     MYSQL *mysql= 0;
     if (!(mysql= db_connect(current_host,current_db,current_user,opt_password)))

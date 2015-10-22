@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -37,10 +37,10 @@ Created 9/5/1995 Heikki Tuuri
 #include "sync0arr.ic"
 #endif
 
-#include "sync0mutex.h"
 #include "sync0sync.h"
 #include "lock0lock.h"
 #include "sync0rw.h"
+#include "sync0debug.h"
 #include "os0event.h"
 #include "os0file.h"
 #include "srv0srv.h"
@@ -119,6 +119,19 @@ the event must be made while owning the mutex. */
 
 /** Synchronization array */
 struct sync_array_t {
+
+	/** Constructor
+	Creates a synchronization wait array. It is protected by a mutex
+	which is automatically reserved when the functions operating on it
+	are called.
+	@param[in]	num_cells	Number of cells to create */
+	sync_array_t(ulint num_cells)
+		UNIV_NOTHROW;
+
+	/** Destructor */
+	~sync_array_t()
+		UNIV_NOTHROW;
+
 	ulint		n_reserved;	/*!< number of currently reserved
 					cells in the wait array */
 	ulint		n_cells;	/*!< number of cells in the
@@ -152,7 +165,7 @@ static ulint			sg_count;
 #define sync_array_exit(a)	mutex_exit(&(a)->mutex)
 #define sync_array_enter(a)	mutex_enter(&(a)->mutex)
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 /******************************************************************//**
 This function is called only in the debug version. Detects a deadlock
 of one or more threads because of waits of semaphores.
@@ -166,7 +179,54 @@ sync_array_detect_deadlock(
 	sync_cell_t*	start,	/*!< in: cell where recursive search started */
 	sync_cell_t*	cell,	/*!< in: cell to search */
 	ulint		depth);	/*!< in: recursion depth */
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
+
+/** Constructor
+Creates a synchronization wait array. It is protected by a mutex
+which is automatically reserved when the functions operating on it
+are called.
+@param[in]	num_cells		Number of cells to create */
+sync_array_t::sync_array_t(ulint num_cells)
+	UNIV_NOTHROW
+	:
+	n_reserved(),
+	n_cells(),
+	array(),
+	mutex(),
+	res_count(),
+	next_free_slot(),
+	first_free_slot()
+{
+	ut_a(num_cells > 0);
+
+	array = UT_NEW_ARRAY_NOKEY(sync_cell_t, num_cells);
+
+	ulint	sz = sizeof(sync_cell_t) * num_cells;
+
+	memset(array, 0x0, sz);
+
+	n_cells = num_cells;
+
+	first_free_slot = ULINT_UNDEFINED;
+
+	/* Then create the mutex to protect the wait array */
+	mutex_create(LATCH_ID_SYNC_ARRAY_MUTEX, &mutex);
+}
+
+/** Destructor */
+sync_array_t::~sync_array_t()
+	UNIV_NOTHROW
+{
+	ut_a(n_reserved == 0);
+
+	sync_array_validate(this);
+
+	/* Release the mutex protecting the wait array */
+
+	mutex_free(&mutex);
+
+	UT_DELETE_ARRAY(array);
+}
 
 /*****************************************************************//**
 Gets the nth cell in array.
@@ -183,41 +243,6 @@ sync_array_get_nth_cell(
 	return(arr->array + n);
 }
 
-/*******************************************************************//**
-Creates a synchronization wait array. It is protected by a mutex
-which is automatically reserved when the functions operating on it
-are called.
-@return own: created wait array */
-static
-sync_array_t*
-sync_array_create(
-/*==============*/
-	ulint	n_cells)	/*!< in: number of cells in the array
-				to create */
-{
-	ut_a(n_cells > 0);
-
-	/* Allocate memory for the data structures */
-	sync_array_t*	arr = UT_NEW_NOKEY(sync_array_t());
-
-	memset(arr, 0x0, sizeof(*arr));
-
-	arr->array = UT_NEW_ARRAY_NOKEY(sync_cell_t, n_cells);
-
-	ulint	sz = sizeof(sync_cell_t) * n_cells;
-
-	memset(arr->array, 0x0, sz);
-
-	arr->n_cells = n_cells;
-
-	arr->first_free_slot = ULINT_UNDEFINED;
-
-	/* Then create the mutex to protect the wait array complex */
-	mutex_create("sync_array_mutex", &arr->mutex);
-
-	return(arr);
-}
-
 /******************************************************************//**
 Frees the resources in a wait array. */
 static
@@ -226,22 +251,12 @@ sync_array_free(
 /*============*/
 	sync_array_t*	arr)	/*!< in, own: sync wait array */
 {
-	ut_a(arr->n_reserved == 0);
-
-	sync_array_validate(arr);
-
-	/* Release the mutex protecting the wait array complex */
-
-	mutex_free(&arr->mutex);
-
-	UT_DELETE_ARRAY(arr->array);
 	UT_DELETE(arr);
 }
 
 /********************************************************************//**
 Validates the integrity of the wait array. Checks
 that the number of reserved cells equals the count variable. */
-
 void
 sync_array_validate(
 /*================*/
@@ -278,11 +293,7 @@ sync_cell_get_event(
 	ulint	type = cell->request_type;
 
 	if (type == SYNC_MUTEX) {
-#ifdef HAVE_ATOMIC_BUILTINS
 		return(cell->latch.mutex->event());
-#else
-		ut_error;
-#endif /* HAVE_ATOMIC_BUILTINS */
 	} else if (type == RW_LOCK_X_WAIT) {
 		return(cell->latch.lock->wait_ex_event);
 	} else { /* RW_LOCK_S and RW_LOCK_X wait on the same event */
@@ -294,7 +305,6 @@ sync_cell_get_event(
 Reserves a wait array cell for waiting for an object.
 The event of the cell is reset to nonsignalled state.
 @return sync cell to wait on */
-
 sync_cell_t*
 sync_array_reserve_cell(
 /*====================*/
@@ -338,11 +348,7 @@ sync_array_reserve_cell(
 	cell->request_type = type;
 
 	if (cell->request_type == SYNC_MUTEX) {
-#ifdef HAVE_ATOMIC_BUILTINS
 		cell->latch.mutex = reinterpret_cast<WaitMutex*>(object);
-#else
-		ut_error;
-#endif /* HAVE_ATOMIC_BUILTINS */
 	} else {
 		cell->latch.lock = reinterpret_cast<rw_lock_t*>(object);
 	}
@@ -369,7 +375,6 @@ sync_array_reserve_cell(
 /******************************************************************//**
 Frees the cell. NOTE! sync_array_wait_event frees the cell
 automatically! */
-
 void
 sync_array_free_cell(
 /*=================*/
@@ -415,7 +420,6 @@ This function should be called when a thread starts to wait on
 a wait array cell. In the debug version this function checks
 if the wait for a semaphore will result in a deadlock, in which
 case prints info and asserts. */
-
 void
 sync_array_wait_event(
 /*==================*/
@@ -430,7 +434,7 @@ sync_array_wait_event(
 
 	cell->waiting = true;
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 
 	/* We use simple enter to the mutex below, because if
 	we cannot acquire it at once, mutex_enter would call
@@ -441,13 +445,12 @@ sync_array_wait_event(
 
 	if (sync_array_detect_deadlock(arr, cell, cell, 0)) {
 
-		ib_logf(IB_LOG_LEVEL_FATAL,
-                        "########################################\n"
-                        "Deadlock Detected!");
+		ib::fatal() << "########################################"
+                        " Deadlock Detected!";
 	}
 
 	rw_lock_debug_mutex_exit();
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 	sync_array_exit(arr);
 
 	os_event_wait_low(sync_cell_get_event(cell), cell->signal_count);
@@ -480,11 +483,10 @@ sync_array_cell_print(
 		difftime(time(NULL), cell->reservation_time));
 
 	if (type == SYNC_MUTEX) {
-#ifdef HAVE_ATOMIC_BUILTINS
 		WaitMutex*	mutex = cell->latch.mutex;
 		const WaitMutex::MutexPolicy&	policy = mutex->policy();
 #ifdef UNIV_DEBUG
-		const char*	name = policy.m_file_name;
+		const char*	name = policy.get_enter_filename();
 		if (name == NULL) {
 			/* The mutex might have been released. */
 			name = "NULL";
@@ -498,17 +500,14 @@ sync_array_cell_print(
 #endif /* UNIV_DEBUG */
 			"\n",
 			(void*) mutex,
-			innobase_basename(policy.m_cfile_name),
-			(ulong) policy.m_cline,
+			innobase_basename(policy.get_create_filename()),
+			(ulong) policy.get_create_line(),
 			(ulong) mutex->state()
 #ifdef UNIV_DEBUG
 			,name,
-			(ulong) policy.m_line
+			(ulong) policy.get_enter_line()
 #endif /* UNIV_DEBUG */
 		       );
-#else
-		ut_error;
-#endif /* HAVE_ATOMIC_BUILTINS */
 	} else if (type == RW_LOCK_X
 		   || type == RW_LOCK_X_WAIT
 		   || type == RW_LOCK_SX
@@ -560,7 +559,7 @@ sync_array_cell_print(
 	}
 }
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 /******************************************************************//**
 Looks for a cell with the given thread id.
 @return pointer to cell or NULL if not found */
@@ -634,7 +633,6 @@ Report an error to stderr.
 @param lock		rw-lock instance
 @param debug		rw-lock debug information
 @param cell		thread context */
-
 void
 sync_array_report_error(
 	rw_lock_t*		lock,
@@ -682,12 +680,11 @@ sync_array_detect_deadlock(
 	switch (cell->request_type) {
 	case SYNC_MUTEX: {
 
-#ifdef HAVE_ATOMIC_BUILTINS
 		WaitMutex*	mutex = cell->latch.mutex;
 		const WaitMutex::MutexPolicy&	policy = mutex->policy();
 
 		if (mutex->state() != MUTEX_STATE_UNLOCKED) {
-			thread = policy.m_thread_id;
+			thread = policy.get_thread_id();
 
 			/* Note that mutex->thread_id above may be
 			also OS_THREAD_ID_UNDEFINED, because the
@@ -700,19 +697,21 @@ sync_array_detect_deadlock(
 				arr, start, thread, 0, depth);
 
 			if (ret) {
-				const char*	name = policy.m_file_name;
+				const char*	name;
+
+				name = policy.get_enter_filename();
+
 				if (name == NULL) {
 					/* The mutex might have been
 					released. */
 					name = "NULL";
 				}
-				ib_logf(IB_LOG_LEVEL_INFO,
-					"Mutex %p owned by thread"
-					" %lu file %s line %lu",
-					mutex,
-					(ulong) os_thread_pf(thread),
-					name,
-					(ulong) policy.m_line);
+
+				ib::info()
+					<< "Mutex " << mutex << " owned by"
+					" thread " << os_thread_pf(thread)
+					<< " file " << name << " line "
+					<< policy.get_enter_line();
 
 				sync_array_cell_print(stderr, cell);
 
@@ -720,12 +719,8 @@ sync_array_detect_deadlock(
 			}
 		}
 
- 		/* No deadlock */
+		/* No deadlock */
 		return(false);
-#else
-		ut_error;
-		break;
-#endif /* HAVE_ATOMIC_BUILTINS */
 		}
 
 	case RW_LOCK_X:
@@ -846,7 +841,7 @@ sync_array_detect_deadlock(
 
 	return(true);
 }
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 /******************************************************************//**
 Determines if we can wake up the thread waiting for a sempahore. */
@@ -859,11 +854,8 @@ sync_arr_cell_can_wake_up(
 	rw_lock_t*	lock;
 
 	switch (cell->request_type) {
-	case SYNC_MUTEX: {
-
-#ifdef HAVE_ATOMIC_BUILTINS
 		WaitMutex*	mutex;
-
+	case SYNC_MUTEX:
 		mutex = cell->latch.mutex;
 
 		os_rmb;
@@ -871,10 +863,7 @@ sync_arr_cell_can_wake_up(
 
 			return(true);
 		}
-#else
-		ut_error;
-#endif /* HAVE_ATOMIC_BUILTINS */
-	}
+
 		break;
 
 	case RW_LOCK_X:
@@ -919,7 +908,6 @@ sync_arr_cell_can_wake_up(
 
 /**********************************************************************//**
 Increments the signalled count. */
-
 void
 sync_array_object_signalled()
 /*=========================*/
@@ -968,7 +956,6 @@ function should be called about every 1 second in the server.
 Note that there's a race condition between this thread and mutex_exit
 changing the lock_word and calling signal_object, so sometimes this finds
 threads to wake up even when nothing has gone wrong. */
-
 void
 sync_arr_wake_threads_if_sema_free(void)
 /*====================================*/
@@ -1030,8 +1017,7 @@ sync_array_print_long_waits_low(
 		double	diff = difftime(time(NULL), cell->reservation_time);
 
 		if (diff > SYNC_ARRAY_TIMEOUT) {
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"A long semaphore wait:");
+			ib::warn() << "A long semaphore wait:";
 			sync_array_cell_print(stderr, cell);
 			*noticed = TRUE;
 		}
@@ -1055,7 +1041,6 @@ sync_array_print_long_waits_low(
 /**********************************************************************//**
 Prints warnings of long semaphore waits to stderr.
 @return TRUE if fatal semaphore wait threshold was exceeded */
-
 ibool
 sync_array_print_long_waits(
 /*========================*/
@@ -1098,8 +1083,8 @@ sync_array_print_long_waits(
 
 		fprintf(stderr,
 			"InnoDB: Pending preads %lu, pwrites %lu\n",
-			(ulong) os_file_n_pending_preads,
-			(ulong) os_file_n_pending_pwrites);
+			(ulong) os_n_pending_reads,
+			(ulong) os_n_pending_writes);
 
 		srv_print_innodb_monitor = TRUE;
 
@@ -1129,8 +1114,8 @@ sync_array_print_info_low(
 	ulint		count = 0;
 
 	fprintf(file,
-		"OS WAIT ARRAY INFO: reservation count %ld\n",
-		(long) arr->res_count);
+		"OS WAIT ARRAY INFO: reservation count " ULINTPF "\n",
+		arr->res_count);
 
 	for (i = 0; count < arr->n_reserved; ++i) {
 		sync_cell_t*	cell;
@@ -1162,7 +1147,6 @@ sync_array_print_info(
 
 /**********************************************************************//**
 Create the primary system wait array(s), they are protected by an OS mutex */
-
 void
 sync_array_init(
 /*============*/
@@ -1181,13 +1165,12 @@ sync_array_init(
 
 	for (ulint i = 0; i < sync_array_size; ++i) {
 
-		sync_wait_array[i] = sync_array_create(n_slots);
+		sync_wait_array[i] = UT_NEW_NOKEY(sync_array_t(n_slots));
 	}
 }
 
 /**********************************************************************//**
 Close sync array wait sub-system. */
-
 void
 sync_array_close(void)
 /*==================*/
@@ -1202,7 +1185,6 @@ sync_array_close(void)
 
 /**********************************************************************//**
 Print info about the sync array(s). */
-
 void
 sync_array_print(
 /*=============*/
@@ -1213,6 +1195,6 @@ sync_array_print(
 	}
 
 	fprintf(file,
-		"OS WAIT ARRAY INFO: signal count %ld\n", (long) sg_count);
+		"OS WAIT ARRAY INFO: signal count " ULINTPF "\n", sg_count);
 
 }

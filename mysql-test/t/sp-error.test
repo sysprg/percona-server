@@ -1763,8 +1763,8 @@ CREATE PROCEDURE bug20953() CREATE VIEW v AS SELECT 1 INTO OUTFILE "file";
 --error ER_VIEW_SELECT_CLAUSE
 CREATE PROCEDURE bug20953()
   CREATE VIEW v AS SELECT i FROM t1 PROCEDURE ANALYSE();
---error ER_VIEW_SELECT_DERIVED
 CREATE PROCEDURE bug20953() CREATE VIEW v AS SELECT 1 FROM (SELECT 1) AS d1;
+DROP PROCEDURE bug20953;
 --error ER_VIEW_SELECT_VARIABLE
 CREATE PROCEDURE bug20953(i INT) CREATE VIEW v AS SELECT i;
 delimiter |;
@@ -2159,13 +2159,13 @@ delimiter |;
 --error ER_SP_CANT_SET_AUTOCOMMIT
 create function f1() returns int
 begin
- set password = password('foo');
+ set password = 'foo';
   return 1;
 end|
 
 --error ER_SP_CANT_SET_AUTOCOMMIT
 create trigger t1
-  before insert on t2 for each row set password = password('foo');|
+  before insert on t2 for each row set password = 'foo';|
 
 delimiter ;|
 

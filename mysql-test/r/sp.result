@@ -791,7 +791,7 @@ comment 'Characteristics procedure test'
   insert into t1 values ("chistics", 1)|
 show create procedure chistics|
 Procedure	sql_mode	Create Procedure	character_set_client	collation_connection	Database Collation
-chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` PROCEDURE `chistics`()
+chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` PROCEDURE `chistics`()
     MODIFIES SQL DATA
     COMMENT 'Characteristics procedure test'
 insert into t1 values ("chistics", 1)	latin1	latin1_swedish_ci	latin1_swedish_ci
@@ -803,7 +803,7 @@ delete from t1|
 alter procedure chistics sql security invoker|
 show create procedure chistics|
 Procedure	sql_mode	Create Procedure	character_set_client	collation_connection	Database Collation
-chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` PROCEDURE `chistics`()
+chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` PROCEDURE `chistics`()
     MODIFIES SQL DATA
     SQL SECURITY INVOKER
     COMMENT 'Characteristics procedure test'
@@ -818,7 +818,7 @@ comment 'Characteristics procedure test'
   return 42|
 show create function chistics|
 Function	sql_mode	Create Function	character_set_client	collation_connection	Database Collation
-chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` FUNCTION `chistics`() RETURNS int(11)
+chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` FUNCTION `chistics`() RETURNS int(11)
     DETERMINISTIC
     SQL SECURITY INVOKER
     COMMENT 'Characteristics procedure test'
@@ -831,7 +831,7 @@ no sql
 comment 'Characteristics function test'|
 show create function chistics|
 Function	sql_mode	Create Function	character_set_client	collation_connection	Database Collation
-chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` FUNCTION `chistics`() RETURNS int(11)
+chistics	ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION	CREATE DEFINER=`root`@`localhost` FUNCTION `chistics`() RETURNS int(11)
     NO SQL
     DETERMINISTIC
     SQL SECURITY INVOKER
@@ -840,6 +840,8 @@ return 42	latin1	latin1_swedish_ci	latin1_swedish_ci
 drop function chistics|
 insert into t1 values ("foo", 1), ("bar", 2), ("zip", 3)|
 set @@sql_mode = 'ANSI'|
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 drop procedure if exists modes$
 create procedure modes(out c1 int, out c2 int)
 begin
@@ -1219,12 +1221,12 @@ n	f
 19	121645100408832000
 20	2432902008176640000
 drop table t3|
-show function status like '%f%'|
+show function status like '%fac'|
 Db	Name	Type	Definer	Modified	Created	Security_type	Comment	character_set_client	collation_connection	Database Collation
 test	fac	FUNCTION	root@localhost	0000-00-00 00:00:00	0000-00-00 00:00:00	DEFINER		latin1	latin1_swedish_ci	latin1_swedish_ci
 drop procedure ifac|
 drop function fac|
-show function status like '%f%'|
+show function status like '%fac'|
 Db	Name	Type	Definer	Modified	Created	Security_type	Comment	character_set_client	collation_connection	Database Collation
 drop table if exists t3|
 create table t3 (
@@ -2912,20 +2914,24 @@ call avg ()|
 drop procedure avg|
 drop procedure if exists bug6129|
 set @old_mode= @@sql_mode;
-set @@sql_mode= "STRICT_ALL_TABLES";
+set @@sql_mode= "ERROR_FOR_DIVISION_BY_ZERO";
 create procedure bug6129()
 select @@sql_mode|
 call bug6129()|
 @@sql_mode
-STRICT_ALL_TABLES
-set @@sql_mode= "STRICT_ALL_TABLES"|
+ERROR_FOR_DIVISION_BY_ZERO
+set @@sql_mode= "STRICT_ALL_TABLES,NO_ZERO_DATE"|
+Warnings:
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
 call bug6129()|
 @@sql_mode
-STRICT_ALL_TABLES
-set @@sql_mode= "STRICT_ALL_TABLES"|
+ERROR_FOR_DIVISION_BY_ZERO
+set @@sql_mode= "NO_ZERO_IN_DATE"|
+Warnings:
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
 call bug6129()|
 @@sql_mode
-STRICT_ALL_TABLES
+ERROR_FOR_DIVISION_BY_ZERO
 set @@sql_mode=@old_mode;
 drop procedure bug6129|
 drop procedure if exists bug9856|
@@ -3669,6 +3675,8 @@ drop procedure if exists bug6127|
 create table t3 (s1 int unique)|
 set @sm=@@sql_mode|
 set sql_mode='traditional'|
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create procedure bug6127()
 begin
 declare continue handler for sqlstate '23000'
@@ -3692,6 +3700,8 @@ s1
 0
 1
 set sql_mode=@sm|
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 drop table t3|
 drop procedure bug6127|
 drop procedure if exists bug12589_1|
@@ -5264,11 +5274,11 @@ use test|
 drop table t3|
 DROP PROCEDURE IF EXISTS bug16899_p1|
 DROP FUNCTION IF EXISTS bug16899_f1|
-CREATE DEFINER=1234567890abcdefGHIKL@localhost PROCEDURE bug16899_p1()
+CREATE DEFINER=1234567890abcdefGHIKLsdafdsjakfhkshfkshsndvkjsddngjhasdkjghskahfdksjhcnsndkhjkghskjfjsdhfkhskfdhksjdhfkjshfksh@localhost PROCEDURE bug16899_p1()
 BEGIN
 SET @a = 1;
 END|
-ERROR HY000: String '1234567890abcdefGHIKL' is too long for user name (should be no longer than 16)
+ERROR HY000: String '1234567890abcdefGHIKLsdafdsjakfhkshfkshsndvkjsddngjhasdkjghskahfdksjhc' is too long for user name (should be no longer than 32)
 CREATE DEFINER=some_user_name@1234567890abcdefghij1234567890abcdefghij1234567890abcdefghijQWERTY
 FUNCTION bug16899_f1() RETURNS INT
 BEGIN
@@ -5407,8 +5417,7 @@ select func_20028_b()|
 func_20028_b()
 0
 select func_20028_c()|
-func_20028_c()
-NULL
+ERROR 22012: Division by 0
 call proc_20028_a()|
 Warnings:
 Warning	1329	No data - zero rows fetched, selected, or processed
@@ -5416,9 +5425,10 @@ call proc_20028_b()|
 Warnings:
 Warning	1329	No data - zero rows fetched, selected, or processed
 call proc_20028_c()|
-Warnings:
-Warning	1365	Division by 0
+ERROR 22012: Division by 0
 SET sql_mode='TRADITIONAL'|
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 drop function func_20028_a|
 drop function func_20028_b|
 drop function func_20028_c|
@@ -5474,6 +5484,8 @@ Warnings:
 Warning	1329	No data - zero rows fetched, selected, or processed
 call proc_20028_c()|
 SET @@sql_mode=@save_sql_mode|
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 drop function func_20028_a|
 drop function func_20028_b|
 drop function func_20028_c|
@@ -6888,13 +6900,13 @@ drop procedure if exists p;
 set @old_mode= @@sql_mode;
 set @@sql_mode= cast(pow(2,32)-1 as unsigned integer);
 Warnings:
-Warning	1912	'ERROR_FOR_DIVISION_BY_ZERO' mode no longer has any effect. Use STRICT_ALL_TABLES or STRICT_TRANS_TABLES instead.
-Warning	1912	'NO_ZERO_DATE' mode no longer has any effect. Use STRICT_ALL_TABLES or STRICT_TRANS_TABLES instead.
-Warning	1912	'NO_ZERO_IN_DATE' mode no longer has any effect. Use STRICT_ALL_TABLES or STRICT_TRANS_TABLES instead.
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 select @@sql_mode into @full_mode;
 create procedure p() begin end;
 call p();
 set @@sql_mode= @old_mode;
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 select replace(@full_mode, ',,,', ',NOT_USED,') into @full_mode;
 select replace(@full_mode, 'ALLOW_INVALID_DATES', 'INVALID_DATES') into @full_mode;
 select name from mysql.proc where name = 'p' and sql_mode = @full_mode;
@@ -7803,6 +7815,8 @@ DROP TABLE t1;
 #
 SET @org_mode= @@sql_mode;
 SET sql_mode= 'STRICT_TRANS_TABLES';
+Warnings:
+Warning	3135	'NO_ZERO_DATE', 'NO_ZERO_IN_DATE' and 'ERROR_FOR_DIVISION_BY_ZERO' sql modes should be used with strict mode. They will be merged with strict mode in a future release.
 CREATE TABLE t1(a INT) ENGINE= InnoDB;
 INSERT INTO t1 VALUES (123456);
 CREATE PROCEDURE p1() 
@@ -7823,3 +7837,24 @@ ERROR 22003: Out of range value for column 'v' at row 1
 SET sql_mode= @org_mode;
 DROP PROCEDURE p1;
 DROP TABLE t1;
+#
+# Bug#20583321: CRASH ON PS_THREAD_INFO / SYS USAGE
+#
+SET sql_mode = 'only_full_group_by';
+CREATE TABLE t1 ( a INT, b INT );
+CREATE TABLE t2 ( a INT );
+CREATE PROCEDURE p1 ()
+BEGIN
+DECLARE output INT;
+SET output = ( SELECT b FROM t1 LEFT JOIN t2 USING ( a ) GROUP BY t1.a );
+END $$
+CALL p1();
+ERROR 42000: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 'test.t1.b' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+CALL p1();
+ERROR 42000: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 'test.t1.b' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+DROP PROCEDURE p1;
+PREPARE s FROM
+'SET @x = ( SELECT b FROM t1 LEFT JOIN t2 USING ( a ) GROUP BY t1.a )';
+ERROR 42000: Expression #1 of SELECT list is not in GROUP BY clause and contains nonaggregated column 'test.t1.b' which is not functionally dependent on columns in GROUP BY clause; this is incompatible with sql_mode=only_full_group_by
+DROP TABLE t1, t2;
+SET sql_mode = DEFAULT;

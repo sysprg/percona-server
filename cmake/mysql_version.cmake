@@ -1,4 +1,4 @@
-# Copyright (c) 2009, 2014, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,8 +17,8 @@
 # Global constants, only to be changed between major releases.
 #
 
-SET(SHARED_LIB_MAJOR_VERSION "18")
-SET(SHARED_LIB_MINOR_VERSION "3")
+SET(SHARED_LIB_MAJOR_VERSION "20")
+SET(SHARED_LIB_MINOR_VERSION "0")
 SET(PROTOCOL_VERSION "10")
 SET(DOT_FRM_VERSION "6")
 
@@ -79,6 +79,8 @@ ENDMACRO()
 # Get mysql version and other interesting variables
 GET_MYSQL_VERSION()
 
+SET(SHARED_LIB_PATCH_VERSION ${PATCH_VERSION})
+
 SET(MYSQL_TCP_PORT_DEFAULT "3306")
 
 IF(NOT MYSQL_TCP_PORT)
@@ -96,6 +98,20 @@ IF(NOT COMPILATION_COMMENT)
   SET(COMPILATION_COMMENT "Source distribution")
 ENDIF()
 
+# Get the sys schema version from the mysql_sys_schema.sql file
+# however if compiling without performance schema, always use version 1.0.0
+MACRO(GET_SYS_SCHEMA_VERSION)
+  IF(NOT WITH_PERFSCHEMA_STORAGE_ENGINE)
+    SET(SYS_SCHEMA_VERSION "1.0.0")
+  ELSE()
+    FILE (STRINGS ${CMAKE_SOURCE_DIR}/scripts/mysql_sys_schema.sql str REGEX "SELECT \\'([0-9]+\\.[0-9]+\\.[0-9]+)\\' AS")
+    IF(str)
+      STRING(REGEX MATCH "([0-9]+\\.[0-9]+\\.[0-9]+)" SYS_SCHEMA_VERSION "${str}")
+    ENDIF()
+  ENDIF()
+ENDMACRO()
+
+GET_SYS_SCHEMA_VERSION()
 
 INCLUDE(package_name)
 IF(NOT CPACK_PACKAGE_FILE_NAME)

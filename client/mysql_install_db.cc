@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2012, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -23,6 +23,10 @@
 #include <unistd.h>
 #include <pwd.h>
 #include <signal.h>
+#include <spawn.h>
+#include <pthread.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 // MySQL headers
 #include "my_global.h"
@@ -32,7 +36,9 @@
 #include "mysql_version.h"
 #include "auth_utils.h"
 #include "path.h"
+#include "logger.h"
 #include "infix_ostream_it.h"
+#include "my_dir.h"
 
 // Additional C++ headers
 #include <string>
@@ -44,17 +50,22 @@
 #include <vector>
 #include <sstream>
 #include <map>
+#include <iomanip>
 
 using namespace std;
 
 #include "../scripts/sql_commands_system_tables.h"
 #include "../scripts/sql_commands_system_data.h"
 #include "../scripts/sql_commands_help_data.h"
+#include "../scripts/sql_commands_sys_schema.h"
 
 #define PROGRAM_NAME "mysql_install_db"
 #define MYSQLD_EXECUTABLE "mysqld"
+#if defined(HAVE_YASSL)
+#define MYSQL_CERT_SETUP_EXECUTABLE "mysql_ssl_rsa_setup"
+#endif /* HAVE_YASSL */
 #define MAX_MYSQLD_ARGUMENTS 10
-#define MAX_USER_NAME_LEN 16
+#define MAX_USER_NAME_LEN 32
 
 char *opt_euid= 0;
 char *opt_basedir= 0;
@@ -70,6 +81,10 @@ char *opt_adminhost= 0;
 char default_authplugin[]= "mysql_native_password";
 char *opt_authplugin= 0;
 char *opt_mysqldfile= 0;
+#if defined (HAVE_YASSL)
+char *opt_mysql_cert_setup_file= 0;
+char default_mysql_cert_setup_file[]= MYSQL_CERT_SETUP_EXECUTABLE;
+#endif
 char *opt_randpwdfile= 0;
 char default_randpwfile[]= ".mysql_secret";
 char *opt_langpath= 0;
@@ -79,10 +94,11 @@ char *opt_defaults_file= 0;
 char *opt_def_extra_file= 0;
 char *opt_builddir= 0;
 char *opt_srcdir= 0;
-my_bool opt_defaults= TRUE;
+my_bool opt_no_defaults= FALSE;
 my_bool opt_insecure= FALSE;
 my_bool opt_verbose= FALSE;
 my_bool opt_ssl= FALSE;
+my_bool opt_skipsys= FALSE;
 
 /**
   Connection options.
@@ -132,6 +148,10 @@ static struct my_option my_connection_options[]=
    &opt_ssl, 0, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   {"mysqld-file", 0, "Qualified path to the mysqld binary.", &opt_mysqldfile,
    0, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+#if defined(HAVE_YASSL)
+  {"ssl-setup-file", 0, "Qualified path to the mysql_ssl_setup binary", &opt_mysql_cert_setup_file,
+   0, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+#endif
   {"random-password-file", 0, "Specifies the qualified path to the "
      ".mysql_secret temporary password file.", &opt_randpwdfile,
    0, 0, GET_STR_ALLOC, REQUIRED_ARG, 0,
@@ -147,98 +167,10 @@ static struct my_option my_connection_options[]=
    &opt_langpath, 0, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
   {"lc-messages", 0, "Specifies the language to use.", &opt_lang,
    0, 0, GET_STR_ALLOC, REQUIRED_ARG, (longlong)&default_lang, 0, 0, 0, 0, 0},
-  {"defaults", 0, "Read any option files from default location. If program startup fails "
-    "due to reading unknown options from an option file, --no-defaults can be "
-    "used to prevent them from being read.",
-    &opt_defaults, 0, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
-  {"defaults-file", 0, "Use only the given option file.",
-    &opt_defaults_file, 0, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
-  {"defaults-extra-file", 0, "Read this file after the global files are read.",
-    &opt_def_extra_file, 0, 0, GET_STR_ALLOC, REQUIRED_ARG, 0, 0, 0, 0, 0, 0},
+  {"skip-sys-schema", 0, "Skip installation of the sys schema.",
+   &opt_skipsys, 0, 0, GET_BOOL, NO_ARG, 0, 0, 0, 0, 0, 0},
   /* End token */
   {0, 0, 0, 0, 0, 0, GET_NO_ARG, NO_ARG, 0, 0, 0, 0, 0, 0}
-};
-
-
-/**
-  A trivial placeholder for inserting Time signatures into streams.
- @example cout << Datetime() << "[Info] Today was a sunny day" << endl;
-*/
-struct Datetime {};
-
-ostream &operator<<(ostream &os, const Datetime &dt)
-{
-  const char format[]= "%F %X";
-  time_t t(time(NULL));
-  tm tm(*localtime(&t));
-  std::locale loc(cout.getloc());
-  ostringstream sout;
-  const std::time_put<char> &tput =
-          std::use_facet<std::time_put<char> >(loc);
-  tput.put(sout.rdbuf(), sout, '\0', &tm, &format[0], &format[5]);
-  os << sout.str() << " ";
-  return os;
-}
-
-class Gen_spaces
-{
-public:
-  Gen_spaces(int s)
-  {
-    m_spaces.assign(s,' ');
-  }
-  ostream &operator<<(ostream &os)
-  {
-    return os;
-  }
-  friend ostream &operator<<(ostream &os, const Gen_spaces &gen);
-private:
-  string m_spaces;
-};
-
-ostream &operator<<(ostream &os, const Gen_spaces &gen)
-{
-  return os << gen.m_spaces;
-}
-
-class Log : public ostream
-{
-public:
-  Log(ostream &str, string logclass) :
-   ostream(NULL), m_buffer(str, logclass)
-  {
-    this->init(&m_buffer);
-  }
-  void enabled(bool s) { m_buffer.enabled(s); }
-private:
-
-  class Log_buff : public stringbuf
-  {
-  public:
-    Log_buff(ostream &str, string &logc)
-      :m_os(str),m_logc(logc), m_enabled(true)
-    {}
-    void set_log_class(string &s) { m_logc= s; }
-    void enabled(bool s) { m_enabled= s; }
-    virtual int sync()
-    {
-      string sout(str());
-      if (m_enabled && sout.length() > 0)
-      {
-        m_os << Datetime() << "[" << m_logc << "]"
-          << Gen_spaces(8-m_logc.length()) << sout;
-      }
-      str("");
-      m_os.flush();
-      return 0;
-    }
-  private:
-    ostream &m_os;
-    string m_logc;
-    bool m_enabled;
-  };
-
-  Log_buff m_buffer;
 };
 
 Log info(cout,"NOTE");
@@ -347,18 +279,10 @@ struct Sql_user
 
   void to_sql(string *cmdstr)
   {
-    stringstream set_oldpasscmd,ss;
+    stringstream set_passcmd,ss, flush_priv;
     ss << "INSERT INTO mysql.user VALUES ("
        << "'" << escape_string(host) << "','" << escape_string(user) << "',";
 
-    if (plugin == "mysql_native_password")
-    {
-      ss << "PASSWORD('" << escape_string(password) << "'),";
-    }
-    else if (plugin == "sha256_password")
-    {
-      ss << "'',";
-    }
     uint64_t acl= priv.to_int();
     for(int i= 0; i< NUM_ACLS; ++i)
     {
@@ -376,22 +300,22 @@ struct Sql_user
        << max_connections << ","
        << max_user_connections << ","
        << "'" << plugin << "',";
-    if (plugin == "sha256_password")
-    {
-      set_oldpasscmd << "SET @@old_passwords= 2;\n";
-      ss << "PASSWORD('" << escape_string(password) << "'),";
-    }
-    else
-    {
-      ss << "'" << escape_string(authentication_string) << "',";
-    }
+    ss << "'',";
     if (password_expired)
       ss << "'Y',";
     else
       ss << "'N',";
-    ss << "now(), NULL);\n";
+    ss << "now(), NULL, 'N');\n";
 
-    cmdstr->append(set_oldpasscmd.str()).append(ss.str());
+    flush_priv << "FLUSH PRIVILEGES;\n";
+
+    if (password_expired)
+    {
+      set_passcmd << "ALTER USER '" << escape_string(user) << "'@'"
+                  << escape_string(host) << "' IDENTIFIED BY '"
+                  << escape_string(password) << "' PASSWORD EXPIRE;\n";
+    }
+    cmdstr->append(ss.str()).append(flush_priv.str()).append(set_passcmd.str());
   }
 
 };
@@ -409,12 +333,25 @@ void print_version(const string &p)
 void usage(const string &p)
 {
   print_version(p);
-  cout << ORACLE_WELCOME_COPYRIGHT_NOTICE("2014") << endl
+  cout << ORACLE_WELCOME_COPYRIGHT_NOTICE("2015") << endl
        << "MySQL Database Deployment Utility." << endl
        << "Usage: "
        << p
-       << "[OPTIONS]\n";
+       << " [OPTIONS]" << endl;
   my_print_help(my_connection_options);
+  cout << endl
+   << "The following options may be given as the first argument:"
+   << endl
+   << "--print-defaults        Print the program argument list and exit."
+   << endl
+   << "--no-defaults           Don't read default options from any option file,"
+   << endl
+   << "                        except for login file."
+   << endl
+   << "--defaults-file=#       Only read default options from the given file #."
+   << endl
+   << "--defaults-extra-file=# Read this file after the global files are read."
+   << endl;
   my_print_variables(my_connection_options);
 }
 
@@ -624,7 +561,7 @@ void add_standard_search_paths(vector<Path > *spaths)
 }
 
 /**
-  Attempts to locate the mysqld file.
+ Attempts to locate the mysqld file.
  If opt_mysqldfile is specified then the this assumed to be a correct qualified
  path to the mysqld executable.
  If opt_basedir is specified then opt_basedir+"/bin" is assumed to be a
@@ -687,11 +624,76 @@ bool assert_mysqld_exists(const string &opt_mysqldfile,
   return true;
 }
 
+#if defined(HAVE_YASSL)
+/**
+ Attempts to locate the mysql_ssl_rsa_setup file.
+ If opt_mysql_cert_setup_file is specified then the this assumed to be a
+ correct qualified path to the mysql_ssl_rsa_setup executable.
+ If opt_basedir is specified then opt_basedir+"/bin" is assumed to be a
+ candidate path for the mysql_ssl_rsa_setup executable.
+ If opt_srcdir is set then opt_srcdir+"/bin" is assumed to be a
+ candidate path for the mysql_ssl_rsa_setup executable.
+ If opt_builddir is set then opt_builddir+"/client" is assumed to be a
+ candidate path for the mysql_system_tables executable.
+
+ If the executable isn't found in any of these locations,
+ attempt to search the local directory and "bin" subdirectory.
+ Finally check "/usr/bin","/usr/sbin", "/usr/local/bin","/usr/local/sbin",
+ "/opt/mysql/bin","/opt/mysql/sbin"
+
+*/
+bool assert_cert_generator_exists(const string &opt_mysql_cert_setup_file,
+                                  const string &opt_basedir,
+                                  const string &opt_builddir,
+                                  const string &opt_srcdir,
+                                  Path *qpath)
+{
+  vector<Path > spaths;
+  if (opt_mysql_cert_setup_file.length() > 0)
+  {
+    /* Use explicit option to file mysql_ssl_rsa_setup */
+    if (!locate_file(opt_mysql_cert_setup_file, 0, qpath))
+    {
+      error << "No such file: " << opt_mysql_cert_setup_file << endl;
+      return false;
+    }
+  }
+  else
+  {
+    if (opt_basedir.length() > 0)
+    {
+      spaths.push_back(Path(opt_basedir).
+        append("bin"));
+    }
+    if (opt_builddir.length() > 0)
+    {
+      spaths.push_back(Path(opt_builddir).
+        append("client"));
+    }
+
+    add_standard_search_paths(&spaths);
+
+    if (!locate_file(MYSQL_CERT_SETUP_EXECUTABLE, &spaths, qpath))
+    {
+      error << "Can't locate the server executable (mysql_ssl_rsa_setup)."
+            << endl;
+      info << "The following paths were searched: ";
+      copy(spaths.begin(), spaths.end(),
+           infix_ostream_iterator<Path >(info, ", "));
+      info << endl;
+      return false;
+    }
+  }
+  return true;
+}
+#endif /* HAVE_YASSL */
+
+
 bool assert_valid_language_directory(const string &opt_langpath,
-                                         const string &opt_basedir,
-                                         const string &opt_builddir,
-                                         const string &opt_srcdir,
-                                         Path *language_directory)
+                                     const string &opt_basedir,
+                                     const string &opt_builddir,
+                                     const string &opt_srcdir,
+                                     Path *language_directory)
 {
   vector<Path > search_paths;
   bool found_subdir= false;
@@ -747,15 +749,15 @@ bool assert_valid_language_directory(const string &opt_langpath,
 }
 
 /**
- Parse the login.cnf file and extract the missing admin credentials.
- If any of adminuser or adminhost contains information, it won't be overwritten
- by new data. Password is always updated.
+  Parse the login.cnf file and extract the missing admin credentials.
+  If any of adminuser or adminhost contains information, it won't be overwritten
+  by new data. Password is always updated.
 
- @return Error
-   @retval ALL_OK Reporting success
-   @retval ERR_FILE File not found
-   @retval ERR_ENCRYPTION Error while decrypting
-   @retval ERR_SYNTAX Error while parsing
+  @return Error
+    @retval ALL_OK Reporting success
+    @retval ERR_FILE File not found
+    @retval ERR_ENCRYPTION Error while decrypting
+    @retval ERR_SYNTAX Error while parsing
 */
 int get_admin_credentials(const string &opt_adminlogin,
                           const string &login_path,
@@ -801,23 +803,57 @@ void create_ssl_policy(string *ssl_type, string *ssl_cipher,
   *x509_subject= "";
 }
 
+#if defined(HAVE_YASSL)
+
+class SSL_generator_writer
+{
+public:
+  bool operator()(int fh __attribute__((unused)))
+  {
+    return true;
+  }
+};
+
+#endif /* HAVE_YASSL */
+
+#define  READ_BUFFER_SIZE 2048
+#define TIMEOUT_IN_SEC 30
+
 class Process_reader
 {
 public:
-  Process_reader(string *buffer) : m_buffer(buffer) {}
+  Process_reader(string *buffer) : m_buffer(buffer)
+  {}
   bool operator()(int fh)
   {
     errno= 0;
-    stringstream ss;
-    int ch= 0;
-    size_t n= 1;
-    while(errno == 0 && n != 0)
+    char ch[READ_BUFFER_SIZE];
+    ssize_t n= 1;
+    int select_ret= 0;
+    fd_set rd, ex;
+    struct timeval tm;
+    tm.tv_sec = TIMEOUT_IN_SEC;
+    tm.tv_usec = 0;
+
+    int flags = fcntl(fh, F_GETFL, 0);
+    fcntl(fh, F_SETFL, flags | O_NONBLOCK);
+    FD_ZERO(&rd);
+    FD_ZERO(&ex);
+    FD_SET(fh, &rd);
+    FD_SET(fh, &ex);
+    errno= 0;
+    /* Wait for something to read */
+    if ((select_ret= select(fh + 1, &rd, NULL, &ex, &tm)) == 0)
     {
-      n= read(fh,&ch,1);
-      if (n > 0)
-        ss << (char)ch;
+        /* if 30 s passed we attempt to read anyway */
+        warning << "select() timed out." << endl;
     }
-    m_buffer->append(ss.str());
+    /* Read any error reports from the child process */
+    while((n= read(fh, ch, READ_BUFFER_SIZE)) > 0 && ch[0] != 0 && errno == 0)
+    {
+      m_buffer->append(ch, n);
+    }
+
     return true;
   }
 
@@ -949,8 +985,14 @@ public:
 
     string create_db("CREATE DATABASE mysql;\n");
     string use_db("USE mysql;\n");
-    write(fh, create_db.c_str(), create_db.length());
-    write(fh, use_db.c_str(), use_db.length());
+    // ssize_t write() may be declared with attribute warn_unused_result
+    size_t w1= write(fh, create_db.c_str(), create_db.length());
+    size_t w2= write(fh, use_db.c_str(), use_db.length());
+    if (w1 != create_db.length() || w2 != use_db.length())
+    {
+      info << "failed." << endl;
+      return false;
+    }
 
     unsigned s= 0;
     s= sizeof(mysql_system_tables)/sizeof(*mysql_system_tables);
@@ -1005,8 +1047,8 @@ public:
          << endl;
     string create_user_cmd;
     m_user->to_sql(&create_user_cmd);
-    write(fh, create_user_cmd.c_str(), create_user_cmd.length());
-    if (errno != 0)
+    w1= write(fh, create_user_cmd.c_str(), create_user_cmd.length());
+    if (w1 !=create_user_cmd.length() || errno != 0)
       return false;
     info << "Creating default proxy " << m_user->user << "@"
          << m_user->host
@@ -1014,10 +1056,28 @@ public:
     Proxy_user proxy_user(m_user->host, m_user->user);
     string create_proxy_cmd;
     proxy_user.to_str(&create_proxy_cmd);
-    write(fh, create_proxy_cmd.c_str(), create_proxy_cmd.length());
-    if (errno != 0)
+    w1= write(fh, create_proxy_cmd.c_str(), create_proxy_cmd.length());
+    if (w1 != create_proxy_cmd.length() || errno != 0)
       return false;
 
+    if (!opt_skipsys)
+    {
+      info << "Creating sys schema" << endl;
+      s= sizeof(mysql_sys_schema)/sizeof(*mysql_sys_schema);
+      for(unsigned i=0, n= 1; i< s && errno != EPIPE && n != 0 &&
+          mysql_sys_schema[i] != NULL; ++i)
+      {
+         n= write(fh, mysql_sys_schema[i],
+                  strlen(mysql_sys_schema[i]));
+      }
+      if (errno != 0)
+      {
+        info << "failed." << endl;
+        return false;
+      }
+      else
+        info << "done." << endl;
+    }
 
     /* Execute optional SQL from a file */
     if (m_opt_sqlfile.length() > 0)
@@ -1061,94 +1121,130 @@ private:
   string m_opt_sqlfile;
 };
 
+struct Reader_thd_command_st
+{
+  Process_reader *reader_functor;
+  int read_hndl;
+};
+
+static void *reader_func_adaptor(void *f)
+{
+  Reader_thd_command_st *cmd= static_cast<Reader_thd_command_st*>(f);
+  (*cmd->reader_functor)(cmd->read_hndl);
+  return NULL;
+}
+
+
 template <typename Reader_func_t, typename Writer_func_t,
           typename Fwd_iterator >
 bool process_execute(const string &exec, Fwd_iterator begin,
                        Fwd_iterator end, Reader_func_t reader,
                        Writer_func_t writer)
 {
-  int child;
+  pid_t child;
+  bool retval= true;
   int read_pipe[2];
   int write_pipe[2];
+  posix_spawn_file_actions_t spawn_action;
+  char *execve_args[MAX_MYSQLD_ARGUMENTS];
+
   /*
     Disable any signal handler for broken pipes and check for EPIPE during
     IO instead.
   */
   signal(SIGPIPE, SIG_IGN);
-  if (pipe(read_pipe) < 0) {
-    return false;
-  }
-  if (pipe(write_pipe) < 0) {
-    ::close(read_pipe[0]);
-    ::close(read_pipe[1]);
-    return false;
-  }
-
-  child= vfork();
-  if (child == 0)
+  if (pipe(read_pipe) < 0)
   {
-    /*
-      We need to copy the strings or execve will fail with errno EFAULT
-    */
-    char *execve_args[MAX_MYSQLD_ARGUMENTS];
-    char *local_filename= strdup(exec.c_str());
-    execve_args[0]= local_filename;
-    int i= 1;
-    for(Fwd_iterator it= begin;
-        it!= end && i < MAX_MYSQLD_ARGUMENTS-1;)
-    {
-      execve_args[i]= strdup(const_cast<char *>((*it).c_str()));
-      ++it;
-      ++i;
-    }
-    execve_args[i]= 0;
-
-    /* Child */
-    if (dup2(read_pipe[0], STDIN_FILENO) == -1 ||
-        dup2(write_pipe[1], STDOUT_FILENO) == -1 ||
-        dup2(write_pipe[1], STDERR_FILENO) == -1)
-    {
-      return false;
-    }
+    return false;
+  }
+  if (pipe(write_pipe) < 0)
+  {
     ::close(read_pipe[0]);
     ::close(read_pipe[1]);
-    ::close(write_pipe[0]);
-    ::close(write_pipe[1]);
-    char *const arg[]={(char *)NULL};
-    execve(local_filename, execve_args, arg);
+    return false;
+  }
+
+  posix_spawn_file_actions_init(&spawn_action);
+  /* target process std input (0) reads from our write_pipe */
+  posix_spawn_file_actions_adddup2(&spawn_action, write_pipe[0], 0);
+  /* target process shouldn't attempt to write to this pipe */
+  posix_spawn_file_actions_addclose(&spawn_action, write_pipe[1]);
+
+  /* target process output (1) is mapped to our read_pipe */
+  posix_spawn_file_actions_adddup2(&spawn_action, read_pipe[1], 2);
+  /* target process shouldn't attempt to read from this pipe */
+  posix_spawn_file_actions_addclose(&spawn_action, read_pipe[0]);
+
+  /*
+    We need to copy the strings or spawn will fail
+  */
+  char *local_filename= strdup(exec.c_str());
+  execve_args[0]= local_filename;
+  int i= 1;
+  for(Fwd_iterator it= begin;
+      it!= end && i < MAX_MYSQLD_ARGUMENTS-1;)
+  {
+    execve_args[i]= strdup(const_cast<char *>((*it).c_str()));
+    ++it;
+    ++i;
+  }
+  execve_args[i]= 0;
+
+  int ret= posix_spawnp(&child, (const char *)execve_args[0], &spawn_action,
+                        NULL, execve_args, NULL);
+
+  /* This end is for the target process to read from */
+  ::close(write_pipe[0]);
+  /* This end is for the target process to write to */
+  ::close(read_pipe[1]);
+
+  if (ret != 0)
+  {
     /* always failure if we get here! */
-    error << "Child process exited with errno= " << errno << endl;
+    error << "Child process: " << exec <<
+             " exited with return value " << ret << endl;
     exit(1);
-  }
-  else if (child > 0)
-  {
-    /* Parent thread */
-    ::close(read_pipe[0]);
-    ::close(write_pipe[1]);
-    if (!writer(read_pipe[1]) || errno != 0)
-    {
-      error << "The child process terminated prematurely. "
-            << "Errno= " << errno
-            << endl;
-      if (errno != EPIPE)
-        reader(write_pipe[0]);
-      ::close(read_pipe[1]);
-      ::close(write_pipe[0]);
-      return false;
-    }
-    ::close(read_pipe[1]);
-    reader(write_pipe[0]);
-    ::close(write_pipe[0]);
   }
   else
   {
-    /* Failure */
-    ::close(read_pipe[0]);
-    ::close(read_pipe[1]);
-    ::close(write_pipe[0]);
-    ::close(write_pipe[1]);
+    pthread_t thd_id;
+    Reader_thd_command_st cmd;
+    cmd.read_hndl= read_pipe[0];
+    cmd.reader_functor= &reader;
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGPIPE);
+    pthread_sigmask(SIG_BLOCK, &set, NULL);
+    pthread_create(&thd_id, NULL, reader_func_adaptor, &cmd);
+    if (!writer(write_pipe[1]) || errno != 0)
+    {
+      error << "Child process: " << exec <<
+               "terminated prematurely with errno= "
+            << errno
+            << endl;
+      retval= false;
+    }
+    // join with read thread
+    void *ret= NULL;
+    pthread_cancel(thd_id); // break select()
+    pthread_join(thd_id, &ret);
   }
-  return true;
+
+  while(i > 0)
+  {
+    free(execve_args[i]);
+    --i;
+  }
+  ::close(write_pipe[1]);
+  ::close(read_pipe[0]);
+
+  /* Wait for the child to die */
+  int signal= 0;
+  waitpid(child, &signal, 0);
+
+  posix_spawn_file_actions_destroy(&spawn_action);
+  free(local_filename);
+  return retval;
 }
 
 int generate_password_file(Path &pwdfile, const string &adminuser,
@@ -1185,6 +1281,85 @@ int connection_options_sorter(const void *a, const void *b)
                 static_cast<const my_option *>(b)->name);
 }
 
+static int is_prefix(const char *s, const char *t)
+{
+  while (*t)
+    if (*s++ != *t++) return 0;
+  return 1;
+}
+
+static int real_get_defaults_options(int argc, char **argv,
+                                     my_bool *no_defaults,
+                                     char **defaults,
+                                     char **extra_defaults,
+                                     char **group_suffix,
+                                     char **login_path)
+{
+  char **argv_it= argv;
+  int org_argc= argc, prev_argc= 0, default_option_count= 0;
+
+  while (argc >= 2 && argc != prev_argc)
+  {
+    /* Skip program name or previously handled argument */
+    argv_it++;
+    prev_argc= argc;                            /* To check if we found */
+    /* --no-defaults is always the first option. */
+    if (is_prefix(*argv_it,"--no-defaults") && ! default_option_count)
+    {
+       argc--;
+       default_option_count ++;
+       *no_defaults= TRUE;
+       continue;
+    }
+    if (!*defaults && is_prefix(*argv_it, "--defaults-file="))
+    {
+      *defaults= *argv_it + sizeof("--defaults-file=")-1;
+       argc--;
+       default_option_count ++;
+       continue;
+    }
+    if (!*extra_defaults && is_prefix(*argv_it, "--defaults-extra-file="))
+    {
+      *extra_defaults= *argv_it + sizeof("--defaults-extra-file=")-1;
+      argc--;
+      default_option_count ++;
+      continue;
+    }
+    if (!*group_suffix && is_prefix(*argv_it, "--defaults-group-suffix="))
+    {
+      *group_suffix= *argv_it + sizeof("--defaults-group-suffix=")-1;
+      argc--;
+      default_option_count ++;
+      continue;
+    }
+    if (!*login_path && is_prefix(*argv_it, "--login-path="))
+    {
+      *login_path= *argv_it + sizeof("--login-path=")-1;
+      argc--;
+      default_option_count ++;
+      continue;
+    }
+  }
+  return org_argc - argc;
+}
+
+
+class Resource_releaser
+{
+  char **m_argv;
+
+public:
+  explicit Resource_releaser(char **argv)
+    : m_argv(argv) { }
+
+  ~Resource_releaser()
+  {
+    free_defaults(m_argv);
+    my_cleanup_options(my_connection_options);
+  }
+};
+
+
 int main(int argc,char *argv[])
 {
   /*
@@ -1193,6 +1368,14 @@ int main(int argc,char *argv[])
   */
   MY_INIT(argv[0]);
 
+  char *dummy= 0; // ignore group suffix when transferring to mysqld
+  /* Remember the defaults argument so we later can pass these to mysqld */
+  int default_opt_used= real_get_defaults_options(argc, argv,
+                                           &opt_no_defaults,
+                                           &opt_defaults_file,
+                                           &opt_def_extra_file,
+                                           &dummy,
+                                           &opt_loginpath);
 #ifdef __WIN__
   /* Convert command line parameters from UTF16LE to UTF8MB4. */
   my_win_translate_command_line_args(&my_charset_utf8mb4_bin, &argc, &argv);
@@ -1201,6 +1384,9 @@ int main(int argc,char *argv[])
   my_getopt_use_args_separator= TRUE;
   if (load_defaults("my", load_default_groups, &argc, &argv))
     return 1;
+
+  // Remember to call free_defaults() and my_cleanup_options()
+  Resource_releaser resource_releaser(argv);
 
   // Assert that the help messages are in sorted order
   // except that --help must be the first element and 0 must indicate the end.
@@ -1217,6 +1403,9 @@ int main(int argc,char *argv[])
     return 1;
   }
 
+  warning << "mysql_install_db is deprecated. ";
+  warning << "Please consider switching to mysqld --initialize" << endl;
+
   bool expire_password= !opt_insecure;
   string adminuser(create_string(opt_adminuser));
   string adminhost(create_string(opt_adminhost));
@@ -1231,6 +1420,22 @@ int main(int argc,char *argv[])
     info.enabled(false);
   }
 
+  if (default_opt_used > 0)
+  {
+    if (opt_defaults_file != 0)
+    {
+      info << "Using default values from " << opt_defaults_file << endl;
+    }
+    else
+    if (!opt_no_defaults)
+    {
+      info << "Using default values from my.cnf" << endl;
+    }
+    if (opt_def_extra_file != 0)
+    {
+      info << "Using additional default values from " << endl;
+    }
+  }
 
   /*
    1. Verify all option parameters
@@ -1281,7 +1486,7 @@ int main(int argc,char *argv[])
         error << "Failed to parse the login config file: "
               << opt_adminlogin << endl;
         return 1;
-        
+
     }
   }
 
@@ -1324,6 +1529,20 @@ int main(int argc,char *argv[])
     return 1;
   }
 
+#if defined(HAVE_YASSL)
+  Path mysql_cert_setup;
+  if( !opt_insecure &&
+      !assert_cert_generator_exists(create_string(opt_mysql_cert_setup_file),
+                                    basedir,
+                                    builddir,
+                                    srcdir,
+                                    &mysql_cert_setup))
+  {
+    /* Subroutine reported error */
+    return 1;
+  }
+#endif /* HAVE_YASSL */
+
   if (opt_def_extra_file)
   {
     Path def_extra_file;
@@ -1339,7 +1558,7 @@ int main(int argc,char *argv[])
 
   if (opt_defaults_file)
   {
-    opt_defaults= FALSE;
+    opt_no_defaults= FALSE;
     Path defaults_file;
     defaults_file.qpath(opt_defaults_file);
     if (!defaults_file.exists())
@@ -1363,7 +1582,8 @@ int main(int argc,char *argv[])
     info << "Creating data directory "
          << data_directory << endl;
     mode_t old_mask= umask(0);
-    if (mkdir(data_directory.to_str().c_str(), S_IRWXU|S_IRWXG) != 0)
+    if (my_mkdir(data_directory.to_str().c_str(),
+                 S_IRWXU | S_IRGRP | S_IXGRP, MYF(MY_WME)))
     {
       error << "Failed to create the data directory '"
             << data_directory << "'" << endl;
@@ -1432,7 +1652,7 @@ int main(int argc,char *argv[])
   else
     opt_euid= 0;
   vector<string> command_line;
-  if (opt_defaults == FALSE && opt_defaults_file == NULL &&
+  if (opt_no_defaults == TRUE && opt_defaults_file == NULL &&
       opt_def_extra_file == NULL)
     command_line.push_back(string("--no-defaults"));
   if (opt_defaults_file != NULL)
@@ -1451,6 +1671,20 @@ int main(int argc,char *argv[])
   if (basedir.length() > 0)
   command_line.push_back(string("--basedir=")
     .append(basedir));
+
+#if defined(HAVE_YASSL)
+  vector<string> cert_setup_command_line;
+  if (!opt_insecure)
+  {
+    if (opt_no_defaults == TRUE && opt_defaults_file == NULL &&
+        opt_def_extra_file == NULL)
+      cert_setup_command_line.push_back(string("--no-defaults"));
+    cert_setup_command_line.push_back(string("--datadir=")
+      .append(data_directory.to_str()));
+    cert_setup_command_line.push_back(string("--suffix=")
+      .append(MYSQL_SERVER_VERSION));
+  }
+#endif /* HAVE_YASSL */
 
   // DEBUG
   //mysqld_exec.append("\"").insert(0, "gnome-terminal -e \"gdb --args ");
@@ -1505,7 +1739,8 @@ int main(int argc,char *argv[])
           << output
           << endl;
   }
-  else if (output.size() > 0)
+  else if (output.size() > 0 &&
+           output.find_first_not_of(" \t\n\r") != string::npos)
   {
     warning << "The bootstrap log isn't empty:"
             << endl
@@ -1517,5 +1752,36 @@ int main(int argc,char *argv[])
     info << "Success!"
          << endl;
   }
+
+#if defined(HAVE_YASSL)
+  if (!opt_insecure)
+  {
+    string ssl_output;
+    info << "Generating SSL Certificates" << endl;
+    success= process_execute(mysql_cert_setup.to_str(),
+                             cert_setup_command_line.begin(),
+                             cert_setup_command_line.end(),
+                             Process_reader(&ssl_output),
+                             SSL_generator_writer());
+    if (!success)
+    {
+      warning << "failed to execute " << mysql_cert_setup.to_str() << " ";
+      copy(cert_setup_command_line.begin(), cert_setup_command_line.end(),
+           infix_ostream_iterator<Path>(error, " "));
+      warning << endl;
+      warning << "SSL functionality may not work";
+      warning << endl;
+    }
+    else if ((ssl_output.size() > 0))
+    {
+      info << "SSL certificate generation :"
+           << endl
+           << ssl_output
+           << endl;
+    }
+  }
+
+#endif /* HAVE_YASSL */
+
   return 0;
 }

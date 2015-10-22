@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -120,7 +120,6 @@ que_thr_move_to_run_state(
 /***********************************************************************//**
 Creates a query graph fork node.
 @return own: fork node */
-
 que_fork_t*
 que_fork_create(
 /*============*/
@@ -157,7 +156,6 @@ que_fork_create(
 /***********************************************************************//**
 Creates a query graph thread node.
 @return own: query thread node */
-
 que_thr_t*
 que_thr_create(
 /*===========*/
@@ -166,7 +164,8 @@ que_thr_create(
 {
 	que_thr_t*	thr;
 
-	ut_ad(parent && heap);
+	ut_ad(parent != NULL);
+	ut_ad(heap != NULL);
 
 	thr = static_cast<que_thr_t*>(mem_heap_zalloc(heap, sizeof(*thr)));
 
@@ -193,7 +192,6 @@ a worker thread to execute it. This function should be used to end
 the wait state of a query thread waiting for a lock or a stored procedure
 completion.
 @return the query thread that needs to be released. */
-
 que_thr_t*
 que_thr_end_lock_wait(
 /*==================*/
@@ -257,7 +255,6 @@ Round robin scheduler.
 @return a query thread of the graph moved to QUE_THR_RUNNING state, or
 NULL; the query thread should be executed by que_run_threads by the
 caller */
-
 que_thr_t*
 que_fork_scheduler_round_robin(
 /*===========================*/
@@ -307,7 +304,6 @@ is returned.
 @return a query thread of the graph moved to QUE_THR_RUNNING state, or
 NULL; the query thread should be executed by que_run_threads by the
 caller */
-
 que_thr_t*
 que_fork_start_command(
 /*===================*/
@@ -407,7 +403,6 @@ que_graph_free_stat_list(
 /**********************************************************************//**
 Frees a query graph, but not the heap where it was created. Does not free
 explicit cursor declarations, they are freed in que_graph_free. */
-
 void
 que_graph_free_recursive(
 /*=====================*/
@@ -477,8 +472,12 @@ que_graph_free_recursive(
 		ins = static_cast<ins_node_t*>(node);
 
 		que_graph_free_recursive(ins->select);
+		ins->select = NULL;
 
-		mem_heap_free(ins->entry_sys_heap);
+		if (ins->entry_sys_heap != NULL) {
+			mem_heap_free(ins->entry_sys_heap);
+			ins->entry_sys_heap = NULL;
+		}
 
 		break;
 	case QUE_NODE_PURGE:
@@ -498,16 +497,22 @@ que_graph_free_recursive(
 		if (upd->in_mysql_interface) {
 
 			btr_pcur_free_for_mysql(upd->pcur);
+			upd->in_mysql_interface = FALSE;
 		}
 
 		if (upd->cascade_top) {
 			mem_heap_free(upd->cascade_heap);
+			upd->cascade_heap = NULL;
 			upd->cascade_top = false;
 		}
 
 		que_graph_free_recursive(upd->select);
+		upd->select = NULL;
 
-		mem_heap_free(upd->heap);
+		if (upd->heap != NULL) {
+			mem_heap_free(upd->heap);
+			upd->heap = NULL;
+		}
 
 		break;
 	case QUE_NODE_CREATE_TABLE:
@@ -515,7 +520,7 @@ que_graph_free_recursive(
 
 		que_graph_free_recursive(cre_tab->tab_def);
 		que_graph_free_recursive(cre_tab->col_def);
-		que_graph_free_recursive(cre_tab->commit_node);
+		que_graph_free_recursive(cre_tab->v_col_def);
 
 		mem_heap_free(cre_tab->heap);
 
@@ -525,7 +530,6 @@ que_graph_free_recursive(
 
 		que_graph_free_recursive(cre_ind->ind_def);
 		que_graph_free_recursive(cre_ind->field_def);
-		que_graph_free_recursive(cre_ind->commit_node);
 
 		mem_heap_free(cre_ind->heap);
 
@@ -576,7 +580,6 @@ que_graph_free_recursive(
 
 /**********************************************************************//**
 Frees a query graph. */
-
 void
 que_graph_free(
 /*===========*/
@@ -677,7 +680,6 @@ que_thr_move_to_run_state(
 Stops a query thread if graph or trx is in a state requiring it. The
 conditions are tested in the order (1) graph, (2) trx.
 @return TRUE if stopped */
-
 ibool
 que_thr_stop(
 /*=========*/
@@ -792,7 +794,6 @@ A patch for MySQL used to 'stop' a dummy query thread used in MySQL. The
 query thread is stopped and made inactive, except in the case where
 it was put to the lock wait state in lock0lock.cc, but the lock has already
 been granted or the transaction chosen as a victim in deadlock resolution. */
-
 void
 que_thr_stop_for_mysql(
 /*===================*/
@@ -838,7 +839,6 @@ que_thr_stop_for_mysql(
 Moves a thread from another state to the QUE_THR_RUNNING state. Increments
 the n_active_thrs counters of the query graph and transaction if thr was
 not active. */
-
 void
 que_thr_move_to_run_state_for_mysql(
 /*================================*/
@@ -862,7 +862,6 @@ que_thr_move_to_run_state_for_mysql(
 /**********************************************************************//**
 A patch for MySQL used to 'stop' a dummy query thread used in MySQL
 select, when there is no error or lock wait. */
-
 void
 que_thr_stop_for_mysql_no_error(
 /*============================*/
@@ -887,7 +886,6 @@ que_thr_stop_for_mysql_no_error(
 Get the first containing loop node (e.g. while_node_t or for_node_t) for the
 given node, or NULL if the node is not within a loop.
 @return containing loop node, or NULL. */
-
 que_node_t*
 que_node_get_containing_loop_node(
 /*==============================*/
@@ -1152,7 +1150,6 @@ que_run_threads_low(
 
 /**********************************************************************//**
 Run a query thread. Handles lock waits. */
-
 void
 que_run_threads(
 /*============*/
@@ -1205,7 +1202,6 @@ loop:
 /*********************************************************************//**
 Evaluate the given SQL.
 @return error code or DB_SUCCESS */
-
 dberr_t
 que_eval_sql(
 /*=========*/
@@ -1260,7 +1256,6 @@ que_eval_sql(
 
 /*********************************************************************//**
 Initialise the query sub-system. */
-
 void
 que_init(void)
 /*==========*/
@@ -1270,7 +1265,6 @@ que_init(void)
 
 /*********************************************************************//**
 Close the query sub-system. */
-
 void
 que_close(void)
 /*===========*/

@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -397,14 +397,12 @@ static int w_search(MI_INFO *info, MI_KEYDEF *keyinfo,
         ft_intXstore(keypos, subkeys);
         if (!error)
           error=_mi_write_keypage(info,keyinfo,page,DFLT_INIT_HITS,temp_buff);
-        my_afree((uchar*) temp_buff);
         DBUG_RETURN(error);
       }
     }
     else /* not HA_FULLTEXT, normal HA_NOSAME key */
     {
       info->dupp_key_pos= dupp_key_pos;
-      my_afree((uchar*) temp_buff);
       my_errno=HA_ERR_FOUND_DUPP_KEY;
       DBUG_RETURN(-1);
     }
@@ -423,10 +421,8 @@ static int w_search(MI_INFO *info, MI_KEYDEF *keyinfo,
     if (_mi_write_keypage(info,keyinfo,page,DFLT_INIT_HITS,temp_buff))
       goto err;
   }
-  my_afree((uchar*) temp_buff);
   DBUG_RETURN(error);
 err:
-  my_afree((uchar*) temp_buff);
   DBUG_PRINT("exit",("Error: %d",my_errno));
   DBUG_RETURN (-1);
 } /* w_search */
@@ -531,7 +527,7 @@ int _mi_insert(MI_INFO *info, MI_KEYDEF *keyinfo,
       uint alen, blen, ft2len=info->s->ft2_keyinfo.keylength;
       /* the very first key on the page is always unpacked */
       DBUG_ASSERT((*b & 128) == 0);
-#if HA_FT_MAXLEN >= 127
+#if HA_FT_MAXLEN >= 127 /* TODO: Undefined symbol */
       blen= mi_uint2korr(b); b+=2;
 #else
       blen= *b++;
@@ -545,7 +541,9 @@ int _mi_insert(MI_INFO *info, MI_KEYDEF *keyinfo,
         info->ft1_to_ft2=(DYNAMIC_ARRAY *)
           my_malloc(mi_key_memory_MI_INFO_ft1_to_ft2,
                     sizeof(DYNAMIC_ARRAY), MYF(MY_WME));
-        my_init_dynamic_array(info->ft1_to_ft2, ft2len, 300, 50);
+        my_init_dynamic_array(info->ft1_to_ft2,
+                              mi_key_memory_MI_INFO_ft1_to_ft2,
+                              ft2len, NULL, 300, 50);
 
         /*
           now, adding all keys from the page to dynarray

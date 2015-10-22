@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -33,6 +33,7 @@ Created 4/20/1996 Heikki Tuuri
 
 #include "data0type.h"
 #include "dict0dict.h"
+#include "dict0boot.h"
 #include "btr0btr.h"
 #include "mach0data.h"
 #include "trx0rseg.h"
@@ -48,6 +49,7 @@ Created 4/20/1996 Heikki Tuuri
 #include "read0read.h"
 #include "ut0mem.h"
 #include "gis0geo.h"
+#include "row0mysql.h"
 
 /*****************************************************************//**
 When an insert or purge to a table is performed, this function builds
@@ -55,7 +57,6 @@ the entry to be inserted into or purged from an index on the table.
 @return index entry which should be inserted or purged
 @retval NULL if the externally stored columns in the clustered index record
 are unavailable and ext != NULL, or row is missing some needed columns. */
-
 dtuple_t*
 row_build_index_entry_low(
 /*======================*/
@@ -74,12 +75,18 @@ row_build_index_entry_low(
 	dtuple_t*	entry;
 	ulint		entry_len;
 	ulint		i;
-
+	ulint		num_v = 0;
 
 	entry_len = dict_index_get_n_fields(index);
-	entry = dtuple_create(heap, entry_len);
 
-	if (dict_index_is_univ(index)) {
+	if (flag == ROW_BUILD_FOR_INSERT && dict_index_is_clust(index)) {
+		num_v = dict_table_get_n_v_cols(index->table);
+		entry = dtuple_create_with_vcol(heap, entry_len, num_v);
+	} else {
+		entry = dtuple_create(heap, entry_len);
+	}
+
+	if (dict_index_is_ibuf(index)) {
 		dtuple_set_n_fields_cmp(entry, entry_len);
 		/* There may only be externally stored columns
 		in a clustered index B-tree of a user table. */
@@ -89,28 +96,60 @@ row_build_index_entry_low(
 			entry, dict_index_get_n_unique_in_tree(index));
 	}
 
-	for (i = 0; i < entry_len; i++) {
-		const dict_field_t*	ind_field
-			= dict_index_get_nth_field(index, i);
-		const dict_col_t*	col
-			= ind_field->col;
-		ulint			col_no
-			= dict_col_get_no(col);
-		dfield_t*		dfield
-			= dtuple_get_nth_field(entry, i);
-		const dfield_t*		dfield2
-			= dtuple_get_nth_field(row, col_no);
+	for (i = 0; i < entry_len + num_v; i++) {
+		const dict_field_t*	ind_field = NULL;
+		const dict_col_t*	col;
+		ulint			col_no = 0;
+		dfield_t*		dfield;
+		dfield_t*		dfield2;
 		ulint			len;
 
+		if (i >= entry_len) {
+			/* This is to insert new rows to cluster index */
+			ut_ad(dict_index_is_clust(index)
+			      && flag == ROW_BUILD_FOR_INSERT);
+			dfield = dtuple_get_nth_v_field(entry, i - entry_len);
+			col = &dict_table_get_nth_v_col(
+				index->table, i - entry_len)->m_col;
+
+		} else {
+			ind_field = dict_index_get_nth_field(index, i);
+			col = ind_field->col;
+			col_no = dict_col_get_no(col);
+			dfield = dtuple_get_nth_field(entry, i);
+		}
 #if DATA_MISSING != 0
 # error "DATA_MISSING != 0"
 #endif
+
+		if (dict_col_is_virtual(col)) {
+			const dict_v_col_t*	v_col
+				= reinterpret_cast<const dict_v_col_t*>(col);
+
+			ut_ad(v_col->v_pos < dtuple_get_n_v_fields(row));
+			dfield2 = dtuple_get_nth_v_field(row, v_col->v_pos);
+
+			ut_ad(dfield_is_null(dfield2) || dfield2->data);
+		} else {
+			dfield2 = dtuple_get_nth_field(row, col_no);
+			ut_ad(dfield_get_type(dfield2)->mtype == DATA_MISSING
+			      || (!(dfield_get_type(dfield2)->prtype
+				    & DATA_VIRTUAL)));
+		}
+
 		if (UNIV_UNLIKELY(dfield_get_type(dfield2)->mtype
 				  == DATA_MISSING)) {
 			/* The field has not been initialized in the row.
 			This should be from trx_undo_rec_get_partial_row(). */
 			return(NULL);
 		}
+
+#ifdef UNIV_DEBUG
+		if (dfield_get_type(dfield2)->prtype & DATA_VIRTUAL
+		    && dict_index_is_clust(index)) {
+			ut_ad(flag == ROW_BUILD_FOR_INSERT);
+		}
+#endif /* UNIV_DEBUG */
 
 		/* Special handle spatial index, set the first field
 		which is for store MBR. */
@@ -212,13 +251,14 @@ row_build_index_entry_low(
 			continue;
 		}
 
-		if (ind_field->prefix_len == 0
+		if ((!ind_field || ind_field->prefix_len == 0)
 		    && (!dfield_is_ext(dfield)
 			|| dict_index_is_clust(index))) {
 			/* The dfield_copy() above suffices for
 			columns that are stored in-page, or for
 			clustered index record columns that are not
-			part of a column prefix in the PRIMARY KEY. */
+			part of a column prefix in the PRIMARY KEY,
+			or for virtaul columns in cluster index record. */
 			continue;
 		}
 
@@ -285,7 +325,6 @@ row_build_index_entry_low(
 An inverse function to row_build_index_entry. Builds a row from a
 record in a clustered index.
 @return own: row built; see the NOTE below! */
-
 dtuple_t*
 row_build(
 /*======*/
@@ -338,7 +377,9 @@ row_build(
 	ulint			offsets_[REC_OFFS_NORMAL_SIZE];
 	rec_offs_init(offsets_);
 
-	ut_ad(index && rec && heap);
+	ut_ad(index != NULL);
+	ut_ad(rec != NULL);
+	ut_ad(heap != NULL);
 	ut_ad(dict_index_is_clust(index));
 	ut_ad(!trx_sys_mutex_own());
 	ut_ad(!col_map || col_table);
@@ -398,7 +439,9 @@ row_build(
 				dfield_get_type(dtuple_get_nth_field(row, i)));
 		}
 	} else {
-		row = dtuple_create(heap, dict_table_get_n_cols(col_table));
+		row = dtuple_create_with_vcol(
+			heap, dict_table_get_n_cols(col_table),
+			dict_table_get_n_v_cols(col_table));
 		dict_table_copy_types(row, col_table);
 	}
 
@@ -488,7 +531,6 @@ row_build(
 Converts an index record to a typed data tuple.
 @return index entry built; does not set info_bits, and the data fields
 in the entry will point directly to rec */
-
 dtuple_t*
 row_rec_to_index_entry_low(
 /*=======================*/
@@ -507,7 +549,10 @@ row_rec_to_index_entry_low(
 	ulint		len;
 	ulint		rec_len;
 
-	ut_ad(rec && heap && index);
+	ut_ad(rec != NULL);
+	ut_ad(heap != NULL);
+	ut_ad(index != NULL);
+
 	/* Because this function may be invoked by row0merge.cc
 	on a record whose header is in different format, the check
 	rec_offs_validate(rec, index, offsets) must be avoided here. */
@@ -520,7 +565,11 @@ row_rec_to_index_entry_low(
 
 	dtuple_set_n_fields_cmp(entry,
 				dict_index_get_n_unique_in_tree(index));
-	ut_ad(rec_len == dict_index_get_n_fields(index));
+	ut_ad(rec_len == dict_index_get_n_fields(index)
+	      /* a record for older SYS_INDEXES table
+	      (missing merge_threshold column) is acceptable. */
+	      || (index->table->id == DICT_INDEXES_ID
+		  && rec_len == dict_index_get_n_fields(index) - 1));
 
 	dict_index_copy_types(entry, index, rec_len);
 
@@ -546,7 +595,6 @@ row_rec_to_index_entry_low(
 Converts an index record to a typed data tuple. NOTE that externally
 stored (often big) fields are NOT copied to heap.
 @return own: index entry built */
-
 dtuple_t*
 row_rec_to_index_entry(
 /*===================*/
@@ -562,7 +610,9 @@ row_rec_to_index_entry(
 	byte*		buf;
 	const rec_t*	copy_rec;
 
-	ut_ad(rec && heap && index);
+	ut_ad(rec != NULL);
+	ut_ad(heap != NULL);
+	ut_ad(index != NULL);
 	ut_ad(rec_offs_validate(rec, index, offsets));
 
 	/* Take a copy of rec to heap */
@@ -586,7 +636,6 @@ row_rec_to_index_entry(
 Builds from a secondary index record a row reference with which we can
 search the clustered index record.
 @return own: row reference built; see the NOTE below! */
-
 dtuple_t*
 row_build_row_ref(
 /*==============*/
@@ -621,7 +670,9 @@ row_build_row_ref(
 	ulint*		offsets		= offsets_;
 	rec_offs_init(offsets_);
 
-	ut_ad(index && rec && heap);
+	ut_ad(index != NULL);
+	ut_ad(rec != NULL);
+	ut_ad(heap != NULL);
 	ut_ad(!dict_index_is_clust(index));
 
 	offsets = rec_get_offsets(rec, index, offsets,
@@ -696,7 +747,6 @@ row_build_row_ref(
 /*******************************************************************//**
 Builds from a secondary index record a row reference with which we can
 search the clustered index record. */
-
 void
 row_build_row_ref_in_tuple(
 /*=======================*/
@@ -731,23 +781,10 @@ row_build_row_ref_in_tuple(
 	ut_a(index);
 	ut_a(rec);
 	ut_ad(!dict_index_is_clust(index));
-
-	if (UNIV_UNLIKELY(!index->table)) {
-		fputs("InnoDB: table ", stderr);
-notfound:
-		ut_print_name(stderr, trx, TRUE, index->table_name);
-		fputs(" for index ", stderr);
-		ut_print_name(stderr, trx, FALSE, index->name);
-		fputs(" not found\n", stderr);
-		ut_error;
-	}
+	ut_a(index->table);
 
 	clust_index = dict_table_get_first_index(index->table);
-
-	if (UNIV_UNLIKELY(!clust_index)) {
-		fputs("InnoDB: clust index for table ", stderr);
-		goto notfound;
-	}
+	ut_ad(clust_index);
 
 	if (!offsets) {
 		offsets = rec_get_offsets(rec, index, offsets_,
@@ -808,7 +845,6 @@ notfound:
 /***************************************************************//**
 Searches the clustered index record for a row, if we have the row reference.
 @return TRUE if found */
-
 ibool
 row_search_on_row_ref(
 /*==================*/
@@ -852,7 +888,6 @@ row_search_on_row_ref(
 Fetches the clustered index record for a secondary index record. The latches
 on the secondary index record are preserved.
 @return record or NULL, if no record found */
-
 rec_t*
 row_get_clust_rec(
 /*==============*/
@@ -893,7 +928,6 @@ row_get_clust_rec(
 /***************************************************************//**
 Searches an index record.
 @return whether the record was found or buffered */
-
 enum row_search_result
 row_search_index_entry(
 /*===================*/
@@ -920,7 +954,7 @@ row_search_index_entry(
 
 	switch (btr_pcur_get_btr_cur(pcur)->flag) {
 	case BTR_CUR_DELETE_REF:
-		ut_a(mode & BTR_DELETE);
+		ut_a(mode & BTR_DELETE && !dict_index_is_spatial(index));
 		return(ROW_NOT_DELETED_REF);
 
 	case BTR_CUR_DEL_MARK_IBUF:
@@ -1060,7 +1094,6 @@ The result is always NUL-terminated (provided buf_size is positive) and the
 number of bytes that were written to "buf" is returned (including the
 terminating NUL).
 @return number of bytes that were written */
-
 ulint
 row_raw_format(
 /*===========*/

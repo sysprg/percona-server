@@ -1,4 +1,4 @@
-/* Copyright (c) 2005, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2005, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,18 +13,13 @@
    along with this program; if not, write to the Free Software
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
-#include "sql_priv.h"
-/*
-  It is necessary to include set_var.h instead of item.h because there
-  are dependencies on include order for set_var.h and item.h. This
-  will be resolved later.
-*/
-#include "sql_class.h"                          // set_var.h: THD
-#include "sql_parse.h"                          // check_stack_overrun 
-#include "set_var.h"
-#include "my_xml.h"
-#include "sp_pcontext.h"
-#include "sql_class.h"                          // THD
+#include "item_xmlfunc.h"
+
+#include "my_xml.h"             // my_xml_node_type
+#include "item_cmpfunc.h"       // Item_bool_func
+#include "sp_pcontext.h"        // sp_variable
+#include "sql_class.h"          // THD
+#include "sql_parse.h"          // check_stack_overrun
 
 /*
   TODO: future development directions:
@@ -1156,7 +1151,17 @@ static Item *create_func_bool(MY_XPATH *xpath, Item **args, uint nargs)
 
 static Item *create_func_number(MY_XPATH *xpath, Item **args, uint nargs)
 {
-  return new Item_xpath_cast_number(args[0]);
+  Item *arg;
+
+  if (nargs > 0)
+  {
+    arg= args[0];
+  }
+  else
+  {
+    arg= xpath->context != NULL ? xpath->context : xpath->rootelement;
+  }
+  return new Item_xpath_cast_number(arg);
 }
 
 
@@ -1259,7 +1264,7 @@ static MY_XPATH_FUNC my_func_names5[]=
 static MY_XPATH_FUNC my_func_names6[]=
 {
   {"concat", 6, 2, 255, create_func_concat},
-  {"number", 6, 1, 1  , create_func_number},
+  {"number", 6, 0, 1  , create_func_number},
   {"string", 6, 0, 1  , 0},
   {0       , 0, 0, 0  , 0}
 };
@@ -2854,6 +2859,7 @@ String *Item_func_xml_extractvalue::val_str(String *str)
   null_value= 0;
   if (!nodeset_func)
     parse_xpath(args[1]);
+  tmp_value.set("", 0, pxml.charset());
   if (!nodeset_func ||
       !(res= args[0]->val_str(str)) || 
       !parse_xml(res, &pxml) ||

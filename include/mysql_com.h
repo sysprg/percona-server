@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -19,12 +19,16 @@
 
 #ifndef _mysql_com_h
 #define _mysql_com_h
-
+#include "binary_log_types.h"
 #define HOSTNAME_LENGTH 60
 #define SYSTEM_CHARSET_MBMAXLEN 3
+#define FILENAME_CHARSET_MBMAXLEN 5
 #define NAME_CHAR_LEN	64              /* Field/table name length */
-#define USERNAME_CHAR_LENGTH 16
+#define USERNAME_CHAR_LENGTH 32
+#define USERNAME_CHAR_LENGTH_STR "32"
+#ifndef NAME_LEN
 #define NAME_LEN                (NAME_CHAR_LEN*SYSTEM_CHARSET_MBMAXLEN)
+#endif
 #define USERNAME_LENGTH         (USERNAME_CHAR_LENGTH*SYSTEM_CHARSET_MBMAXLEN)
 
 #define MYSQL_AUTODETECT_CHARSET_NAME "auto"
@@ -88,10 +92,15 @@ enum enum_server_command
   COM_END
 };
 
-
+/* The length of the header part for each generated column in the .frm file. */
+#define FRM_GCOL_HEADER_SIZE 4
+/*
+  Maximum length of the expression statement defined for generated columns.
+*/
+#define GENERATED_COLUMN_EXPRESSION_MAXLEN 65535 - FRM_GCOL_HEADER_SIZE
 /*
   Length of random string sent by server on handshake; this is also length of
-  obfuscated password, recieved from client
+  obfuscated password, received from client
 */
 #define SCRAMBLE_LENGTH 20
 #define AUTH_PLUGIN_DATA_PART_1_LENGTH 8
@@ -406,32 +415,6 @@ typedef struct st_net {
 
 
 #define packet_error (~(unsigned long) 0)
-
-enum enum_field_types { MYSQL_TYPE_DECIMAL, MYSQL_TYPE_TINY,
-			MYSQL_TYPE_SHORT,  MYSQL_TYPE_LONG,
-			MYSQL_TYPE_FLOAT,  MYSQL_TYPE_DOUBLE,
-			MYSQL_TYPE_NULL,   MYSQL_TYPE_TIMESTAMP,
-			MYSQL_TYPE_LONGLONG,MYSQL_TYPE_INT24,
-			MYSQL_TYPE_DATE,   MYSQL_TYPE_TIME,
-			MYSQL_TYPE_DATETIME, MYSQL_TYPE_YEAR,
-			MYSQL_TYPE_NEWDATE, MYSQL_TYPE_VARCHAR,
-			MYSQL_TYPE_BIT,
-			MYSQL_TYPE_TIMESTAMP2,
-			MYSQL_TYPE_DATETIME2,
-			MYSQL_TYPE_TIME2,
-                        MYSQL_TYPE_NEWDECIMAL=246,
-			MYSQL_TYPE_ENUM=247,
-			MYSQL_TYPE_SET=248,
-			MYSQL_TYPE_TINY_BLOB=249,
-			MYSQL_TYPE_MEDIUM_BLOB=250,
-			MYSQL_TYPE_LONG_BLOB=251,
-			MYSQL_TYPE_BLOB=252,
-			MYSQL_TYPE_VAR_STRING=253,
-			MYSQL_TYPE_STRING=254,
-			MYSQL_TYPE_GEOMETRY=255
-
-};
-
 /* For backward compatibility */
 #define CLIENT_MULTI_QUERIES    CLIENT_MULTI_STATEMENTS    
 #define FIELD_TYPE_DECIMAL     MYSQL_TYPE_DECIMAL
@@ -490,9 +473,7 @@ enum mysql_enum_shutdown_level {
   /* don't flush InnoDB buffers, flush other storage engines' buffers*/
   SHUTDOWN_WAIT_CRITICAL_BUFFERS= (MYSQL_SHUTDOWN_KILLABLE_UPDATE << 1) + 1,
   /* Now the 2 levels of the KILL command */
-#if MYSQL_VERSION_ID >= 50000
   KILL_QUERY= 254,
-#endif
   KILL_CONNECTION= 255
 };
 
@@ -524,12 +505,18 @@ enum enum_session_state_type
 {
   SESSION_TRACK_SYSTEM_VARIABLES,                       /* Session system variables */
   SESSION_TRACK_SCHEMA,                          /* Current schema */
-  SESSION_TRACK_STATE_CHANGE                  /* track session state changes */
+  SESSION_TRACK_STATE_CHANGE,                  /* track session state changes */
+  SESSION_TRACK_GTIDS,
+  SESSION_TRACK_TRANSACTION_CHARACTERISTICS,  /* Transaction chistics */
+  SESSION_TRACK_TRANSACTION_STATE             /* Transaction state */
 };
 
 #define SESSION_TRACK_BEGIN SESSION_TRACK_SYSTEM_VARIABLES
 
-#define SESSION_TRACK_END SESSION_TRACK_STATE_CHANGE
+#define SESSION_TRACK_END SESSION_TRACK_TRANSACTION_STATE
+
+#define IS_SESSION_STATE_TYPE(T) \
+  (((int)(T) >= SESSION_TRACK_BEGIN) && ((T) <= SESSION_TRACK_END))
 
 #define net_new_transaction(net) ((net)->pkt_nr=0)
 
@@ -541,6 +528,7 @@ my_bool	my_net_init(NET *net, Vio* vio);
 void my_net_local_init(NET *net);
 void net_end(NET *net);
 void net_clear(NET *net, my_bool check_buffer);
+void net_claim_memory_ownership(NET *net);
 my_bool net_realloc(NET *net, size_t length);
 my_bool	net_flush(NET *net);
 my_bool	my_net_write(NET *net,const unsigned char *packet, size_t len);

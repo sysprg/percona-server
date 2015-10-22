@@ -1,4 +1,5 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights
+ * reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -315,7 +316,7 @@ my_charset_file_init(MY_CHARSET_FILE *i)
 static void
 my_charset_file_free(MY_CHARSET_FILE *i)
 {
-  i->loader->free(i->tailoring);
+  i->loader->mem_free(i->tailoring);
 }
 
 
@@ -323,7 +324,7 @@ static int
 my_charset_file_tailoring_realloc(MY_CHARSET_FILE *i, size_t newlen)
 {
   if (i->tailoring_alloced_length > newlen ||
-     (i->tailoring= i->loader->realloc(i->tailoring,
+      (i->tailoring= i->loader->mem_realloc(i->tailoring,
                                        (i->tailoring_alloced_length=
                                         (newlen + 32*1024)))))
   {
@@ -423,7 +424,7 @@ scan_one_character(const char *s, const char *e, my_wc_t *wc)
     wc[0]= 0;
     return len;
   }
-  else if (s[0] > 0) /* 7-bit character */
+  else if ((s[0] & 0x80) == 0) /* 7-bit character */
   {
     wc[0]= 0;
     return 1;
@@ -750,7 +751,7 @@ static int cs_value(MY_XML_PARSER *st,const char *attr, size_t len)
 
   /* Rules: Context */
   case _CS_CONTEXT:
-    if (len < sizeof(i->context) + 1)
+    if (len < sizeof(i->context))
     {
       memcpy(i->context, attr, len);
       i->context[len]= '\0';

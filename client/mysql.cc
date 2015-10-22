@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -72,6 +72,7 @@
 #endif
 
 #include <algorithm>
+#include <sql_common.h>
 
 using std::min;
 using std::max;
@@ -942,6 +943,24 @@ static COMMANDS commands[] = {
   { "ISNULL", 0, 0, 0, ""},
   { "IS_FREE_LOCK", 0, 0, 0, ""},
   { "IS_USED_LOCK", 0, 0, 0, ""},
+  { "JSON_APPEND", 0, 0, 0, ""},
+  { "JSON_ARRAY", 0, 0, 0, ""},
+  { "JSON_CONTAINS", 0, 0, 0, ""},
+  { "JSON_DEPTH", 0, 0, 0, ""},
+  { "JSON_EXTRACT", 0, 0, 0, ""},
+  { "JSON_INSERT", 0, 0, 0, ""},
+  { "JSON_KEYS", 0, 0, 0, ""},
+  { "JSON_LENGTH", 0, 0, 0, ""},
+  { "JSON_MERGE", 0, 0, 0, ""},
+  { "JSON_QUOTE", 0, 0, 0, ""},
+  { "JSON_REPLACE", 0, 0, 0, ""},
+  { "JSON_ROWOBJECT", 0, 0, 0, ""},
+  { "JSON_SEARCH", 0, 0, 0, ""},
+  { "JSON_SET", 0, 0, 0, ""},
+  { "JSON_TYPE", 0, 0, 0, ""},
+  { "JSON_UNQUOTE", 0, 0, 0, ""},
+  { "JSON_VALID", 0, 0, 0, ""},
+  { "JSON_CONTAINS_PATH", 0, 0, 0, ""},
   { "LAST_INSERT_ID", 0, 0, 0, ""},
   { "ISSIMPLE", 0, 0, 0, ""},
   { "LAST_DAY", 0, 0, 0, ""},
@@ -1273,7 +1292,7 @@ int main(int argc,char *argv[])
     my_end(0);
     exit(1);
   }
-  glob_buffer.realloc(512);
+  glob_buffer.mem_realloc(512);
   completion_hash_init(&ht, 128);
   init_alloc_root(PSI_NOT_INSTRUMENTED, &hash_mem_root, 16384, 0);
   memset(&mysql, 0, sizeof(mysql));
@@ -1305,7 +1324,7 @@ int main(int argc,char *argv[])
 
   put_info(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"), INFO_INFO);
 
-  if (!status.batch && !quick && !opt_html && !opt_xml)
+  if (!status.batch)
   {
     init_dynamic_string(&histignore_buffer, "*IDENTIFIED*:*PASSWORD*",
                         1024, 1024);
@@ -1330,55 +1349,65 @@ int main(int argc,char *argv[])
 
     parse_histignore();
 
-#ifdef HAVE_READLINE
-  initialize_readline((char*) my_progname);
-
-    /* read-history from file, default ~/.mysql_history*/
-    if (getenv("MYSQL_HISTFILE"))
-      histfile=my_strdup(PSI_NOT_INSTRUMENTED,
-                         getenv("MYSQL_HISTFILE"),MYF(MY_WME));
-    else if (getenv("HOME"))
+  #ifdef HAVE_READLINE
+    if (!quick)
     {
-      histfile=(char*) my_malloc(PSI_NOT_INSTRUMENTED,
-                                 (uint) strlen(getenv("HOME"))
-				 + (uint) strlen("/.mysql_history")+2,
-				 MYF(MY_WME));
-      if (histfile)
-	sprintf(histfile,"%s/.mysql_history",getenv("HOME"));
-      char link_name[FN_REFLEN];
-      if (my_readlink(link_name, histfile, 0) == 0 &&
-          strncmp(link_name, "/dev/null", 10) == 0)
-      {
-        /* The .mysql_history file is a symlink to /dev/null, don't use it */
-        my_free(histfile);
-        histfile= 0;
-      }
-    }
+      initialize_readline((char*) my_progname);
 
-    /* We used to suggest setting MYSQL_HISTFILE=/dev/null. */
-    if (histfile && strncmp(histfile, "/dev/null", 10) == 0)
-      histfile= NULL;
-
-    if (histfile && histfile[0])
-    {
-      if (verbose)
-	tee_fprintf(stdout, "Reading history-file %s\n",histfile);
-      read_history(histfile);
-      if (!(histfile_tmp= (char*) my_malloc(PSI_NOT_INSTRUMENTED,
-                                            (uint) strlen(histfile) + 5,
-					    MYF(MY_WME))))
+      /* read-history from file, default ~/.mysql_history*/
+      if (getenv("MYSQL_HISTFILE"))
+        histfile=my_strdup(PSI_NOT_INSTRUMENTED,
+                           getenv("MYSQL_HISTFILE"),MYF(MY_WME));
+      else if (getenv("HOME"))
       {
-	fprintf(stderr, "Couldn't allocate memory for temp histfile!\n");
-	exit(1);
+        histfile=(char*) my_malloc(PSI_NOT_INSTRUMENTED,
+                                   (uint) strlen(getenv("HOME"))
+				   + (uint) strlen("/.mysql_history")+2,
+				   MYF(MY_WME));
+        if (histfile)
+	  sprintf(histfile,"%s/.mysql_history",getenv("HOME"));
+        char link_name[FN_REFLEN];
+        if (my_readlink(link_name, histfile, 0) == 0 &&
+            strncmp(link_name, "/dev/null", 10) == 0)
+        {
+          /* The .mysql_history file is a symlink to /dev/null, don't use it */
+          my_free(histfile);
+          histfile= 0;
+        }
       }
-      sprintf(histfile_tmp, "%s.TMP", histfile);
+
+      /* We used to suggest setting MYSQL_HISTFILE=/dev/null. */
+      if (histfile && strncmp(histfile, "/dev/null", 10) == 0)
+        histfile= NULL;
+
+      if (histfile && histfile[0])
+      {
+        if (verbose)
+	  tee_fprintf(stdout, "Reading history-file %s\n",histfile);
+        read_history(histfile);
+        if (!(histfile_tmp= (char*) my_malloc(PSI_NOT_INSTRUMENTED,
+                                              (uint) strlen(histfile) + 5,
+					      MYF(MY_WME))))
+        {
+	  fprintf(stderr, "Couldn't allocate memory for temp histfile!\n");
+	  exit(1);
+        }
+        sprintf(histfile_tmp, "%s.TMP", histfile);
+      }
     }
 #endif
   }
 
   sprintf(buff, "%s",
-	  "Type 'help;' or '\\h' for help. Type '\\c' to clear the current input statement.\n");
+	  "Type 'help;' or '\\h' for help. Type '\\c' to clear the current input "
+    "statement.\n");
   put_info(buff,INFO_INFO);
+  if (mysql.options.protocol == MYSQL_PROTOCOL_SOCKET &&
+      mysql.options.extension->ssl_enforce == TRUE)
+  put_info("You are enforcing ssl conection via unix socket. Please consider\n"
+           "switching ssl off as it does not make connection via unix socket\n"
+           "any more secure.", INFO_INFO);
+
   status.exit_status= read_and_execute(!status.batch);
   if (opt_outfile)
     end_tee();
@@ -1401,8 +1430,7 @@ void mysql_end(int sig)
 
   mysql_close(&mysql);
 #ifdef HAVE_READLINE
-  if (!status.batch && !quick && !opt_html && !opt_xml &&
-      histfile && histfile[0])
+  if (!status.batch && !quick && histfile && histfile[0])
   {
     /* write-history */
     if (verbose)
@@ -1429,9 +1457,9 @@ void mysql_end(int sig)
 
   if (sig >= 0)
     put_info(sig ? "Aborted" : "Bye", INFO_RESULT);
-  glob_buffer.free();
-  old_buffer.free();
-  processed_prompt.free();
+  glob_buffer.mem_free();
+  old_buffer.mem_free();
+  processed_prompt.mem_free();
   my_free(server_version);
   my_free(opt_password);
   my_free(opt_mysql_unix_port);
@@ -1849,6 +1877,19 @@ static void usage(int version)
     return;
   puts(ORACLE_WELCOME_COPYRIGHT_NOTICE("2000"));
   printf("Usage: %s [OPTIONS] [database]\n", my_progname);
+  /*
+    Turn default for zombies off so that the help on how to 
+    turn them off text won't show up.
+    This is safe to do since it's followed by a call to exit().
+  */
+  for (struct my_option *optp= my_long_options; optp->name; optp++)
+  {
+    if (optp->id == OPT_SECURE_AUTH)
+    {
+      optp->def_value= 0;
+      break;
+    }
+  }
   my_print_help(my_long_options);
   print_defaults("my", load_default_groups);
   my_print_variables(my_long_options);
@@ -1925,12 +1966,14 @@ get_one_option(int optid, const struct my_option *opt __attribute__((unused)),
 #endif
     break;
   case OPT_SECURE_AUTH:
-    CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
+    /* --secure-auth is a zombie option. */
     if (!opt_secure_auth)
     {
-      usage(0);
+      fprintf(stderr, "mysql: [ERROR] --skip-secure-auth is not supported.\n");
       exit(1);
     }
+    else
+      CLIENT_WARN_DEPRECATED_NO_REPLACEMENT("--secure-auth");
     break;
   case OPT_SERVER_ARG:
 #ifdef EMBEDDED_LIBRARY
@@ -2292,8 +2335,8 @@ static int read_and_execute(bool interactive)
   }
 
 #if defined(_WIN32)
-  buffer.free();
-  tmpbuf.free();
+  buffer.mem_free();
+  tmpbuf.mem_free();
 #else
   if (interactive)
     /*
@@ -2620,8 +2663,8 @@ static bool add_line(String &buffer, char *line, size_t line_length,
 
       break;
     }
-    else if (!*in_string && inchar == '/' && *(pos+1) == '*' &&
-	     *(pos+2) != '!')
+    else if (!*in_string && inchar == '/' && pos[1] == '*' &&
+	     pos[2] != '!' && pos[2] != '+')
     {
       if (preserve_comments)
       {
@@ -2658,8 +2701,8 @@ static bool add_line(String &buffer, char *line, size_t line_length,
     }      
     else
     {						// Add found char to buffer
-      if (!*in_string && inchar == '/' && *(pos + 1) == '*' &&
-          *(pos + 2) == '!')
+      if (!*in_string && inchar == '/' && pos[1] == '*' &&
+          (pos[2] == '!' || pos[2] == '+'))
         ss_comment= 1;
       else if (!*in_string && ss_comment && inchar == '*' && *(pos + 1) == '/')
         ss_comment= 0;
@@ -2697,7 +2740,7 @@ static bool add_line(String &buffer, char *line, size_t line_length,
       length++;
     }
     if (buffer.length() + length >= buffer.alloced_length())
-      buffer.realloc(buffer.length()+length+IO_SIZE);
+      buffer.mem_realloc(buffer.length()+length+IO_SIZE);
     if ((!*ml_comment || preserve_comments) && buffer.append(line, length))
       DBUG_RETURN(1);
   }
@@ -3091,7 +3134,7 @@ static void add_filtered_history(const char *string)
   if (!check_histignore(string))
   {
 #ifdef HAVE_READLINE
-    if (not_in_history(string))
+    if (!quick && not_in_history(string))
       add_history(string);
 #endif
     if (opt_syslog)
@@ -3714,6 +3757,7 @@ static const char *fieldtype2str(enum enum_field_types type)
     case MYSQL_TYPE_FLOAT:       return "FLOAT";
     case MYSQL_TYPE_GEOMETRY:    return "GEOMETRY";
     case MYSQL_TYPE_INT24:       return "INT24";
+    case MYSQL_TYPE_JSON:        return "JSON";
     case MYSQL_TYPE_LONG:        return "LONG";
     case MYSQL_TYPE_LONGLONG:    return "LONGLONG";
     case MYSQL_TYPE_LONG_BLOB:   return "LONG_BLOB";
@@ -5487,7 +5531,7 @@ static void mysql_end_timer(ulong start_time,char *buff)
 
 static const char* construct_prompt()
 {
-  processed_prompt.free();			// Erase the old prompt
+  processed_prompt.mem_free();			// Erase the old prompt
   time_t  lclock = time(NULL);			// Get the date struct
   struct tm *t = localtime(&lclock);
 
@@ -5505,6 +5549,9 @@ static const char* construct_prompt()
       case 'c':
 	add_int_to_prompt(++prompt_counter);
 	break;
+      case 'C':
+        add_int_to_prompt(mysql_thread_id(&mysql));
+        break;
       case 'v':
 	if (connected)
 	  processed_prompt.append(mysql_get_server_info(&mysql));

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,10 +16,12 @@
 
 /* TODO: check for overun of memory for names. */
 
-#include	"mysys_priv.h"
-#include	<m_string.h>
-#include	<my_dir.h>	/* Structs used by my_dir,includes sys/types */
-#include	"mysys_err.h"
+#include "mysys_priv.h"
+#include "my_sys.h"
+#include "m_string.h"
+#include "my_dir.h"	/* Structs used by my_dir,includes sys/types */
+#include "mysys_err.h"
+#include "my_thread_local.h"
 #if defined(HAVE_DIRENT_H)
 # include <dirent.h>
 # define NAMLEN(dirent) strlen((dirent)->d_name)
@@ -104,7 +106,10 @@ MY_DIR	*my_dir(const char *path, myf MyFlags)
   names_storage= (MEM_ROOT*)(buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
                              ALIGN_SIZE(sizeof(DYNAMIC_ARRAY)));
   
-  if (my_init_dynamic_array(dir_entries_storage, sizeof(FILEINFO),
+  if (my_init_dynamic_array(dir_entries_storage,
+                            key_memory_MY_DIR,
+                            sizeof(FILEINFO),
+                            NULL,               /* init_buffer */
                             ENTRIES_START_SIZE, ENTRIES_INCREMENT))
   {
     my_free(buffer);
@@ -139,7 +144,7 @@ MY_DIR	*my_dir(const char *path, myf MyFlags)
     else
       finfo.mystat= NULL;
 
-    if (push_dynamic(dir_entries_storage, (uchar*)&finfo))
+    if (insert_dynamic(dir_entries_storage, (uchar*)&finfo))
       goto error;
   }
 
@@ -166,7 +171,7 @@ MY_DIR	*my_dir(const char *path, myf MyFlags)
   if (MyFlags & (MY_FAE | MY_WME))
   {
     char errbuf[MYSYS_STRERROR_SIZE];
-    my_error(EE_DIR, MYF(ME_BELL+ME_WAITTANG), path,
+    my_error(EE_DIR, MYF(0), path,
              my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
   }
   DBUG_RETURN((MY_DIR *) NULL);
@@ -247,7 +252,10 @@ MY_DIR	*my_dir(const char *path, myf MyFlags)
   names_storage= (MEM_ROOT*)(buffer + ALIGN_SIZE(sizeof(MY_DIR)) +
                              ALIGN_SIZE(sizeof(DYNAMIC_ARRAY)));
   
-  if (my_init_dynamic_array(dir_entries_storage, sizeof(FILEINFO),
+  if (my_init_dynamic_array(dir_entries_storage,
+                            key_memory_MY_DIR,
+                            sizeof(FILEINFO),
+                            NULL,               /* init_buffer */
                             ENTRIES_START_SIZE, ENTRIES_INCREMENT))
   {
     my_free(buffer);
@@ -303,7 +311,7 @@ MY_DIR	*my_dir(const char *path, myf MyFlags)
       else
         finfo.mystat= NULL;
 
-      if (push_dynamic(dir_entries_storage, (uchar*)&finfo))
+      if (insert_dynamic(dir_entries_storage, (uchar*)&finfo))
         goto error;
     }
     while (_findnext(handle,&find) == 0);
@@ -327,7 +335,7 @@ error:
   if (MyFlags & MY_FAE+MY_WME)
   {
     char errbuf[MYSYS_STRERROR_SIZE];
-    my_error(EE_DIR, MYF(ME_BELL+ME_WAITTANG), path,
+    my_error(EE_DIR, MYF(0), path,
              errno, my_strerror(errbuf, sizeof(errbuf), errno));
   }
   DBUG_RETURN((MY_DIR *) NULL);
@@ -381,7 +389,7 @@ error:
   if (my_flags & (MY_FAE+MY_WME))
   {
     char errbuf[MYSYS_STRERROR_SIZE];
-    my_error(EE_STAT, MYF(ME_BELL+ME_WAITTANG), path,
+    my_error(EE_STAT, MYF(0), path,
              my_errno, my_strerror(errbuf, sizeof(errbuf), my_errno));
     DBUG_RETURN((MY_STAT *) NULL);
   }

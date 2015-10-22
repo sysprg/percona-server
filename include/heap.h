@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -28,7 +28,6 @@ extern "C" {
 #include <my_base.h>
 #endif
 
-#include <my_pthread.h>
 #include <thr_lock.h>
 
 #include "my_compare.h"
@@ -196,7 +195,6 @@ typedef struct st_heap_share
   char * name;			/* Name of "memory-file" */
   time_t create_time;
   THR_LOCK lock;
-  mysql_mutex_t intern_lock;            /* Locking for use with _locking */
   my_bool delete_on_close;
   LIST open_list;
   uint auto_key;

@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,6 +18,7 @@
 #include "my_static.h"
 #include "mysys_err.h"
 #include <errno.h>
+#include "my_thread_local.h"
 
 
 /*
@@ -115,7 +116,7 @@ File create_temp_file(char *to, const char *dir, const char *prefix,
     my_stpcpy(convert_dirname(to,dir,NullS),prefix_buff);
     org_file=mkstemp(to);
     if (mode & O_TEMPORARY)
-      (void) my_delete(to, MYF(MY_WME | ME_NOINPUT));
+      (void) my_delete(to, MYF(MY_WME));
     file=my_register_filename(org_file, to, FILE_BY_MKSTEMP,
 			      EE_CANTCREATEFILE, MyFlags);
     /* If we didn't manage to register the name, remove the temp file */
@@ -123,7 +124,7 @@ File create_temp_file(char *to, const char *dir, const char *prefix,
     {
       int tmp=my_errno;
       close(org_file);
-      (void) my_delete(to, MYF(MY_WME | ME_NOINPUT));
+      (void) my_delete(to, MYF(MY_WME));
       my_errno=tmp;
     }
   }

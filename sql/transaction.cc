@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,13 +14,47 @@
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
 
-#include "sql_priv.h"
 #include "transaction.h"
 #include "rpl_handler.h"
 #include "debug_sync.h"         // DEBUG_SYNC
 #include "auth_common.h"            // SUPER_ACL
 #include <pfs_transaction_provider.h>
 #include <mysql/psi/mysql_transaction.h>
+#include "rpl_context.h"
+#include "sql_class.h"
+#include "log.h"
+#include "binlog.h"
+
+/**
+  Helper: Tell tracker (if any) that transaction ended.
+*/
+void trans_track_end_trx(THD *thd)
+{
+  if (thd->variables.session_track_transaction_info > TX_TRACK_NONE)
+  {
+    ((Transaction_state_tracker *)
+     thd->session_tracker.get_tracker(TRANSACTION_INFO_TRACKER))->end_trx(thd);
+  }
+}
+
+/**
+  Helper: transaction ended, SET TRANSACTION one-shot variables
+  revert to session values. Let the transaction state tracker know.
+*/
+void trans_reset_one_shot_chistics(THD *thd)
+{
+  if (thd->variables.session_track_transaction_info > TX_TRACK_NONE)
+  {
+    Transaction_state_tracker *tst= (Transaction_state_tracker *)
+      thd->session_tracker.get_tracker(TRANSACTION_INFO_TRACKER);
+
+    tst->set_read_flags(thd, TX_READ_INHERIT);
+    tst->set_isol_level(thd, TX_ISOL_INHERIT);
+  }
+
+  thd->tx_isolation= (enum_tx_isolation) thd->variables.tx_isolation;
+  thd->tx_read_only= thd->variables.tx_read_only;
+}
 
 /**
   Check if we have a condition where the transaction state must
@@ -71,10 +105,16 @@ bool trans_check_state(THD *thd)
 bool trans_begin(THD *thd, uint flags)
 {
   int res= FALSE;
+  Transaction_state_tracker *tst= NULL;
+
   DBUG_ENTER("trans_begin");
 
   if (trans_check_state(thd))
     DBUG_RETURN(TRUE);
+
+  if (thd->variables.session_track_transaction_info > TX_TRACK_NONE)
+    tst= (Transaction_state_tracker *)
+      thd->session_tracker.get_tracker(TRANSACTION_INFO_TRACKER);
 
   thd->locked_tables_list.unlock_locked_tables(thd);
 
@@ -106,7 +146,11 @@ bool trans_begin(THD *thd, uint flags)
   DBUG_ASSERT(!((flags & MYSQL_START_TRANS_OPT_READ_ONLY) &&
                 (flags & MYSQL_START_TRANS_OPT_READ_WRITE)));
   if (flags & MYSQL_START_TRANS_OPT_READ_ONLY)
+  {
     thd->tx_read_only= true;
+    if (tst)
+      tst->set_read_flags(thd, TX_READ_ONLY);
+  }
   else if (flags & MYSQL_START_TRANS_OPT_READ_WRITE)
   {
     /*
@@ -115,15 +159,21 @@ bool trans_begin(THD *thd, uint flags)
       Implicitly starting a RW transaction is allowed for backward
       compatibility.
     */
-    const bool user_is_super=
-      MY_TEST(thd->security_ctx->master_access & SUPER_ACL);
-    if (opt_readonly && !user_is_super)
-    {
-      my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0), "--read-only");
+    if (check_readonly(thd, true))
       DBUG_RETURN(true);
-    }
     thd->tx_read_only= false;
+    /*
+      This flags that tx_read_only was set explicitly, rather than
+      just from the session's default.
+    */
+    if (tst)
+      tst->set_read_flags(thd, TX_READ_WRITE);
   }
+
+  DBUG_EXECUTE_IF("dbug_set_high_prio_trx", {
+    DBUG_ASSERT(thd->tx_priority==0);
+    thd->tx_priority= 1;
+  });
 
   thd->variables.option_bits|= OPTION_BEGIN;
   thd->server_status|= SERVER_STATUS_IN_TRANS;
@@ -131,9 +181,17 @@ bool trans_begin(THD *thd, uint flags)
     thd->server_status|= SERVER_STATUS_IN_TRANS_READONLY;
   DBUG_PRINT("info", ("setting SERVER_STATUS_IN_TRANS"));
 
+  if (tst)
+    tst->add_trx_state(thd, TX_EXPLICIT);
+
   /* ha_start_consistent_snapshot() relies on OPTION_BEGIN flag set. */
   if (flags & MYSQL_START_TRANS_OPT_WITH_CONS_SNAPSHOT)
+  {
+    if (tst)
+      tst->add_trx_state(thd, TX_WITH_SNAPSHOT);
     res= ha_start_consistent_snapshot(thd);
+  }
+
   /*
     Register transaction start in performance schema if not done already.
     We handle explicitly started transactions here, implicitly started
@@ -145,9 +203,13 @@ bool trans_begin(THD *thd, uint flags)
   */
 #ifdef HAVE_PSI_TRANSACTION_INTERFACE
   if (thd->m_transaction_psi == NULL)
+  {
     thd->m_transaction_psi= MYSQL_START_TRANSACTION(&thd->m_transaction_state,
                                                  NULL, NULL, thd->tx_isolation,
                                                  thd->tx_read_only, false);
+    DEBUG_SYNC(thd, "after_set_transaction_psi_before_set_transaction_gtid");
+    gtid_set_performance_schema_values(thd);
+  }
 #endif
 
   DBUG_RETURN(MY_TEST(res));
@@ -175,6 +237,10 @@ bool trans_commit(THD *thd)
     ~(SERVER_STATUS_IN_TRANS | SERVER_STATUS_IN_TRANS_READONLY);
   DBUG_PRINT("info", ("clearing SERVER_STATUS_IN_TRANS"));
   res= ha_commit_trans(thd, TRUE);
+  if (res == FALSE)
+    if (thd->rpl_thd_ctx.session_gtids_ctx().
+        notify_after_transaction_commit(thd))
+      sql_print_warning("Failed to collect GTID to send in the response packet!");
   /*
     When gtid mode is enabled, a transaction may cause binlog
     rotation, which inserts a record into the gtid system table
@@ -182,15 +248,23 @@ bool trans_commit(THD *thd)
     SERVER_STATUS_IN_TRANS may be set again while calling
     ha_commit_trans(...) Consequently, we need to reset it back,
     much like we are doing before calling ha_commit_trans(...).
+
+    We would really only need to do this when gtid_mode=on.  However,
+    checking gtid_mode requires holding a lock, which is costly.  So
+    we clear the bit unconditionally.  This has no side effects since
+    if gtid_mode=off the bit is already cleared.
   */
-  if (gtid_mode > GTID_MODE_UPGRADE_STEP_1)
-    thd->server_status&= ~SERVER_STATUS_IN_TRANS;
+  thd->server_status&= ~SERVER_STATUS_IN_TRANS;
   thd->variables.option_bits&= ~OPTION_BEGIN;
   thd->get_transaction()->reset_unsafe_rollback_flags(Transaction_ctx::SESSION);
   thd->lex->start_transaction_opt= 0;
 
   /* The transaction should be marked as complete in P_S. */
   DBUG_ASSERT(thd->m_transaction_psi == NULL);
+
+  thd->tx_priority= 0;
+
+  trans_track_end_trx(thd);
 
   DBUG_RETURN(MY_TEST(res));
 }
@@ -235,6 +309,10 @@ bool trans_commit_implicit(THD *thd)
   else if (tc_log)
     tc_log->commit(thd, true);
 
+  if (res == FALSE)
+    if (thd->rpl_thd_ctx.session_gtids_ctx().
+        notify_after_transaction_commit(thd))
+      sql_print_warning("Failed to collect GTID to send in the response packet!");
   thd->variables.option_bits&= ~OPTION_BEGIN;
   thd->get_transaction()->reset_unsafe_rollback_flags(Transaction_ctx::SESSION);
 
@@ -247,8 +325,9 @@ bool trans_commit_implicit(THD *thd)
     @@session.completion_type since it's documented
     to not have any effect on implicit commit.
   */
-  thd->tx_isolation= (enum_tx_isolation) thd->variables.tx_isolation;
-  thd->tx_read_only= thd->variables.tx_read_only;
+  trans_reset_one_shot_chistics(thd);
+
+  trans_track_end_trx(thd);
 
   DBUG_RETURN(res);
 }
@@ -282,6 +361,10 @@ bool trans_rollback(THD *thd)
 
   /* The transaction should be marked as complete in P_S. */
   DBUG_ASSERT(thd->m_transaction_psi == NULL);
+
+  thd->tx_priority= 0;
+
+  trans_track_end_trx(thd);
 
   DBUG_RETURN(MY_TEST(res));
 }
@@ -329,6 +412,8 @@ bool trans_rollback_implicit(THD *thd)
   /* The transaction should be marked as complete in P_S. */
   DBUG_ASSERT(thd->m_transaction_psi == NULL);
 
+  trans_track_end_trx(thd);
+
   DBUG_RETURN(MY_TEST(res));
 }
 
@@ -366,14 +451,14 @@ bool trans_commit_stmt(THD *thd)
   {
     res= ha_commit_trans(thd, FALSE);
     if (! thd->in_active_multi_stmt_transaction())
-    {
-      thd->tx_isolation= (enum_tx_isolation) thd->variables.tx_isolation;
-      thd->tx_read_only= thd->variables.tx_read_only;
-    }
+      trans_reset_one_shot_chistics(thd);
   }
   else if (tc_log)
     tc_log->commit(thd, false);
-
+  if (res == FALSE && !thd->in_active_multi_stmt_transaction())
+    if (thd->rpl_thd_ctx.session_gtids_ctx().
+        notify_after_transaction_commit(thd))
+      sql_print_warning("Failed to collect GTID to send in the response packet!");
   /* In autocommit=1 mode the transaction should be marked as complete in P_S */
   DBUG_ASSERT(thd->in_active_multi_stmt_transaction() ||
               thd->m_transaction_psi == NULL);
@@ -410,17 +495,16 @@ bool trans_rollback_stmt(THD *thd)
   {
     ha_rollback_trans(thd, FALSE);
     if (! thd->in_active_multi_stmt_transaction())
-    {
-      thd->tx_isolation= (enum_tx_isolation) thd->variables.tx_isolation;
-      thd->tx_read_only= thd->variables.tx_read_only;
-    }
+      trans_reset_one_shot_chistics(thd);
   }
   else if (tc_log)
     tc_log->rollback(thd, false);
 
   /* In autocommit=1 mode the transaction should be marked as complete in P_S */
   DBUG_ASSERT(thd->in_active_multi_stmt_transaction() ||
-              thd->m_transaction_psi == NULL);
+              thd->m_transaction_psi == NULL ||
+              /* Todo: BUG#20488921 is in the way. */
+              DBUG_EVALUATE_IF("simulate_xa_commit_log_failure", true, false));
 
   thd->get_transaction()->reset(Transaction_ctx::STMT);
 
@@ -463,6 +547,15 @@ bool trans_savepoint(THD *thd, LEX_STRING name)
   if (!(thd->in_multi_stmt_transaction_mode() || thd->in_sub_stmt) ||
       !opt_using_transactions)
     DBUG_RETURN(FALSE);
+
+  if (thd->variables.transaction_write_set_extraction != HASH_ALGORITHM_OFF)
+  {
+    // is_fatal_errror is needed to avoid stored procedures to skip the error.
+    thd->is_fatal_error= 1;
+    my_error(ER_OPTION_PREVENTS_STATEMENT, MYF(0),
+             "--transaction-write-set-extraction!=OFF");
+    DBUG_RETURN(true);
+  }
 
   if (thd->get_transaction()->xid_state()->check_has_uncommitted_xa())
     DBUG_RETURN(true);

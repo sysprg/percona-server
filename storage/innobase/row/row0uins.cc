@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1997, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1997, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -115,7 +115,7 @@ row_undo_ins_remove_clust_rec(
 		mem_heap_t*	heap	= NULL;
 		const ulint*	offsets	= rec_get_offsets(
 			rec, index, NULL, ULINT_UNDEFINED, &heap);
-		row_log_table_delete(rec, index, offsets, NULL);
+		row_log_table_delete(rec, node->row, index, offsets, NULL);
 		mem_heap_free(heap);
 	}
 
@@ -125,8 +125,7 @@ row_undo_ins_remove_clust_rec(
 		ut_ad(node->trx->dict_operation_lock_mode == RW_X_LATCH);
 
 		dict_drop_index_tree(
-			btr_pcur_get_rec(&node->pcur), &(node->pcur),
-			true, &mtr);
+			btr_pcur_get_rec(&node->pcur), &(node->pcur), &mtr);
 
 		mtr_commit(&mtr);
 
@@ -222,7 +221,7 @@ row_undo_ins_remove_sec_low(
 	if (dict_index_is_spatial(index)) {
 		if (mode & BTR_MODIFY_LEAF) {
 			btr_pcur_get_btr_cur(&pcur)->thr = thr;
-			mode |= BTR_DELETE_MARK;
+			mode |= BTR_RTREE_DELETE_MARK;
 		}
 		mode |= BTR_RTREE_UNDO_INS;
 	}
@@ -248,10 +247,8 @@ row_undo_ins_remove_sec_low(
 		rec_t*	rec = btr_pcur_get_rec(&pcur);
 		if (rec_get_deleted_flag(rec,
 					 dict_table_is_comp(index->table))) {
-			ib_logf(IB_LOG_LEVEL_ERROR,
-				"Record found in index %s is deleted marked"
-				" on insert rollback.",
-				index->name);
+			ib::error() << "Record found in index " << index->name
+				<< " is deleted marked on insert rollback.";
 		}
 	}
 
@@ -361,20 +358,21 @@ close_table:
 		clust_index = dict_table_get_first_index(node->table);
 
 		if (clust_index != NULL) {
-			trx_undo_rec_get_row_ref(
+			ptr = trx_undo_rec_get_row_ref(
 				ptr, clust_index, &node->ref, node->heap);
 
 			if (!row_undo_search_clust_to_pcur(node)) {
 				goto close_table;
 			}
+			if (node->table->n_v_cols) {
+				trx_undo_read_v_cols(node->table, ptr,
+						     node->row, false, NULL);
+			}
 
 		} else {
-			std::string	str = ut_get_name(node->trx, TRUE,
-							  node->table->name);
-
-			ib_logf(IB_LOG_LEVEL_WARN,
-				"Table %s has no indexes, ignoring the table",
-				str.c_str());
+			ib::warn() << "Table " << node->table->name
+				 << " has no indexes,"
+				" ignoring the table";
 			goto close_table;
 		}
 	}
@@ -447,7 +445,6 @@ marked, at the time of the insert.  InnoDB is eager in a rollback:
 if it figures out that an index record will be removed in the purge
 anyway, it will remove it in the rollback.
 @return DB_SUCCESS or DB_OUT_OF_FILE_SPACE */
-
 dberr_t
 row_undo_ins(
 /*=========*/

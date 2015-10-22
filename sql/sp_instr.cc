@@ -1,4 +1,4 @@
-/* Copyright (c) 2012, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2012, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,9 +14,9 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA */
 
 #include "my_global.h"    // NO_EMBEDDED_ACCESS_CHECKS
-#include "sql_priv.h"
 #include "sp_instr.h"
 #include "item.h"         // Item_splocal
+#include "log.h"          // query_logger
 #include "opt_trace.h"    // opt_trace_disable_etc
 #include "probes_mysql.h" // MYSQL_QUERY_EXEC_START
 #include "sp_head.h"      // sp_head
@@ -29,6 +29,8 @@
 #include "transaction.h"  // trans_commit_stmt
 #include "prealloced_array.h"
 #include "sql_audit.h"
+#include "binlog.h"
+#include "item_cmpfunc.h" // Item_func_eq
 
 #include <algorithm>
 #include <functional>
@@ -255,8 +257,6 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd,
                                            uint *nextp,
                                            bool open_tables)
 {
-  bool rc= false;
-
   /*
     The flag is saved at the entry to the following substatement.
     It's reset further in the common code part.
@@ -307,81 +307,102 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd,
     }
   }
 
-  /* Reset LEX-object before re-use. */
+  bool error= reinit_stmt_before_use(thd, m_lex);
 
-  reinit_stmt_before_use(thd, m_lex);
+  /*
+    In case a session state exists do not cache the SELECT stmt. If we
+    cache SELECT statment when session state information exists, then
+    the result sets of this SELECT are cached which contains changed
+    session information. Next time when same query is executed when there
+    is no change in session state, then result sets are picked from cache
+    which is wrong as the result sets picked from cache have changed
+    state information.
+    In case of embedded server since session state information is not
+    sent there is no need to turn off cache.
+  */
+
+#ifndef EMBEDDED_LIBRARY
+  if (thd->get_protocol()->has_client_capability(CLIENT_SESSION_TRACK) &&
+      thd->session_tracker.enabled_any() &&
+      thd->session_tracker.changed_any())
+    thd->lex->safe_to_cache_query= 0;
+#endif
 
   /* Open tables if needed. */
 
-  if (open_tables)
+  if (!error)
   {
-    /*
-      IF, CASE, DECLARE, SET, RETURN, have 'open_tables' true; they may
-      have a subquery in parameter and are worth tracing. They don't
-      correspond to a SQL command so we pretend that they are SQLCOM_SELECT.
-    */
-    Opt_trace_start ots(thd, m_lex->query_tables, SQLCOM_SELECT,
-                        &m_lex->var_list, NULL, 0, this,
-                        thd->variables.character_set_client);
-    Opt_trace_object trace_command(&thd->opt_trace);
-    Opt_trace_array trace_command_steps(&thd->opt_trace, "steps");
-
-    /*
-      Check whenever we have access to tables for this statement
-      and open and lock them before executing instructions core function.
-      If we are not opening any tables, we don't need to check permissions
-      either.
-    */
-    if (m_lex->query_tables)
-      rc= (open_temporary_tables(thd, m_lex->query_tables) ||
-            check_table_access(thd, SELECT_ACL, m_lex->query_tables, false,
-                               UINT_MAX, false));
-
-    if (!rc)
-      rc= open_and_lock_tables(thd, m_lex->query_tables, true, 0);
-
-    if (!rc)
+    if (open_tables)
     {
-      rc= exec_core(thd, nextp);
-      DBUG_PRINT("info",("exec_core returned: %d", rc));
-    }
+      // todo: break this block out into a separate function.
+      /*
+        IF, CASE, DECLARE, SET, RETURN, have 'open_tables' true; they may
+        have a subquery in parameter and are worth tracing. They don't
+        correspond to a SQL command so we pretend that they are SQLCOM_SELECT.
+      */
+      Opt_trace_start ots(thd, m_lex->query_tables, SQLCOM_SELECT,
+                          &m_lex->var_list, NULL, 0, this,
+                          thd->variables.character_set_client);
+      Opt_trace_object trace_command(&thd->opt_trace);
+      Opt_trace_array trace_command_steps(&thd->opt_trace, "steps");
 
-    /*
-      Call after unit->cleanup() to close open table
-      key read.
-    */
+      /*
+        Check whenever we have access to tables for this statement
+        and open and lock them before executing instructions core function.
+        If we are not opening any tables, we don't need to check permissions
+        either.
+      */
+      if (m_lex->query_tables)
+        error= (open_temporary_tables(thd, m_lex->query_tables) ||
+                check_table_access(thd, SELECT_ACL, m_lex->query_tables, false,
+                                   UINT_MAX, false));
 
-    m_lex->unit->cleanup(true);
+      if (!error)
+        error= open_and_lock_tables(thd, m_lex->query_tables, 0);
 
-    /* Here we also commit or rollback the current statement. */
-
-    if (! thd->in_sub_stmt)
-    {
-      thd->get_stmt_da()->set_overwrite_status(true);
-      thd->is_error() ? trans_rollback_stmt(thd) : trans_commit_stmt(thd);
-      thd->get_stmt_da()->set_overwrite_status(false);
-    }
-    thd_proc_info(thd, "closing tables");
-    close_thread_tables(thd);
-    thd_proc_info(thd, 0);
-
-    if (! thd->in_sub_stmt)
-    {
-      if (thd->transaction_rollback_request)
+      if (!error)
       {
-        trans_rollback_implicit(thd);
-        thd->mdl_context.release_transactional_locks();
+        error= exec_core(thd, nextp);
+        DBUG_PRINT("info",("exec_core returned: %d", error));
       }
-      else if (! thd->in_multi_stmt_transaction_mode())
-        thd->mdl_context.release_transactional_locks();
-      else
-        thd->mdl_context.release_statement_locks();
+
+      /*
+        Call after unit->cleanup() to close open table
+        key read.
+      */
+
+      m_lex->unit->cleanup(true);
+
+      /* Here we also commit or rollback the current statement. */
+
+      if (! thd->in_sub_stmt)
+      {
+        thd->get_stmt_da()->set_overwrite_status(true);
+        thd->is_error() ? trans_rollback_stmt(thd) : trans_commit_stmt(thd);
+        thd->get_stmt_da()->set_overwrite_status(false);
+      }
+      thd_proc_info(thd, "closing tables");
+      close_thread_tables(thd);
+      thd_proc_info(thd, 0);
+
+      if (! thd->in_sub_stmt)
+      {
+        if (thd->transaction_rollback_request)
+        {
+          trans_rollback_implicit(thd);
+          thd->mdl_context.release_transactional_locks();
+        }
+        else if (! thd->in_multi_stmt_transaction_mode())
+          thd->mdl_context.release_transactional_locks();
+        else
+          thd->mdl_context.release_statement_locks();
+      }
     }
-  }
-  else
-  {
-    rc= exec_core(thd, nextp);
-    DBUG_PRINT("info",("exec_core returned: %d", rc));
+    else
+    {
+      error= exec_core(thd, nextp);
+      DBUG_PRINT("info",("exec_core returned: %d", error));
+    }
   }
 
   if (m_lex->query_tables_own_last)
@@ -410,7 +431,7 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd,
     open_tables stage.
   */
 
-  if (!rc || !thd->is_error() ||
+  if (!error || !thd->is_error() ||
       (thd->get_stmt_da()->mysql_errno() != ER_CANT_REOPEN_TABLE &&
        thd->get_stmt_da()->mysql_errno() != ER_NO_SUCH_TABLE &&
        thd->get_stmt_da()->mysql_errno() != ER_UPDATE_TABLE_USED))
@@ -424,6 +445,13 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd,
   thd->get_transaction()->add_unsafe_rollback_flags(
     Transaction_ctx::STMT,
     parent_unsafe_rollback_flags);
+
+  if (thd->variables.session_track_transaction_info > TX_TRACK_NONE)
+  {
+    ((Transaction_state_tracker *)
+     thd->session_tracker.get_tracker(TRANSACTION_INFO_TRACKER))
+      ->add_trx_state_from_thd(thd);
+  }
 
   /* Restore original lex. */
 
@@ -439,7 +467,7 @@ bool sp_lex_instr::reset_lex_and_exec_core(THD *thd,
     cleanup_items() is called in sp_head::execute()
   */
 
-  return rc || thd->is_error();
+  return error || thd->is_error();
 }
 
 
@@ -480,7 +508,7 @@ LEX *sp_lex_instr::parse_expr(THD *thd, sp_head *sp)
     initiated. Also set the statement query arena to the lex mem_root.
   */
   MEM_ROOT *execution_mem_root= thd->mem_root;
-  Query_arena parse_arena(&m_lex_mem_root, thd->stmt_arena->state);
+  Query_arena parse_arena(&m_lex_mem_root, STMT_INITIALIZED_FOR_SP);
 
   thd->mem_root= &m_lex_mem_root;
   thd->stmt_arena->set_query_arena(&parse_arena);
@@ -842,7 +870,9 @@ bool sp_instr_stmt::execute(THD *thd, uint *nextp)
     if (thd->get_stmt_da()->is_eof())
     {
       /* Finalize server status flags after executing a statement. */
-      thd->protocol->end_statement();
+      thd->update_server_status();
+
+      thd->send_statement_status();
     }
 
     query_cache.end_of_result(thd);
@@ -924,8 +954,8 @@ bool sp_instr_stmt::exec_core(THD *thd, uint *nextp)
   MYSQL_QUERY_EXEC_START(const_cast<char*>(thd->query().str),
                          thd->thread_id(),
                          (char *) (thd->db().str ? thd->db().str : ""),
-                         &thd->security_ctx->priv_user[0],
-                         (char *)thd->security_ctx->host_or_ip,
+                         (char *) thd->security_context()->priv_user().str,
+                         (char *) thd->security_context()->host_or_ip().str,
                          3);
 
   thd->lex->set_sp_current_parsing_ctx(get_parsing_ctx());
@@ -1011,7 +1041,20 @@ bool sp_instr_set_trigger_field::exec_core(THD *thd, uint *nextp)
 {
   *nextp= get_ip() + 1;
   thd->count_cuted_fields= CHECK_FIELD_ERROR_FOR_NULL;
-  return m_trigger_field->set_value(thd, &m_value_item);
+  Strict_error_handler strict_handler(Strict_error_handler::
+                                      ENABLE_SET_SELECT_STRICT_ERROR_HANDLER);
+  /*
+    Before Triggers are executed after the 'data' is assigned
+    to the Field objects. If triggers wants to SET invalid value
+    to the Field objects (NEW.<variable_name>= <Invalid value>),
+    it should not be allowed.
+  */
+  if (thd->is_strict_mode() && !thd->lex->is_ignore())
+    thd->push_internal_handler(&strict_handler);
+  bool error= m_trigger_field->set_value(thd, &m_value_item);
+  if (thd->is_strict_mode() && !thd->lex->is_ignore())
+    thd->pop_internal_handler();
+  return error;
 }
 
 

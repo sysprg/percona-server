@@ -1,4 +1,4 @@
-/* Copyright (c) 2013, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2013, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -16,15 +16,24 @@
 #ifndef PARSE_TREE_NODES_INCLUDED
 #define PARSE_TREE_NODES_INCLUDED
 
-#include "my_config.h"
-#include "parse_tree_helpers.h"
-#include "parse_tree_node_base.h"
-#include "sql_class.h"
-#include "sql_parse.h"
-#include "sp_head.h"
-#include "sp_instr.h"
+#include "my_global.h"
+#include "parse_tree_helpers.h"      // PT_item_list
+#include "parse_tree_hints.h"
+#include "sp_head.h"                 // sp_head
+#include "sql_class.h"               // THD
+#include "sql_lex.h"                 // LEX
+#include "sql_parse.h"               // add_join_natural
+#include "sql_update.h"              // Sql_cmd_update
+
 
 template<enum_parsing_context Context> class PTI_context;
+
+
+class PT_statement : public Parse_tree_node
+{
+public:
+  virtual Sql_cmd *make_cmd(THD *thd)= 0;
+};
 
 
 class PT_select_lex : public Parse_tree_node
@@ -81,6 +90,7 @@ public:
       them.
     */
     pc->select->select_n_where_fields+= child->select_n_where_fields;
+    pc->select->select_n_having_items+= child->select_n_having_items;
     value= query_expression_body->value;
     return false;
   }
@@ -476,7 +486,9 @@ public:
 
     select->parsing_place= CTX_SELECT_LIST;
 
-    select->set_query_block_options(thd, opt_query_spec_options, 0);
+    if (select->validate_base_options(thd->lex, opt_query_spec_options))
+      return true;
+    select->set_base_options(opt_query_spec_options);
     if (opt_query_spec_options & SELECT_HIGH_PRIORITY)
     {
       Yacc_state *yyps= &thd->m_parser_state->m_yacc;
@@ -687,16 +699,19 @@ class PT_table_factor_select_sym : public PT_table_list
   typedef PT_table_list super;
 
   POS pos;
+  PT_hint_list *opt_hint_list;
   Query_options select_options;
   PT_item_list *select_item_list;
   PT_table_expression *table_expression;
 
 public:
   PT_table_factor_select_sym(const POS &pos,
+                             PT_hint_list *opt_hint_list_arg,
                              Query_options select_options_arg,
                              PT_item_list *select_item_list_arg,
                              PT_table_expression *table_expression_arg)
   : pos(pos),
+    opt_hint_list(opt_hint_list_arg),
     select_options(select_options_arg),
     select_item_list(select_item_list_arg),
     table_expression(table_expression_arg)
@@ -953,21 +968,23 @@ class PT_query_specification_select : public PT_select_lex
 {
   typedef Parse_tree_node super;
 
+  PT_hint_list *opt_hint_list;
   PT_select_part2_derived *select_part2_derived;
   PT_table_expression *table_expression;
 
 public:
   PT_query_specification_select(
+    PT_hint_list *opt_hint_list_arg,
     PT_select_part2_derived *select_part2_derived_arg,
     PT_table_expression *table_expression_arg)
-  : select_part2_derived(select_part2_derived_arg),
+  : opt_hint_list(opt_hint_list_arg),
+    select_part2_derived(select_part2_derived_arg),
     table_expression(table_expression_arg)
   {}
 
   virtual bool contextualize(Parse_context *pc)
   {
-    if (super::contextualize(pc) ||
-        select_part2_derived->contextualize(pc))
+    if (super::contextualize(pc) || select_part2_derived->contextualize(pc))
       return true;
 
     // Parentheses carry no meaning here.
@@ -977,6 +994,10 @@ public:
       return true;
 
     value= pc->select->master_unit()->first_select();
+
+    if (opt_hint_list != NULL && opt_hint_list->contextualize(pc))
+      return true;
+
     return false;
   }
 };
@@ -986,13 +1007,16 @@ class PT_select_paren_derived : public Parse_tree_node
 {
   typedef Parse_tree_node super;
 
+  PT_hint_list *opt_hint_list;
   PT_select_part2_derived *select_part2_derived;
   PT_table_expression *table_expression;
 
 public:
-  PT_select_paren_derived(PT_select_part2_derived *select_part2_derived_arg,
+  PT_select_paren_derived(PT_hint_list *opt_hint_list_arg,
+                          PT_select_part2_derived *select_part2_derived_arg,
                           PT_table_expression *table_expression_arg)
-  : select_part2_derived(select_part2_derived_arg),
+  : opt_hint_list(opt_hint_list_arg),
+    select_part2_derived(select_part2_derived_arg),
     table_expression(table_expression_arg)
   {}
 
@@ -1008,6 +1032,9 @@ public:
       return true;
 
     if (setup_select_in_parentheses(pc->select))
+      return true;
+
+    if (opt_hint_list != NULL && opt_hint_list->contextualize(pc))
       return true;
 
     return false;
@@ -1236,7 +1263,7 @@ public:
     {
       /*
         Not in trigger assigning value to new row,
-        and option_type preceeding local variable is illegal.
+        and option_type preceding local variable is illegal.
       */
       error(pc, pos);
       return true;
@@ -1496,6 +1523,27 @@ public:
     THD *thd= pc->thd;
     LEX *lex= thd->lex;
     set_var_password *var;
+
+    /*
+      In case of anonymous user, user->user is set to empty string with
+      length 0. But there might be case when user->user.str could be NULL.
+      For Ex: "set password for current_user() = password('xyz');".
+      In this case, set user information as of the current user.
+    */
+    if (!user->user.str)
+    {
+      LEX_CSTRING sctx_priv_user= thd->security_context()->priv_user();
+      DBUG_ASSERT(sctx_priv_user.str);
+      user->user.str= sctx_priv_user.str;
+      user->user.length= sctx_priv_user.length;
+    }
+    if (!user->host.str)
+    {
+      LEX_CSTRING sctx_priv_host= thd->security_context()->priv_host();
+      DBUG_ASSERT(sctx_priv_host.str);
+      user->host.str= (char *) sctx_priv_host.str;
+      user->host.length= sctx_priv_host.length;
+    }
 
     var= new set_var_password(user, const_cast<char *>(password));
     if (var == NULL)
@@ -1883,7 +1931,6 @@ public:
       context has already been set, do not overwrite it. */
       lex->sql_command= SQLCOM_SET_OPTION;
       lex->option_type= OPT_SESSION;
-      lex->one_shot_set= false;
       lex->autocommit= false;
     }
     if (!is_set_statement || !lex->set_statement)
@@ -1995,7 +2042,7 @@ public:
     LEX *lex= pc->thd->lex;
     lex->set_uncacheable(pc->select, UNCACHEABLE_SIDEEFFECT);
     if (!(lex->exchange= new sql_exchange(file_name, 0)) ||
-        !(lex->result= new select_export(lex->exchange)))
+        !(lex->result= new Query_result_export(lex->exchange)))
       return true;
 
     lex->exchange->cs= charset;
@@ -2028,7 +2075,7 @@ public:
       lex->set_uncacheable(pc->select, UNCACHEABLE_SIDEEFFECT);
       if (!(lex->exchange= new sql_exchange(file_name, 1)))
         return true;
-      if (!(lex->result= new select_dump(lex->exchange)))
+      if (!(lex->result= new Query_result_dump(lex->exchange)))
         return true;
     }
     return false;
@@ -2117,7 +2164,7 @@ public:
     if (lex->describe)
       return false;
 
-    select_dumpvar *dumpvar= new (pc->mem_root) select_dumpvar;
+    Query_dumpvar *dumpvar= new (pc->mem_root) Query_dumpvar;
     if (dumpvar == NULL)
       return true;
 
@@ -2213,6 +2260,20 @@ public:
     opt_into2(opt_into2_arg),
     opt_select_lock_type(opt_select_lock_type_arg)
   {}
+  explicit PT_select_part2(
+    PT_select_options_and_item_list *select_options_and_item_list_arg)
+  : select_options_and_item_list(select_options_and_item_list_arg),
+    opt_into1(NULL),
+    from_clause(NULL),
+    opt_where_clause(NULL),
+    opt_group_clause(NULL),
+    opt_having_clause(NULL),
+    opt_order_clause(NULL),
+    opt_limit_clause(NULL),
+    opt_procedure_analyse_clause(NULL),
+    opt_into2(NULL),
+    opt_select_lock_type()
+  {}
 
   virtual bool contextualize(Parse_context *pc)
   {
@@ -2262,11 +2323,13 @@ class PT_select_paren : public Parse_tree_node
 {
   typedef Parse_tree_node super;
 
+  PT_hint_list *opt_hint_list;
   PT_select_part2 *select_part2;
 
 public:
-  explicit PT_select_paren(PT_select_part2 *select_part2_arg)
-  : select_part2(select_part2_arg)
+  PT_select_paren(PT_hint_list *opt_hint_list_arg,
+                  PT_select_part2 *select_part2_arg)
+  : opt_hint_list(opt_hint_list_arg), select_part2(select_part2_arg)
   {}
 
   virtual bool contextualize(Parse_context *pc)
@@ -2284,6 +2347,9 @@ public:
       return true;
 
     if (setup_select_in_parentheses(pc->select))
+      return true;
+
+    if (opt_hint_list != NULL && opt_hint_list->contextualize(pc))
       return true;
 
     return false;
@@ -2316,24 +2382,35 @@ class PT_select_init2 : public PT_select_init
 {
   typedef PT_select_init super;
 
+  PT_hint_list *opt_hint_list;
   PT_select_part2 *select_part2;
   PT_union_list *opt_union_clause;
 
 public:
-  PT_select_init2(PT_select_part2 *select_part2_arg,
+  PT_select_init2(PT_hint_list *opt_hint_list_arg,
+                  PT_select_part2 *select_part2_arg,
                   PT_union_list *opt_union_clause_arg)
-  : select_part2(select_part2_arg), opt_union_clause(opt_union_clause_arg)
+  : opt_hint_list(opt_hint_list_arg),
+    select_part2(select_part2_arg),
+    opt_union_clause(opt_union_clause_arg)
   {}
 
   virtual bool contextualize(Parse_context *pc)
   {
-    if (super::contextualize(pc) || select_part2->contextualize(pc))
+    if (super::contextualize(pc) ||
+        select_part2->contextualize(pc))
       return true;
 
     // Parentheses carry no meaning here.
     pc->select->set_braces(false);
 
-    return opt_union_clause != NULL && opt_union_clause->contextualize(pc);
+    if (opt_hint_list != NULL && opt_hint_list->contextualize(pc))
+      return true;
+
+    if (opt_union_clause != NULL && opt_union_clause->contextualize(pc))
+      return true;
+
+    return false;
   }
 };
 
@@ -2343,20 +2420,263 @@ class PT_select : public Parse_tree_node
   typedef Parse_tree_node super;
 
   PT_select_init *select_init;
+  enum_sql_command sql_command;
 
 public:
-  explicit PT_select(PT_select_init *select_init_arg)
-  : select_init(select_init_arg)
+  explicit PT_select(PT_select_init *select_init_arg,
+                     enum_sql_command sql_command_arg)
+  : select_init(select_init_arg), sql_command(sql_command_arg)
   {}
 
   virtual bool contextualize(Parse_context *pc)
   {
-    if (super::contextualize(pc) || select_init->contextualize(pc))
+    if (super::contextualize(pc))
       return true;
 
-    pc->thd->lex->sql_command= SQLCOM_SELECT;
+    pc->thd->lex->sql_command= sql_command;
+
+    if (select_init->contextualize(pc))
+      return true;
+
     return false;
   }
+};
+
+
+class PT_delete : public PT_statement
+{
+  typedef PT_statement super;
+
+  PT_hint_list *opt_hints;
+  const int opt_delete_options;
+  Table_ident *table_ident;
+  Mem_root_array_YY<Table_ident *> table_list;
+  List<String> *opt_use_partition;
+  PT_join_table_list *join_table_list;
+  Item *opt_where_clause;
+  PT_order *opt_order_clause;
+  Item *opt_delete_limit_clause;
+
+public:
+  // single-table DELETE node constructor:
+  PT_delete(MEM_ROOT *mem_root,
+            PT_hint_list *opt_hints_arg,
+            int opt_delete_options_arg,
+            Table_ident *table_ident_arg,
+            List<String> *opt_use_partition_arg,
+            Item *opt_where_clause_arg,
+            PT_order *opt_order_clause_arg,
+            Item *opt_delete_limit_clause_arg)
+  : opt_hints(opt_hints_arg),
+    opt_delete_options(opt_delete_options_arg),
+    table_ident(table_ident_arg),
+    opt_use_partition(opt_use_partition_arg),
+    join_table_list(NULL),
+    opt_where_clause(opt_where_clause_arg),
+    opt_order_clause(opt_order_clause_arg),
+    opt_delete_limit_clause(opt_delete_limit_clause_arg)
+  {
+    table_list.init(mem_root);
+  }
+
+  // multi-table DELETE node constructor:
+  PT_delete(PT_hint_list *opt_hints_arg,
+            int opt_delete_options_arg,
+            const Mem_root_array_YY<Table_ident *> &table_list_arg,
+            PT_join_table_list *join_table_list_arg,
+            Item *opt_where_clause_arg)
+  : opt_hints(opt_hints_arg),
+    opt_delete_options(opt_delete_options_arg),
+    table_ident(NULL),
+    table_list(table_list_arg),
+    opt_use_partition(NULL),
+    join_table_list(join_table_list_arg),
+    opt_where_clause(opt_where_clause_arg),
+    opt_order_clause(NULL),
+    opt_delete_limit_clause(NULL)
+  {}
+
+  virtual bool contextualize(Parse_context *pc);
+
+  virtual Sql_cmd *make_cmd(THD *thd);
+
+  bool is_multitable() const
+  {
+    DBUG_ASSERT((table_ident != NULL) ^ (table_list.size() > 0));
+    return table_ident == NULL;
+  }
+
+private:
+  bool add_table(Parse_context *pc, Table_ident *table);
+};
+
+
+class PT_update : public PT_statement
+{
+  typedef PT_statement super;
+
+  PT_hint_list *opt_hints;
+  thr_lock_type opt_low_priority;
+  bool opt_ignore;
+  PT_join_table_list *join_table_list;
+  PT_item_list *column_list;
+  PT_item_list *value_list;
+  Item *opt_where_clause;
+  PT_order *opt_order_clause;
+  Item *opt_limit_clause;
+
+  Sql_cmd_update sql_cmd;
+
+public:
+  PT_update(PT_hint_list *opt_hints_arg,
+            thr_lock_type opt_low_priority_arg,
+            bool opt_ignore_arg,
+            PT_join_table_list *join_table_list_arg,
+            PT_item_list *column_list_arg,
+            PT_item_list *value_list_arg,
+            Item *opt_where_clause_arg,
+            PT_order *opt_order_clause_arg,
+            Item *opt_limit_clause_arg)
+  : opt_hints(opt_hints_arg),
+    opt_low_priority(opt_low_priority_arg),
+    opt_ignore(opt_ignore_arg),
+    join_table_list(join_table_list_arg),
+    column_list(column_list_arg),
+    value_list(value_list_arg),
+    opt_where_clause(opt_where_clause_arg),
+    opt_order_clause(opt_order_clause_arg),
+    opt_limit_clause(opt_limit_clause_arg)
+  {}
+
+  virtual bool contextualize(Parse_context *pc);
+
+  virtual Sql_cmd *make_cmd(THD *thd);
+};
+
+
+class PT_create_select : public Parse_tree_node
+{
+  typedef Parse_tree_node super;
+
+  PT_hint_list *opt_hints;
+  Query_options options;
+  PT_item_list *item_list;
+  PT_table_expression *table_expression;
+
+public:
+  PT_create_select(PT_hint_list *opt_hints_arg,
+                   const Query_options &options_arg,
+                   PT_item_list *item_list_arg,
+                   PT_table_expression *table_expression_arg)
+  : opt_hints(opt_hints_arg),
+    options(options_arg),
+    item_list(item_list_arg),
+    table_expression(table_expression_arg)
+  {}
+
+  virtual bool contextualize(Parse_context *pc);
+};
+
+
+class PT_insert_values_list : public Parse_tree_node
+{
+  typedef Parse_tree_node super;
+
+  List<List_item> many_values;
+
+public:
+  virtual bool contextualize(Parse_context *pc);
+
+  bool push_back(List<Item> *x) { return many_values.push_back(x); }
+
+  virtual List<List_item> &get_many_values()
+  {
+    DBUG_ASSERT(is_contextualized());
+    return many_values;
+  }
+};
+
+
+class PT_insert_query_expression : public Parse_tree_node
+{
+  typedef Parse_tree_node super;
+
+  bool braces;
+  PT_create_select *create_select;
+  Parse_tree_node * opt_union;
+
+public:
+  PT_insert_query_expression(bool braces_arg,
+                             PT_create_select *create_select_arg,
+                             Parse_tree_node * opt_union_arg)
+  : braces(braces_arg),
+    create_select(create_select_arg),
+    opt_union(opt_union_arg)
+  {}
+
+  virtual bool contextualize(Parse_context *pc);
+};
+
+
+class PT_insert : public PT_statement
+{
+  typedef PT_statement super;
+
+  const bool is_replace;
+  PT_hint_list *opt_hints;
+  const thr_lock_type lock_option;
+  const bool ignore;
+  Table_ident * const table_ident;
+  List<String> * const opt_use_partition;
+  PT_item_list * const column_list;
+  PT_insert_values_list * const row_value_list;
+  PT_insert_query_expression * const insert_query_expression;
+  PT_item_list * const opt_on_duplicate_column_list;
+  PT_item_list * const opt_on_duplicate_value_list;
+
+public:
+  PT_insert(bool is_replace_arg,
+            PT_hint_list *opt_hints_arg,
+            thr_lock_type lock_option_arg,
+            bool ignore_arg,
+            Table_ident *table_ident_arg,
+            List<String> *opt_use_partition_arg,
+            PT_item_list *column_list_arg,
+	    PT_insert_values_list *row_value_list_arg,
+            PT_insert_query_expression *insert_query_expression_arg,
+            PT_item_list *opt_on_duplicate_column_list_arg,
+            PT_item_list *opt_on_duplicate_value_list_arg)
+  : is_replace(is_replace_arg),
+    opt_hints(opt_hints_arg),
+    lock_option(lock_option_arg),
+    ignore(ignore_arg),
+    table_ident(table_ident_arg),
+    opt_use_partition(opt_use_partition_arg),
+    column_list(column_list_arg),
+    row_value_list(row_value_list_arg),
+    insert_query_expression(insert_query_expression_arg),
+    opt_on_duplicate_column_list(opt_on_duplicate_column_list_arg),
+    opt_on_duplicate_value_list(opt_on_duplicate_value_list_arg)
+  {
+    // REPLACE statement can't have IGNORE flag:
+    DBUG_ASSERT(!is_replace || !ignore);
+    // REPLACE statement can't have ON DUPLICATE KEY UPDATE clause:
+    DBUG_ASSERT(!is_replace || opt_on_duplicate_column_list == NULL);
+    // INSERT/REPLACE ... SELECT can't have VALUES clause:
+    DBUG_ASSERT((row_value_list != NULL) ^ (insert_query_expression != NULL));
+    // ON DUPLICATE KEY UPDATE: column and value arrays must have same sizes:
+    DBUG_ASSERT((opt_on_duplicate_column_list == NULL &&
+                 opt_on_duplicate_value_list == NULL) ||
+                (opt_on_duplicate_column_list->elements() ==
+                 opt_on_duplicate_value_list->elements()));
+  }
+
+  virtual bool contextualize(Parse_context *pc);
+
+  virtual Sql_cmd *make_cmd(THD *thd);
+
+private:
+  bool has_select() const { return insert_query_expression != NULL; }
 };
 
 #endif /* PARSE_TREE_NODES_INCLUDED */

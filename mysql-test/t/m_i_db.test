@@ -7,6 +7,7 @@
 --source include/big_test.inc
 --source include/not_embedded.inc
 --source include/not_windows.inc
+--source include/have_no_undo_tablespaces.inc
 
 --echo # Basic cases related to mysql_install_db
 let BASEDIR= `select @@basedir`;
@@ -241,7 +242,7 @@ disconnect conn_root;
 
 --echo # Reset mtr state 
 --exec echo "wait" > $MYSQLTEST_VARDIR/tmp/mysqld.1.expect
---shutdown_server 10
+--shutdown_server 
 --source include/wait_until_disconnected.inc
 --perl
 use File::Path 'rmtree';

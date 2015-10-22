@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2010, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -15,11 +15,9 @@
    Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301  USA
 */
 
-#include "sql_priv.h"
-#include "sql_select.h"
-#include "sql_optimizer.h"
 #include "abstract_query_plan.h"
-#include "sql_join_buffer.h"
+
+#include "sql_optimizer.h"    // JOIN
 
 namespace AQP
 {
@@ -218,7 +216,7 @@ namespace AQP
     DBUG_PRINT("info", ("no_order:%d", get_qep_tab()->join()->no_order));
     DBUG_PRINT("info", ("simple_order:%d", get_qep_tab()->join()->simple_order));
 
-    DBUG_PRINT("info", ("group:%d", get_qep_tab()->join()->group));
+    DBUG_PRINT("info", ("group:%d", get_qep_tab()->join()->grouped));
     DBUG_PRINT("info", ("group_list:%p", get_qep_tab()->join()->group_list.order));
     DBUG_PRINT("info", ("simple_group:%d", get_qep_tab()->join()->simple_group));
     DBUG_PRINT("info", ("group_optimized_away:%d",
@@ -336,7 +334,7 @@ namespace AQP
       {
         /*
           It means that the decision on which access method to use
-          will be taken late (as rows from the preceeding operation arrive).
+          will be taken late (as rows from the preceding operation arrive).
           This operation is therefor not pushable.
         */
         DBUG_PRINT("info",
@@ -501,6 +499,14 @@ namespace AQP
         return false;
     }
     return false;
+  }
+
+  void Table_access::set_pushed_table_access_method() const
+  {
+    // Remove the QEP_TABs constness allowing the QEP_TAB
+    // instance for this part ot the join to be modified
+    QEP_TAB* const qep_tab= const_cast<QEP_TAB*>(get_qep_tab());
+    qep_tab->set_pushed_table_access_method();
   }
 
 };

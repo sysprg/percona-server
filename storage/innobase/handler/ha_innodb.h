@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2000, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2000, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -22,6 +22,15 @@ this program; if not, write to the Free Software Foundation, Inc.,
 system clustered index when there is no primary key. */
 extern const char innobase_index_reserve_name[];
 
+/* "innodb_file_per_table" tablespace name  is reserved by InnoDB in order
+to explicitly create a file_per_table tablespace for the table. */
+extern const char reserved_file_per_table_space_name[];
+
+/* "innodb_system" tablespace name is reserved by InnoDB for the system tablespace
+which uses space_id 0 and stores extra types of system pages like UNDO
+and doublewrite. */
+extern const char reserved_system_space_name[];
+
 /* Structure defines translation table between mysql index and InnoDB
 index structures */
 struct innodb_idx_translate_t {
@@ -37,10 +46,37 @@ struct innodb_idx_translate_t {
 };
 
 
+/** Structure defines template related to virtual columns and
+their base columns */
+struct innodb_col_templ_t {
+	/** number of regular columns */
+	ulint			n_col;
+
+	/** number of virtual columns */
+	ulint			n_v_col;
+
+	/** array of templates for virtual col and their base columns */
+	mysql_row_templ_t**	vtempl;
+
+	/** table's database name */
+	char			db_name[MAX_DATABASE_NAME_LEN];
+
+	/** table name */
+	char			tb_name[MAX_TABLE_NAME_LEN];
+
+	/** share->table_name */
+	char			share_name[MAX_DATABASE_NAME_LEN
+					   + MAX_TABLE_NAME_LEN];
+
+	/** MySQL record length */
+	ulint			rec_len;
+
+	/** default column value if any */
+	const byte*		default_rec;
+};
+
 /** InnoDB table share */
 typedef struct st_innobase_share {
-	THR_LOCK	lock;		/*!< MySQL lock protecting
-					this structure */
 	const char*	table_name;	/*!< InnoDB table name */
 	uint		use_count;	/*!< reference count,
 					incremented in get_share()
@@ -52,6 +88,9 @@ typedef struct st_innobase_share {
 			idx_trans_tbl;	/*!< index translation table between
 					MySQL and InnoDB */
 	dict_table_t*	ib_table;
+	innodb_col_templ_t
+			s_templ;	/*!< table virtual column template
+					info */
 } INNOBASE_SHARE;
 
 /** Prebuilt structures in an InnoDB table handle used within MySQL */
@@ -60,7 +99,7 @@ struct row_prebuilt_t;
 /** The class defining a handle to an InnoDB table */
 class ha_innobase: public handler
 {
- public:
+public:
 	ha_innobase(handlerton* hton, TABLE_SHARE* table_arg);
 	~ha_innobase();
 
@@ -122,13 +161,6 @@ class ha_innobase: public handler
 		uint			key_len,
 		ha_rkey_function	find_flag);
 
-	int index_read_idx(
-		uchar*			buf,
-		uint			index,
-		const uchar*		key,
-		uint			key_len,
-		ha_rkey_function	find_flag);
-
 	int index_read_last(uchar * buf, const uchar * key, uint key_len);
 
 	int index_next(uchar * buf);
@@ -182,8 +214,6 @@ class ha_innobase: public handler
 
 	int external_lock(THD *thd, int lock_type);
 
-	int transactional_table_lock(THD *thd, int lock_type);
-
 	int start_stmt(THD *thd, thr_lock_type lock_type);
 
 	void position(uchar *record);
@@ -198,15 +228,6 @@ class ha_innobase: public handler
 	ha_rows estimate_rows_upper_bound();
 
 	void update_create_info(HA_CREATE_INFO* create_info);
-
-	int parse_table_name(
-		const char*		name,
-		HA_CREATE_INFO*		create_info,
-		ulint			flags,
-		ulint			flags2,
-		char*			norm_name,
-		char*			temp_path,
-		char*			remote_path);
 
 	int create(
 		const char*		name,
@@ -251,8 +272,6 @@ class ha_innobase: public handler
 		ulonglong*		first_value,
 		ulonglong*		nb_reserved_values);
 
-	int reset_auto_increment(ulonglong value);
-
 	virtual bool get_error_message(int error, String *buf);
 
 	virtual bool get_foreign_dup_key(char*, uint, char*, uint);
@@ -269,7 +288,7 @@ class ha_innobase: public handler
 		qc_engine_callback*	call_back,
 		ulonglong*		engine_data);
 
-	bool primary_key_is_clustered();
+	bool primary_key_is_clustered() const;
 
 	int cmp_ref(const uchar* ref1, const uchar* ref2);
 
@@ -346,52 +365,7 @@ class ha_innobase: public handler
 	bool check_if_incompatible_data(
 		HA_CREATE_INFO*		info,
 		uint			table_changes);
-private:
-	int update_row_low(const uchar * old_data, uchar * new_data);
 
-	uint store_key_val_for_row(
-		uint			keynr,
-		char*			buff,
-		uint			buff_len,
-		const uchar*		record);
-
-	inline void update_thd(THD* thd);
-
-	void update_thd();
-
-	int change_active_index(uint keynr);
-
-	int general_fetch(uchar* buf, uint direction, uint match_mode);
-
-	dberr_t innobase_lock_autoinc();
-
-	ulonglong innobase_peek_autoinc();
-
-	dberr_t innobase_set_max_autoinc(ulonglong auto_inc);
-
-	dberr_t innobase_reset_autoinc(ulonglong auto_inc);
-
-	dberr_t innobase_get_autoinc(ulonglong* value);
-
-	void innobase_initialize_autoinc();
-
-	dict_index_t* innobase_get_index(uint keynr);
-
-	/** Builds a 'template' to the prebuilt struct.
-
-	The template is used in fast retrieval of just those column
-	values MySQL needs in its processing.
-	@param whole_row true if access is needed to a whole row,
-	false if accessing individual fields is enough */
-	void build_template(bool whole_row);
-
-	/** Resets a query execution 'template'.
-	@see build_template() */
-	inline void reset_template();
-
-	int info_low(uint, bool);
-
-public:
 	/** @name Multi Range Read interface @{ */
 
 	/** Initialize multi range read @see DsMrr_impl::dsmrr_init
@@ -455,6 +429,51 @@ public:
 	/* @} */
 
 private:
+	void update_thd();
+
+	int change_active_index(uint keynr);
+
+	dberr_t innobase_lock_autoinc();
+
+	ulonglong innobase_peek_autoinc();
+
+	dberr_t innobase_set_max_autoinc(ulonglong auto_inc);
+
+	dberr_t innobase_get_autoinc(ulonglong* value);
+
+	void innobase_initialize_autoinc();
+
+	/** Resets a query execution 'template'.
+	@see build_template() */
+	void reset_template();
+
+	/** Write Row Interface optimized for Intrinsic table. */
+	int intrinsic_table_write_row(uchar* record);
+
+protected:
+	void update_thd(THD* thd);
+
+	int general_fetch(uchar* buf, uint direction, uint match_mode);
+
+	virtual dict_index_t* innobase_get_index(uint keynr);
+
+	/** Builds a 'template' to the prebuilt struct.
+
+	The template is used in fast retrieval of just those column
+	values MySQL needs in its processing.
+	@param whole_row true if access is needed to a whole row,
+	false if accessing individual fields is enough */
+	void build_template(bool whole_row);
+
+	virtual int info_low(uint, bool);
+
+	/**
+	MySQL calls this method at the end of each statement. This method
+	exists for readability only, called from reset(). The name reset()
+	doesn't give any clue that it is called at the end of a statement. */
+	int end_stmt();
+
+
 	/** The multi range read session object */
 	DsMrr_impl		m_ds_mrr;
 
@@ -464,9 +483,6 @@ private:
 	/** Thread handle of the user currently using the handler;
 	this is set in external_lock function */
 	THD*			m_user_thd;
-
-	/** Server meta-data locking data structure for this handler */
-	THR_LOCK_DATA		m_lock;
 
 	/** information for MySQL table locking */
 	INNOBASE_SHARE*		m_share;
@@ -493,7 +509,11 @@ private:
 
 	/** number of write_row() calls */
 	uint			m_num_write_row;
+
+        /** If mysql has locked with external_lock() */
+        bool                    m_mysql_has_locked;
 };
+
 
 /* Some accessor functions which the InnoDB plugin needs, but which
 can not be added to mysql/plugin.h as part of the public interface;
@@ -553,6 +573,13 @@ void thd_get_autoinc(const MYSQL_THD thd, ulong* off, ulong* inc);
 @param thd Thread object
 @return True if sql_mode has strict mode (all or trans), false otherwise. */
 bool thd_is_strict_mode(const MYSQL_THD thd);
+
+/** Get the partition_info working copy.
+@param	thd	Thread object.
+@return	NULL or pointer to partition_info working copy. */
+partition_info*
+thd_get_work_part_info(
+	THD*	thd);
 } /* extern "C" */
 
 struct trx_t;
@@ -575,13 +602,23 @@ trx_t*
 innobase_trx_allocate(
 	MYSQL_THD	thd);	/*!< in: user thread handle */
 
-/**
+/** Match index columns between MySQL and InnoDB.
+This function checks whether the index column information
+is consistent between KEY info from mysql and that from innodb index.
+@param[in]	key_info	Index info from mysql
+@param[in]	index_info	Index info from InnoDB
+@return true if all column types match. */
+bool
+innobase_match_index_columns(
+	const KEY*		key_info,
+	const dict_index_t*	index_info);
+
+/*********************************************************************//**
 This function checks each index name for a table against reserved
 system default primary index name 'GEN_CLUST_INDEX'. If a name
 matches, this function pushes an warning message to the client,
 and returns true.
 @return true if the index name matches the reserved name */
-
 bool
 innobase_index_name_is_reserved(
 	THD*			thd,		/*!< in/out: MySQL connection */
@@ -591,50 +628,221 @@ innobase_index_name_is_reserved(
 						be created. */
 	__attribute__((warn_unused_result));
 
-/** Determines InnoDB table flags.
-If strict_mode=OFF, this will adjust the flags to what should be assumed.
-@param[in]	form		Table information from MySQL
-@param[in]	create_info	Create information from MySQL describing
-				columns and indexes.
-@param[in]	thd		Connection information from MySQL
-@param[in]	file_per_table	Whether to create a single-table tablespace.
-@param[out]	flags		DICT_TF flags
-@param[out]	flags2		DICT_TF2 flags
-@retval true if successful, false if error */
+extern const char reserved_file_per_table_space_name[];
 
+/** Check if the explicit tablespace targeted is file_per_table.
+@param[in]	create_info	Metadata for the table to create.
+@return true if the table is intended to use a file_per_table tablespace. */
+UNIV_INLINE
 bool
-innobase_table_flags(
-	const TABLE*		form,
-	const HA_CREATE_INFO*	create_info,
-	THD*			thd,
-	bool			file_per_table,
-	ulint*			flags,
-	ulint*			flags2)
-	__attribute__((warn_unused_result));
+tablespace_is_file_per_table(
+	const HA_CREATE_INFO*	create_info)
+{
+	return(create_info->tablespace != NULL
+	       && (0 == strcmp(create_info->tablespace,
+			       reserved_file_per_table_space_name)));
+}
 
-/** Validates the create options. Checks that the options KEY_BLOCK_SIZE,
-ROW_FORMAT, DATA DIRECTORY, TEMPORARY & TABLESPACE are compatible with
-each other and other settings.  These CREATE OPTIONS are not validated
-here unless innodb_strict_mode is on. With strict mode, this function
-will report each problem it finds using a custom message with error
-code ER_ILLEGAL_HA_CREATE_OPTION, not its built-in message.
+/** Check if table will be put in an existing shared general tablespace.
+@param[in]	create_info	Metadata for the table to create.
+@return true if the table will use an existing shared general tablespace. */
+UNIV_INLINE
+bool
+tablespace_is_shared_space(
+	const HA_CREATE_INFO*	create_info)
+{
+	return(create_info->tablespace != NULL
+	       && create_info->tablespace[0] != '\0'
+	       && (0 != strcmp(create_info->tablespace,
+			       reserved_file_per_table_space_name)));
+}
+
+/** Parse hint for table and its indexes, and update the information
+in dictionary.
 @param[in]	thd		Connection thread
-@param[in]	create_info	Information for the create operation
-@param[in]	file_per_table	Whether to create a single-table tablespace.
-@return NULL if valid, string name of bad option if not. */
+@param[in,out]	table		Target table
+@param[in]	table_share	Table definition */
+void
+innobase_parse_hint_from_comment(
+	THD*			thd,
+	dict_table_t*		table,
+	const TABLE_SHARE*	table_share);
 
-const char*
-create_options_are_invalid(
-	THD*		thd,
-	HA_CREATE_INFO*	create_info,
-	bool		file_per_table)
-	__attribute__((warn_unused_result));
+/** Class for handling create table information. */
+class create_table_info_t
+{
+public:
+	/** Constructor.
+	Used in two ways:
+	- all but file_per_table is used, when creating the table.
+	- all but name/path is used, when validating options and using flags. */
+	create_table_info_t(
+		THD*		thd,
+		TABLE*		form,
+		HA_CREATE_INFO*	create_info,
+		char*		table_name,
+		char*		temp_path,
+		char*		remote_path,
+		char*		tablespace)
+	:m_thd(thd),
+	m_form(form),
+	m_create_info(create_info),
+	m_table_name(table_name),
+	m_temp_path(temp_path),
+	m_remote_path(remote_path),
+	m_tablespace(tablespace),
+	m_innodb_file_per_table(srv_file_per_table)
+	{}
+
+	/** Initialize the object. */
+	int initialize();
+
+	/** Set m_tablespace_type. */
+	void set_tablespace_type(bool table_being_altered_is_file_per_table);
+
+	/** Create the internal innodb table. */
+	int create_table();
+
+	/** Update the internal data dictionary. */
+	int create_table_update_dict();
+
+	/** Validates the create options. Checks that the options
+	KEY_BLOCK_SIZE, ROW_FORMAT, DATA DIRECTORY, TEMPORARY & TABLESPACE
+	are compatible with each other and other settings.
+	These CREATE OPTIONS are not validated here unless innodb_strict_mode
+	is on. With strict mode, this function will report each problem it
+	finds using a custom message with error code
+	ER_ILLEGAL_HA_CREATE_OPTION, not its built-in message.
+	@return NULL if valid, string name of bad option if not. */
+	const char* create_options_are_invalid();
+
+	/** Validate DATA DIRECTORY option. */
+	bool create_option_data_directory_is_valid();
+
+	/** Validate TABLESPACE option. */
+	bool create_option_tablespace_is_valid();
+
+	/** Prepare to create a table. */
+	int prepare_create_table(const char*		name);
+
+	void allocate_trx();
+
+	/** Determines InnoDB table flags.
+	If strict_mode=OFF, this will adjust the flags to what should be assumed.
+	@retval true if successful, false if error */
+	bool innobase_table_flags();
+
+	/** Set flags and append '/' to remote path if necessary. */
+	void set_remote_path_flags();
+
+	/** Get table flags. */
+	ulint flags() const
+	{ return(m_flags); }
+
+	/** Get table flags2. */
+	ulint flags2() const
+	{ return(m_flags2); }
+
+	/** Get trx. */
+	trx_t* trx() const
+	{ return(m_trx); }
+
+	/** Return table name. */
+	const char* table_name() const
+	{ return(m_table_name); }
+
+	THD* thd() const
+	{ return(m_thd); }
+
+	inline bool is_intrinsic_temp_table() const
+	{
+		/* DICT_TF2_INTRINSIC implies DICT_TF2_TEMPORARY */
+		ut_ad(!(m_flags2 & DICT_TF2_INTRINSIC)
+		      || (m_flags2 & DICT_TF2_TEMPORARY));
+		return((m_flags2 & DICT_TF2_INTRINSIC) != 0);
+	}
+
+	/** Normalizes a table name string.
+	A normalized name consists of the database name catenated to '/' and
+	table name. An example: test/mytable. On Windows normalization puts
+	both the database name and the table name always to lower case if
+	"set_lower_case" is set to true.
+	@param[in,out]	norm_name	Buffer to return the normalized name in.
+	@param[in]	name		Table name string.
+	@param[in]	set_lower_case	True if we want to set name to lower
+					case. */
+	static void normalize_table_name_low(
+		char*           norm_name,
+		const char*     name,
+		ibool           set_lower_case);
+
+private:
+	/** Parses the table name into normal name and either temp path or
+	remote path if needed.*/
+	int
+	parse_table_name(
+		const char*	name);
+
+	/** Create the internal innodb table definition. */
+	int create_table_def();
+
+	/** Connection thread handle. */
+	THD*		m_thd;
+
+	/** InnoDB transaction handle. */
+	trx_t*		m_trx;
+
+	/** Information on table columns and indexes. */
+	const TABLE*	m_form;
+
+	/** Create options. */
+	HA_CREATE_INFO*	m_create_info;
+
+	/** Table name */
+	char*		m_table_name;
+	/** If this is a table explicitly created by the user with the
+	TEMPORARY keyword, then this parameter is the dir path where the
+	table should be placed if we create an .ibd file for it
+	(no .ibd extension in the path, though).
+	Otherwise this is a zero length-string */
+	char*		m_temp_path;
+
+	/** Remote path (DATA DIRECTORY) or zero length-string */
+	char*		m_remote_path;
+
+	/** Tablespace name or zero length-string. */
+	char*		m_tablespace;
+
+	/** Local copy of srv_file_per_table. */
+	bool		m_innodb_file_per_table;
+
+	/** Allow file_per_table for this table either because:
+	1) the setting innodb_file_per_table=on,
+	2) it was explicitly requested by tablespace=innodb_file_per_table.
+	3) the table being altered is currently file_per_table */
+	bool		m_allow_file_per_table;
+
+	/** After all considerations, this shows whether we will actually
+	create a table and tablespace using file-per-table. */
+	bool		m_use_file_per_table;
+
+	/** Using DATA DIRECTORY */
+	bool		m_use_data_dir;
+
+	/** Using a Shared General Tablespace */
+	bool		m_use_shared_space;
+
+	/** Table flags */
+	ulint		m_flags;
+
+	/** Table flags2 */
+	ulint		m_flags2;
+};
 
 /**
 Retrieve the FTS Relevance Ranking result for doc with doc_id
 of prebuilt->fts_doc_id
 @return the relevance ranking value */
-
 float
 innobase_fts_retrieve_ranking(
 	FT_INFO*	fts_hdl);	/*!< in: FTS handler */
@@ -643,7 +851,6 @@ innobase_fts_retrieve_ranking(
 Find and Retrieve the FTS Relevance Ranking result for doc with doc_id
 of prebuilt->fts_doc_id
 @return the relevance ranking value */
-
 float
 innobase_fts_find_ranking(
 	FT_INFO*	fts_hdl,	/*!< in: FTS handler */
@@ -652,7 +859,6 @@ innobase_fts_find_ranking(
 
 /**
 Free the memory for the FTS handler */
-
 void
 innobase_fts_close_ranking(
 	FT_INFO*	fts_hdl);	/*!< in: FTS handler */
@@ -660,7 +866,6 @@ innobase_fts_close_ranking(
 /**
 Initialize the table FTS stopword list
 @return TRUE if success */
-
 ibool
 innobase_fts_load_stopword(
 /*=======================*/
@@ -680,7 +885,6 @@ enum fts_doc_id_index_enum {
 Check whether the table has a unique index with FTS_DOC_ID_INDEX_NAME
 on the Doc ID column.
 @return the status of the FTS_DOC_ID index */
-
 fts_doc_id_index_enum
 innobase_fts_check_doc_id_index(
 	const dict_table_t*	table,		/*!< in: table definition */
@@ -695,7 +899,6 @@ Check whether the table has a unique index with FTS_DOC_ID_INDEX_NAME
 on the Doc ID column in MySQL create index definition.
 @return FTS_EXIST_DOC_ID_INDEX if there exists the FTS_DOC_ID index,
 FTS_INCORRECT_DOC_ID_INDEX if the FTS_DOC_ID index is of wrong format */
-
 fts_doc_id_index_enum
 innobase_fts_check_doc_id_index_in_def(
 	ulint		n_key,		/*!< in: Number of keys */
@@ -731,7 +934,6 @@ Copy table flags from MySQL's HA_CREATE_INFO into an InnoDB table object.
 Those flags are stored in .frm file and end up in the MySQL table object,
 but are frequently used inside InnoDB so we keep their copies into the
 InnoDB table object. */
-
 void
 innobase_copy_frm_flags_from_create_info(
 	dict_table_t*		innodb_table,	/*!< in/out: InnoDB table */
@@ -742,8 +944,143 @@ Copy table flags from MySQL's TABLE_SHARE into an InnoDB table object.
 Those flags are stored in .frm file and end up in the MySQL table object,
 but are frequently used inside InnoDB so we keep their copies into the
 InnoDB table object. */
-
 void
 innobase_copy_frm_flags_from_table_share(
 	dict_table_t*		innodb_table,	/*!< in/out: InnoDB table */
 	const TABLE_SHARE*	table_share);	/*!< in: table share */
+
+/** Set up base columns for virtual column
+@param[in]	table	the InnoDB table
+@param[in]	field	MySQL field
+@param[in,out]	v_col	virtual column to be set up */
+void
+innodb_base_col_setup(
+	dict_table_t*	table,
+	const Field*	field,
+	dict_v_col_t*	v_col);
+
+/** whether this is a computed virtual column */
+#define innobase_is_v_fld(field) ((field)->gcol_info && !(field)->stored_in_db)
+
+/** Release temporary latches.
+Call this function when mysqld passes control to the client. That is to
+avoid deadlocks on the adaptive hash S-latch possibly held by thd. For more
+documentation, see handler.cc.
+@param[in]	hton	Handlerton.
+@param[in]	thd	MySQL thread.
+@return 0 */
+int
+innobase_release_temporary_latches(
+	handlerton*	hton,
+	THD*		thd);
+
+/** Always normalize table name to lower case on Windows */
+#ifdef _WIN32
+#define normalize_table_name(norm_name, name)           \
+	create_table_info_t::normalize_table_name_low(norm_name, name, TRUE)
+#else
+#define normalize_table_name(norm_name, name)           \
+	create_table_info_t::normalize_table_name_low(norm_name, name, FALSE)
+#endif /* _WIN32 */
+
+/** Obtain the InnoDB transaction of a MySQL thread.
+@param[in,out]	thd	MySQL thread handler.
+@return reference to transaction pointer */
+trx_t*& thd_to_trx(THD*	thd);
+
+/** Converts an InnoDB error code to a MySQL error code.
+Also tells to MySQL about a possible transaction rollback inside InnoDB caused
+by a lock wait timeout or a deadlock.
+@param[in]	error	InnoDB error code.
+@param[in]	flags	InnoDB table flags or 0.
+@param[in]	thd	MySQL thread or NULL.
+@return MySQL error code */
+int
+convert_error_code_to_mysql(
+	dberr_t	error,
+	ulint	flags,
+	THD*	thd);
+
+/** Converts a search mode flag understood by MySQL to a flag understood
+by InnoDB.
+@param[in]	find_flag	MySQL search mode flag.
+@return	InnoDB search mode flag. */
+page_cur_mode_t
+convert_search_mode_to_innobase(
+	enum ha_rkey_function	find_flag);
+
+/** Commits a transaction in an InnoDB database.
+@param[in]	trx	Transaction handle. */
+void
+innobase_commit_low(
+	trx_t*	trx);
+
+extern my_bool	innobase_stats_on_metadata;
+
+/** Calculate Record Per Key value.
+Need to exclude the NULL value if innodb_stats_method is set to "nulls_ignored"
+@param[in]	index	InnoDB index.
+@param[in]	i	The column we are calculating rec per key.
+@param[in]	records	Estimated total records.
+@return estimated record per key value */
+rec_per_key_t
+innodb_rec_per_key(
+	dict_index_t*	index,
+	ulint		i,
+	ha_rows		records);
+
+/** Build template for the virtual columns and their base columns
+@param[in]	table		MySQL TABLE
+@param[in]	ib_table	InnoDB dict_table_t
+@param[in,out]	share		InnoDB share structure
+@param[in]	locked		true if innobase_share_mutex is held
+@param[in]	share_tbl_name	original MySQL table name */
+void
+innobase_build_v_templ(
+	const TABLE*		table,
+	const dict_table_t*	ib_table,
+	innodb_col_templ_t*	s_templ,
+	bool			locked,
+	const char*		share_tbl_name);
+
+/** Free a virtual template in INNOBASE_SHARE structure
+@param[in,out]  share   table share holds the template to free */
+void
+free_share_vtemp(
+	INNOBASE_SHARE* share);
+
+/** Refresh template for the virtual columns and their base columns if
+the share structure exists
+@param[in]	table		MySQL TABLE
+@param[in]	ib_table	InnoDB dict_table_t
+@param[in]	table_name	table_name used to find the share structure */
+void
+refresh_share_vtempl(
+	const TABLE*		mysql_table,
+	const dict_table_t*	ib_table,
+	const char*	table_name);
+
+/** callback used by MySQL server layer to initialized
+the table virtual columns' template
+@param[in]	table		MySQL TABLE
+@param[in,out]	ib_table	InnoDB dict_table_t */
+void
+innobase_build_v_templ_callback(
+        const TABLE*	table,
+        void*		ib_table);
+
+/** Callback function definition, used by MySQL server layer to initialized
+the table virtual columns' template */
+typedef void (*my_gcolumn_templatecallback_t)(const TABLE*, void*);
+
+/** Get the computed value by supplying the base column values.
+@param[in,out]  table   the table whose virtual column template to be built */
+void
+innobase_init_vc_templ(
+        dict_table_t*   table);
+
+/** Free the virtual column template
+@param[in,out]  vc_templ        virtual column template */
+void
+free_vc_templ(
+	innodb_col_templ_t*	vc_templ);

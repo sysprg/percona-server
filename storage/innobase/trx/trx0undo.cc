@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1996, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1996, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -202,7 +202,6 @@ trx_undo_get_prev_rec_from_prev_page(
 /***********************************************************************//**
 Gets the previous record in an undo log.
 @return undo log record, the page s-latched, NULL if none */
-
 trx_undo_rec_t*
 trx_undo_get_prev_rec(
 /*==================*/
@@ -288,7 +287,6 @@ trx_undo_get_next_rec_from_next_page(
 /***********************************************************************//**
 Gets the next record in an undo log.
 @return undo log record, the page s-latched, NULL if none */
-
 trx_undo_rec_t*
 trx_undo_get_next_rec(
 /*==================*/
@@ -383,7 +381,6 @@ trx_undo_page_init_log(
 /***********************************************************//**
 Parses the redo log entry of an undo log page initialization.
 @return end of log record or NULL */
-
 byte*
 trx_undo_parse_page_init(
 /*=====================*/
@@ -439,7 +436,7 @@ trx_undo_page_init(
 Creates a new undo log segment in file.
 @return DB_SUCCESS if page creation OK possible error codes are:
 DB_TOO_MANY_CONCURRENT_TRXS DB_OUT_OF_FILE_SPACE */
-static __attribute__((nonnull, warn_unused_result))
+static __attribute__((warn_unused_result))
 dberr_t
 trx_undo_seg_create(
 /*================*/
@@ -463,7 +460,9 @@ trx_undo_seg_create(
 	bool		success;
 	dberr_t		err = DB_SUCCESS;
 
-	ut_ad(mtr && id && rseg_hdr);
+	ut_ad(mtr != NULL);
+	ut_ad(id != NULL);
+	ut_ad(rseg_hdr != NULL);
 	ut_ad(mutex_own(&(rseg->mutex)));
 
 	/*	fputs(type == TRX_UNDO_INSERT
@@ -472,9 +471,9 @@ trx_undo_seg_create(
 	slot_no = trx_rsegf_undo_find_free(rseg_hdr, mtr);
 
 	if (slot_no == ULINT_UNDEFINED) {
-		ib_logf(IB_LOG_LEVEL_WARN,
-			"Cannot find a free slot for an undo log. Do you have"
-			" too many active transactions running concurrently?");
+		ib::warn() << "Cannot find a free slot for an undo log. Do"
+			" you have too many active transactions running"
+			" concurrently?";
 
 		return(DB_TOO_MANY_CONCURRENT_TRXS);
 	}
@@ -734,7 +733,6 @@ trx_undo_insert_header_reuse_log(
 @param[in,out]	page	page frame or NULL
 @param[in,out]	mtr	mini-transaction or NULL
 @return end of log record or NULL */
-
 byte*
 trx_undo_parse_page_header(
 	mlog_id_t	type,
@@ -841,7 +839,6 @@ trx_undo_discard_latest_log(
 /***********************************************************//**
 Parses the redo log entry of an undo log page header discard.
 @return end of log record or NULL */
-
 byte*
 trx_undo_parse_discard_latest(
 /*==========================*/
@@ -905,7 +902,6 @@ trx_undo_discard_latest_update_undo(
 /********************************************************************//**
 Tries to add a page to the undo log segment where the undo log is placed.
 @return X-latched block if success, else NULL */
-
 buf_block_t*
 trx_undo_add_page(
 /*==============*/
@@ -1034,7 +1030,6 @@ trx_undo_free_page(
 /********************************************************************//**
 Frees the last undo log page.
 The caller must hold the rollback segment mutex. */
-
 void
 trx_undo_free_last_page_func(
 /*==========================*/
@@ -1091,7 +1086,6 @@ trx_undo_empty_header_page(
 /***********************************************************************//**
 Truncates an undo log from the end. This function is used during a rollback
 to free space from an undo log. */
-
 void
 trx_undo_truncate_end_func(
 /*=======================*/
@@ -1175,7 +1169,6 @@ freed, but emptied, if all the records there are below the limit.
 @param[in]	hdr_offset	header offset on the page
 @param[in]	limit		first undo number to preserve
 (everything below the limit will be truncated) */
-
 void
 trx_undo_truncate_start(
 	trx_rseg_t*	rseg,
@@ -1364,7 +1357,7 @@ trx_undo_mem_create_at_db_start(
 
 	undo->table_id = mach_read_from_8(undo_header + TRX_UNDO_TABLE_ID);
 	undo->state = state;
-	undo->size = flst_get_len(seg_header + TRX_UNDO_PAGE_LIST, mtr);
+	undo->size = flst_get_len(seg_header + TRX_UNDO_PAGE_LIST);
 
 	/* If the log segment is being freed, the page list is inconsistent! */
 	if (state == TRX_UNDO_TO_FREE) {
@@ -1422,7 +1415,6 @@ Initializes the undo log lists for a rollback segment memory copy. This
 function is only called when the database is started or a new rollback
 segment is created.
 @return the combined size of undo log segments in pages */
-
 ulint
 trx_undo_lists_init(
 /*================*/
@@ -1561,7 +1553,6 @@ trx_undo_mem_init_for_reuse(
 
 /********************************************************************//**
 Frees an undo log memory copy. */
-
 void
 trx_undo_mem_free(
 /*==============*/
@@ -1767,7 +1758,6 @@ undo log reused.
 @return DB_SUCCESS if undo log assign successful, possible error codes
 are: DB_TOO_MANY_CONCURRENT_TRXS DB_OUT_OF_FILE_SPACE DB_READ_ONLY
 DB_OUT_OF_MEMORY */
-
 dberr_t
 trx_undo_assign_undo(
 /*=================*/
@@ -1853,7 +1843,6 @@ func_exit:
 /******************************************************************//**
 Sets the state of the undo log segment at a transaction finish.
 @return undo log segment header page, x-latched */
-
 page_t*
 trx_undo_set_state_at_finish(
 /*=========================*/
@@ -1894,16 +1883,18 @@ trx_undo_set_state_at_finish(
 	return(undo_page);
 }
 
-/******************************************************************//**
-Sets the state of the undo log segment at a transaction prepare.
+/** Set the state of the undo log segment at a XA PREPARE or XA ROLLBACK.
+@param[in,out]	trx		transaction
+@param[in,out]	undo		insert_undo or update_undo log
+@param[in]	rollback	false=XA PREPARE, true=XA ROLLBACK
+@param[in,out]	mtr		mini-transaction
 @return undo log segment header page, x-latched */
-
 page_t*
 trx_undo_set_state_at_prepare(
-/*==========================*/
-	trx_t*		trx,	/*!< in: transaction */
-	trx_undo_t*	undo,	/*!< in: undo log memory copy */
-	mtr_t*		mtr)	/*!< in: mtr */
+	trx_t*		trx,
+	trx_undo_t*	undo,
+	bool		rollback,
+	mtr_t*		mtr)
 {
 	trx_usegf_t*	seg_hdr;
 	trx_ulogf_t*	undo_header;
@@ -1920,7 +1911,15 @@ trx_undo_set_state_at_prepare(
 
 	seg_hdr = undo_page + TRX_UNDO_SEG_HDR;
 
+	if (rollback) {
+		ut_ad(undo->state == TRX_UNDO_PREPARED);
+		mlog_write_ulint(seg_hdr + TRX_UNDO_STATE, TRX_UNDO_ACTIVE,
+				 MLOG_2BYTES, mtr);
+		return(undo_page);
+	}
+
 	/*------------------------------*/
+	ut_ad(undo->state == TRX_UNDO_ACTIVE);
 	undo->state = TRX_UNDO_PREPARED;
 	undo->xid   = *trx->xid;
 	/*------------------------------*/
@@ -1943,7 +1942,6 @@ trx_undo_set_state_at_prepare(
 Adds the update undo log header as the first in the history list, and
 frees the memory object, or puts it to the list of cached update undo log
 segments. */
-
 void
 trx_undo_update_cleanup(
 /*====================*/
@@ -1991,7 +1989,6 @@ Knowledge of inserts is not needed after a commit or rollback, therefore
 the data can be discarded.
 @param[in,out]	undo_ptr	undo log to clean up
 @param[in]	noredo		whether the undo tablespace is redo logged */
-
 void
 trx_undo_insert_cleanup(
 	trx_undo_ptr_t*	undo_ptr,
@@ -2040,7 +2037,6 @@ trx_undo_insert_cleanup(
 
 /********************************************************************//**
 At shutdown, frees the undo logs of a PREPARED transaction. */
-
 void
 trx_undo_free_prepared(
 /*===================*/
@@ -2093,7 +2089,6 @@ trx_undo_free_prepared(
 /** Truncate UNDO tablespace, reinitialize header and rseg.
 @param[in]	undo_trunc	UNDO tablespace handler
 @return true if success else false. */
-
 bool
 trx_undo_truncate_tablespace(
 	undo::Truncate*	undo_trunc)
@@ -2181,7 +2176,6 @@ trx_undo_truncate_tablespace(
 		ut_ad(rseg->curr_size == 1);
 
 		rseg->trx_ref_count = 0;
-		rseg->skip_allocation = false;
 		rseg->last_page_no = FIL_NULL;
 		rseg->last_offset = 0;
 		rseg->last_trx_no = 0;

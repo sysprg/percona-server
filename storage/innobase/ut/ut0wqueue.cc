@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2006, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2006, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -18,8 +18,6 @@ this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "ut0list.h"
 #include "mem0mem.h"
-#include "sync0mutex.h"
-#include "sync0mutex.h"
 #include "ut0wqueue.h"
 
 /*******************************************************************//**
@@ -39,17 +37,17 @@ struct ib_wqueue_t {
 /****************************************************************//**
 Create a new work queue.
 @return work queue */
-
 ib_wqueue_t*
 ib_wqueue_create(void)
 /*===================*/
 {
-	ib_wqueue_t*	wq = static_cast<ib_wqueue_t*>(ut_malloc_nokey(sizeof(*wq)));
+	ib_wqueue_t*	wq = static_cast<ib_wqueue_t*>(
+		ut_malloc_nokey(sizeof(*wq)));
 
 	/* Function ib_wqueue_create() has not been used anywhere,
 	not necessary to instrument this mutex */
 
-	mutex_create("work_queue", &wq->mutex);
+	mutex_create(LATCH_ID_WORK_QUEUE, &wq->mutex);
 
 	wq->items = ib_list_create();
 	wq->event = os_event_create(0);
@@ -59,7 +57,6 @@ ib_wqueue_create(void)
 
 /****************************************************************//**
 Free a work queue. */
-
 void
 ib_wqueue_free(
 /*===========*/
@@ -74,7 +71,6 @@ ib_wqueue_free(
 
 /****************************************************************//**
 Add a work item to the queue. */
-
 void
 ib_wqueue_add(
 /*==========*/
@@ -94,7 +90,6 @@ ib_wqueue_add(
 /****************************************************************//**
 Wait for a work item to appear in the queue.
 @return work item */
-
 void*
 ib_wqueue_wait(
 /*===========*/
@@ -132,7 +127,6 @@ ib_wqueue_wait(
 
 /********************************************************************
 Wait for a work item to appear in the queue for specified time. */
-
 void*
 ib_wqueue_timedwait(
 /*================*/
@@ -175,7 +169,6 @@ ib_wqueue_timedwait(
 
 /********************************************************************
 Check if queue is empty. */
-
 ibool
 ib_wqueue_is_empty(
 /*===============*/

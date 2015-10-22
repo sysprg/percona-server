@@ -1,12 +1,14 @@
 --echo #
 --echo # wl#6711:User can choose tmp table engine between MyISAM and InnoDB
 --echo #
+# In order to support innodb_limit_optimistic_insert_debug
+--source include/have_debug.inc
 # In order to make the output of explain json-format stable
 --source include/have_innodb_16k.inc
 # Contains several strange queries with GROUP BY, so:
 --source include/turn_off_only_full_group_by.inc
 # =======================initialization====================
-drop table if exists t1, t2;
+SET GLOBAL innodb_large_prefix=OFF;
 create table t1(a int, b varchar(20));
 create table t2(a int, b varchar(20));
 insert into t1 values(1, 'a'), (2, 'b'), (3, 'c'), (3, 'c'), (4, 'c');
@@ -22,6 +24,8 @@ set @old_internal_tmp_disk_storage_engine= @@internal_tmp_disk_storage_engine;
 set global internal_tmp_disk_storage_engine='innodb';
 set @old_big_tables= @@big_tables;
 set big_tables= on;
+set @old_optimizer_switch= @@optimizer_switch;
+set optimizer_switch='derived_merge=off';
 
 #========================begin=============================
 # use SQL_BUFFER_RESULT
@@ -129,6 +133,8 @@ drop table t3;
 explain format=json select * from t1 where t1.a in (select a from t2) ;
 select * from t1 where t1.a in (select a from t2) order by 1, 2;
 #tmp table for semi-join weedout
+set @tmp_optimizer_switch= @@optimizer_switch;
+
 if (`select locate('materialization', @@optimizer_switch) > 0`) 
 {
     set optimizer_switch='materialization=off';
@@ -143,7 +149,7 @@ if (`select locate('loosescan', @@optimizer_switch) > 0`)
 }
 explain format=json select * from t1 where t1.a in (select a from t2) ;
 select * from t1 where t1.a in (select a from t2) order by 1, 2;
-set optimizer_switch=default;
+set optimizer_switch= @tmp_optimizer_switch;
 
 #system table
 explain format=json select * from information_schema.character_sets order by 1 limit 3;
@@ -245,8 +251,22 @@ create table t3 (
                 ) engine=innodb;
 insert into t3 select a,a, a,a,a from t0;
 analyze table t1,t3;
+#Due to cost changes, materialzed scan will be preferred 
+#for this query instead of dups_weedout.  
+#So changing optimizer_switch.
+set @old_optimizer_switch=@@optimizer_switch;
+set optimizer_switch='materialization=off';
 explain format=json select * from t3 where b in (select a from t1);
 select * from t3 where b in (select a from t1);
+set @@optimizer_switch=@old_optimizer_switch;
+
+#multi-update
+update t1, t3 set t3.b=10, t1.a=20;
+select * from t1 order by 1,2;
+select * from t3 order by 1,2;
+create trigger trg before update on t3 for each row set new.b=new.b+1;
+update t1, t3 set t3.b=10, t1.a=20;
+select * from t3 order by 1,2;
 drop table t0, t1, t3;
 #
 # Check unique_constraint on values causing hash collision
@@ -1192,9 +1212,150 @@ WHERE
 ORDER BY field1,field2 DESC;
 
 DROP TABLE t1,t2;
-#============================end && cleanup======================= 
-set @@global.internal_tmp_disk_storage_engine= @old_internal_tmp_disk_storage_engine;
-set big_tables= @old_big_tables;
---source include/restore_sql_mode_after_turn_off_only_full_group_by.inc
+
+--echo #
+--echo # BUG#19191377: WL#6737: NOT NULL COLUMN IS BEING PROJECTED
+--echo #              AS NULLABLE IN TEMPORARY TABLES.
+--echo #
+CREATE TABLE t1(f1 INT NOT NULL);
+INSERT INTO t1 VALUES (16777214), (0);
+SELECT COUNT(*) FROM t1 LEFT JOIN t1 t2 ON 1 WHERE t2.f1 > 1 GROUP BY t2.f1;
+DROP TABLE t1;
+
+--echo #
+--echo # BUG#20059644: WL#6737: CRASH AT OPERATOR<< IN DICT/DICT0MEM.CC 
+--echo #
+CREATE TABLE C (
+  pk int(11) NOT NULL AUTO_INCREMENT,
+  col_varchar_key varchar(1) NOT NULL,
+  col_varchar_nokey varchar(1) NOT NULL,
+  PRIMARY KEY (pk),
+  KEY col_varchar_key (col_varchar_key)
+);
+INSERT INTO C VALUES (7,'y','y');
+
+CREATE TABLE CC (
+  pk int(11) NOT NULL AUTO_INCREMENT,
+  col_varchar_key varchar(1) NOT NULL,
+  col_varchar_nokey varchar(1) NOT NULL,
+  PRIMARY KEY (pk),
+  KEY col_varchar_key (col_varchar_key)
+);
+INSERT INTO CC VALUES (13,'y','y');
+
+SELECT
+DISTINCT CONCAT( table2 . col_varchar_key , table1 . col_varchar_key )
+AS field1
+FROM
+( CC AS table1 RIGHT OUTER JOIN C AS table2 ON (table2 . col_varchar_key =
+table1 . col_varchar_nokey  ) )
+WHERE
+(
+table1 . pk = 13
+)
+ORDER BY field1 , field1;
+
+DROP TABLE C,CC;
+--echo #
+--echo # BUG#19627741: SELECT DISTINCT SUM() RETURNS DUPLICATE ROWS
+--echo #
+CREATE TABLE t1 (
+a int(11) DEFAULT NULL,
+b int(11) DEFAULT NULL,
+c1 int(11) DEFAULT NULL,
+c2 int(11) DEFAULT NULL,
+c3 int(11) DEFAULT NULL,
+c4 int(11) DEFAULT NULL,
+c5 int(11) DEFAULT NULL,
+c6 int(11) DEFAULT NULL,
+c7 int(11) DEFAULT NULL,
+c8 int(11) DEFAULT NULL,
+c9 int(11) DEFAULT NULL,
+c10 int(11) DEFAULT NULL,
+c11 int(11) DEFAULT NULL,
+c12 int(11) DEFAULT NULL,
+c13 int(11) DEFAULT NULL,
+c14 int(11) DEFAULT NULL,
+c15 int(11) DEFAULT NULL,
+c16 int(11) DEFAULT NULL,
+c17 int(11) DEFAULT NULL,
+c18 int(11) DEFAULT NULL,
+c19 int(11) DEFAULT NULL,
+c20 int(11) DEFAULT NULL,
+c21 int(11) DEFAULT NULL,
+c22 int(11) DEFAULT NULL,
+c23 int(11) DEFAULT NULL,
+c24 int(11) DEFAULT NULL,
+c25 int(11) DEFAULT NULL,
+c26 int(11) DEFAULT NULL,
+c27 int(11) DEFAULT NULL,
+c28 int(11) DEFAULT NULL,
+c29 int(11) DEFAULT NULL,
+c30 int(11) DEFAULT NULL,
+c31 int(11) DEFAULT NULL,
+c32 int(11) DEFAULT NULL,
+c33 int(11) DEFAULT NULL,
+c34 int(11) DEFAULT NULL,
+c35 int(11) DEFAULT NULL
+);
+INSERT INTO t1 (a,b) VALUES (1,4),(2,2),(2,2),(4,1),(4,1),(4,1),(4,1);
+SELECT sum(b) FROM t1 GROUP BY a, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10,
+c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23, c24, c25,
+c26, c27, c28, c29, c30, c31, c32, c33, c34, c35;
+SELECT DISTINCT sum(b) FROM t1 GROUP BY a, c1, c2, c3, c4, c5, c6, c7, c8,
+c9, c10, c11, c12, c13, c14, c15, c16, c17, c18, c19, c20, c21, c22, c23,
+c24, c25, c26, c27, c28, c29, c30, c31, c32, c33, c34, c35;
+DROP TABLE t1;
+
+--echo #
+--echo # Bug#20454833 PREFIX INDEX FIELD, ON AN INAPPROPRIATE DATA TYPE
 --echo #
 
+set sql_mode='';
+create table t1 (a blob,b int) engine=innodb;
+create table t2 (b blob) engine=innodb;
+select t2.b,t1.b,t1.a
+from t2 inner join t1 on 1 cross join t2 a  on 1
+group by t1.b;
+set sql_mode=default;
+drop table t1,t2;
+
+--echo #
+--echo # Bug#20506527 FAILING ASSERTION: !MBMAXLEN || !(PREFIX_LEN % MBMAXLEN)
+--echo #
+
+set names utf8, sql_mode='';
+create table t1(a date,b text charset utf8,c linestring not null);
+insert into t1 values ('2015-01-01','a',linestring(point(1,1),point(2,2)));
+select distinct nullif(a,b) as c from t1 z order by z.c;
+set names default, sql_mode=default;
+drop table t1;
+
+--echo #
+--echo # Bug#20752543 INNODB:FAILING ASSERTION:FLAGS & BUF_PAGE_PRINT_NO_CRASH
+--echo #
+SET @old_big_tables=@@big_tables;
+SET big_tables=on;
+set @old_limit_optimistic_insert_debug= @@innodb_limit_optimistic_insert_debug;
+set global innodb_limit_optimistic_insert_debug=2;
+select 1 as a union all select 1 union all select 2 union select 1 union all
+select 2;
+set big_tables= @old_big_tables;
+set global innodb_limit_optimistic_insert_debug=
+                      @old_limit_optimistic_insert_debug;
+--echo #
+--echo # Bug#20454979 CRASH IN ACTUAL_KEY_PARTS 
+--echo #
+create table t1(a blob);
+insert into t1 values ('a');
+--echo # The query result is not correct until bug#20692219 is fixed
+select distinct least(1,count(distinct a)) from t1 group by a;
+drop table t1;
+
+#============================end && cleanup======================= 
+SET GLOBAL innodb_large_prefix=default;
+set @@global.internal_tmp_disk_storage_engine= @old_internal_tmp_disk_storage_engine;
+set big_tables= @old_big_tables;
+set optimizer_switch= @old_optimizer_switch;
+--source include/restore_sql_mode_after_turn_off_only_full_group_by.inc
+--echo #

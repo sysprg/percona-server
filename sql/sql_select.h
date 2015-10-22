@@ -1,7 +1,7 @@
 #ifndef SQL_SELECT_INCLUDED
 #define SQL_SELECT_INCLUDED
 
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -35,6 +35,7 @@
 #include "sql_executor.h"
 #include "opt_explain_format.h" // for Extra_tag
 #include "sql_opt_exec_shared.h"
+#include "item_cmpfunc.h"             // Item_cond_and
 
 #include <functional>
 /**
@@ -615,6 +616,22 @@ private:
   Item          **m_join_cond_ref;
 public:
   COND_EQUAL    *cond_equal;    /**< multiple equalities for the on expression*/
+
+  /**
+    The maximum value for the cost of seek operations for key lookup
+    during ref access. The cost model for ref access assumes every key
+    lookup will cause reading a block from disk. With many key lookups
+    into the same table, most of the blocks will soon be in a memory
+    buffer. As a consequence, there will in most cases be an upper
+    limit on the number of actual disk accesses the ref access will
+    cause. This variable is used for storing a maximum cost estimate
+    for the disk accesses for ref access. It is used for limiting the
+    cost estimate for ref access to a more realistic value than
+    assuming every key lookup causes a random disk access. Without
+    having this upper limit for the cost of ref access, table scan
+    would be more likely to be chosen for cases where ref access
+    performs better.
+  */
   double	worst_seeks;
   /** Keys with constant part. Subset of keys. */
   key_map	const_keys;
@@ -906,8 +923,7 @@ public:
     THD *thd= to_field->table->in_use;
     enum_check_fields saved_count_cuted_fields= thd->count_cuted_fields;
     sql_mode_t sql_mode= thd->variables.sql_mode;
-    thd->variables.sql_mode&= ~(MODE_STRICT_ALL_TABLES |
-                                MODE_STRICT_TRANS_TABLES);
+    thd->variables.sql_mode&= ~(MODE_NO_ZERO_IN_DATE | MODE_NO_ZERO_DATE);
 
     thd->count_cuted_fields= CHECK_FIELD_IGNORE;
 
@@ -1074,20 +1090,10 @@ protected:
 };
 
 bool error_if_full_join(JOIN *join);
-bool handle_select(THD *thd, select_result *result,
-                   ulong setup_tables_done_option);
-bool mysql_prepare_and_optimize_select(THD *thd,
-                  List<Item> &list,
-                  ulonglong select_type,
-                  select_result *result,
-                  SELECT_LEX *select_lex, bool *free_join);
-bool mysql_select(THD *thd,
-                  List<Item> &list,
-                  ulonglong select_type,
-                  select_result *result,
-                  SELECT_LEX *select_lex);
-void free_underlaid_joins(THD *thd, SELECT_LEX *select);
+bool handle_query(THD *thd, LEX *lex, Query_result *result,
+                  ulonglong added_options, ulonglong removed_options);
 
+void free_underlaid_joins(THD *thd, SELECT_LEX *select);
 
 void calc_used_field_length(THD *thd,
                             TABLE *table,
@@ -1111,7 +1117,7 @@ bool const_expression_in_where(Item *cond, Item *comp_item,
                                Item **const_item= NULL);
 bool test_if_subpart(ORDER *a,ORDER *b);
 void calc_group_buffer(JOIN *join,ORDER *group);
-bool make_join_readinfo(JOIN *join, ulonglong options, uint no_jbuf_after);
+bool make_join_readinfo(JOIN *join, uint no_jbuf_after);
 bool create_ref_for_key(JOIN *join, JOIN_TAB *j, Key_use *org_keyuse,
                         table_map used_tables);
 bool types_allow_materialization(Item *outer, Item *inner);

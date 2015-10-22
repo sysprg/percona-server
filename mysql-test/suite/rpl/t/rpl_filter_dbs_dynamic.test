@@ -2,6 +2,7 @@
 # Test if dynamic replication database filter rules are properly evaluated.
 #
 
+--source include/not_group_replication_plugin.inc
 source include/not_gtid_enabled.inc;
 source include/have_binlog_format_statement.inc;
 source include/master-slave.inc;
@@ -14,6 +15,11 @@ CHANGE REPLICATION FILTER replicate_ignore_db=(db2);
 
 connection slave;
 source include/stop_slave.inc;
+#Bug19711674: Set the values to empty initially
+CHANGE REPLICATION FILTER replicate_do_db=();
+CHANGE REPLICATION FILTER replicate_ignore_db=();
+# End of Bug#19711674 test
+
 CHANGE REPLICATION FILTER replicate_do_db=(db1);
 CHANGE REPLICATION FILTER replicate_ignore_db=(db2);
 source include/start_slave.inc;

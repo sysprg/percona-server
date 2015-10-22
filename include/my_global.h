@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2001, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2001, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -17,12 +17,19 @@
 #ifndef MY_GLOBAL_INCLUDED
 #define MY_GLOBAL_INCLUDED
 
-/* This is the include file that should be included 'first' in every C file. */
+/*
+  This include file should be included first in every header file.
+
+  This makes sure my_config.h is included to get platform specific
+  symbols defined and it makes sure a lot of platform/compiler
+  differences are mitigated.
+*/
 
 #include "my_config.h"
 
 #define __STDC_LIMIT_MACROS	/* Enable C99 limit macros */
 #define __STDC_FORMAT_MACROS	/* Enable C99 printf format macros */
+#define _USE_MATH_DEFINES       /* Get access to M_PI, M_E, etc. in math.h */
 
 #ifdef _WIN32
 /* Include common headers.*/
@@ -48,6 +55,9 @@
 #endif
 #if !defined(_WIN32)
 #include <netdb.h>
+#endif
+#ifdef MY_MSCRT_DEBUG
+#include <crtdbg.h>
 #endif
 
 /*
@@ -105,7 +115,10 @@
 #undef SIZEOF_OFF_T
 #define SIZEOF_OFF_T 8
 
-#define sleep(a) Sleep((a)*1000)
+static inline void sleep(unsigned long seconds)
+{
+  Sleep(seconds * 1000);
+}
 
 /* Define missing access() modes. */
 #define F_OK 0
@@ -152,14 +165,12 @@
 #define QUOTE_ARG(x)		#x	/* Quote argument (before cpp) */
 #define STRINGIFY_ARG(x) QUOTE_ARG(x)	/* Quote argument, after cpp */
 
-#ifndef SO_EXT
 #ifdef _WIN32
 #define SO_EXT ".dll"
 #elif defined(__APPLE__)
 #define SO_EXT ".dylib"
 #else
 #define SO_EXT ".so"
-#endif
 #endif
 
 #if !defined(HAVE_UINT)
@@ -253,6 +264,7 @@ typedef socket_len_t SOCKET_SIZE_TYPE; /* Used by NDB */
 #define FN_HEADLEN	253	/* Max length of filepart of file name */
 #define FN_EXTLEN	20	/* Max length of extension (part of FN_LEN) */
 #define FN_REFLEN	512	/* Max length of full path-name */
+#define FN_REFLEN_SE	4000	/* Max length of full path-name in SE */
 #define FN_EXTCHAR	'.'
 #define FN_HOMELIB	'~'	/* ~/ is used as abbrev for home dir */
 #define FN_CURLIB	'.'	/* ./ is used as abbrev for current dir */
@@ -310,9 +322,7 @@ typedef socket_len_t SOCKET_SIZE_TYPE; /* Used by NDB */
 #define MY_NFILE 64
 #endif
 
-#ifndef OS_FILE_LIMIT
 #define OS_FILE_LIMIT	UINT_MAX
-#endif
 
 /*
   Io buffer size; Must be a power of 2 and a multiple of 512. May be
@@ -369,16 +379,6 @@ inline unsigned long long my_double2ulonglong(double d)
 #define double2ulonglong(A) ((ulonglong) (double) (A))
 #endif
 
-#ifndef LONGLONG_MIN
-#define LONGLONG_MIN	LLONG_MIN
-#endif
-#ifndef LONGLONG_MAX
-#define LONGLONG_MAX	LLONG_MAX
-#endif
-#ifndef ULONGLONG_MAX
-#define ULONGLONG_MAX   ULLONG_MAX
-#endif
-
 #define INT_MIN64       (~0x7FFFFFFFFFFFFFFFLL)
 #define INT_MAX64       0x7FFFFFFFFFFFFFFFLL
 #define INT_MIN32       (~0x7FFFFFFFL)
@@ -396,6 +396,11 @@ inline unsigned long long my_double2ulonglong(double d)
 
 #ifndef SIZE_T_MAX
 #define SIZE_T_MAX      (~((size_t) 0))
+#endif
+
+// Our ifdef trickery for my_isfinite does not work with gcc/solaris unless we:
+#ifdef HAVE_IEEEFP_H
+#include <ieeefp.h>
 #endif
 
 #if (__cplusplus >= 201103L)
@@ -420,17 +425,6 @@ inline unsigned long long my_double2ulonglong(double d)
     #define my_isinf(X) (!my_isfinite(X) && !my_isnan(X))
   #endif
 #endif /* __cplusplus >= 201103L */
-
-/* Define missing math constants. */
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-#ifndef M_E
-#define M_E 2.7182818284590452354
-#endif
-#ifndef M_LN2
-#define M_LN2 0.69314718055994530942
-#endif
 
 /*
   Max size that must be added to a so that we know Size to make
@@ -464,10 +458,6 @@ typedef long long	my_ptrdiff_t;
         ((size_t)((char *)&(((TYPE *)0x10)->MEMBER) - (char*)0x10))
 
 #define NullS		(char *) 0
-
-#ifdef STDCALL
-#undef STDCALL
-#endif
 
 #ifdef _WIN32
 #define STDCALL __stdcall
@@ -570,15 +560,6 @@ typedef char		my_bool; /* Small bool */
 
 /* Macros for converting *constants* to the right type */
 #define MYF(v)		(myf) (v)
-
-#ifndef LL
-#define LL(A) A ## LL
-#endif
-
-#ifndef ULL
-#define ULL(A) A ## ULL
-#endif
-
 
 /* Some helper macros */
 #define YESNO(X) ((X) ? "yes" : "no")
@@ -707,14 +688,24 @@ static inline void set_timespec_nsec(struct timespec *abstime, ulonglong nsec)
 {
 #ifndef _WIN32
   ulonglong now= my_getsystime() + (nsec / 100);
-  abstime->tv_sec=   now / 10000000ULL;
+  ulonglong tv_sec= now / 10000000ULL;
+#if SIZEOF_TIME_T < SIZEOF_LONG_LONG
+  /* Ensure that the number of seconds don't overflow. */
+  tv_sec= MY_MIN(tv_sec, ((ulonglong)INT_MAX32));
+#endif
+  abstime->tv_sec=  (time_t)tv_sec;
   abstime->tv_nsec= (now % 10000000ULL) * 100 + (nsec % 100);
-#else
+#else /* !_WIN32 */
+  ulonglong max_timeout_msec= (nsec / 1000000);
   union ft64 tv;
   GetSystemTimeAsFileTime(&tv.ft);
   abstime->tv.i64= tv.i64 + (__int64)(nsec / 100);
-  abstime->max_timeout_msec= (long)(nsec / 1000000);
+#if SIZEOF_LONG < SIZEOF_LONG_LONG
+  /* Ensure that the msec value doesn't overflow. */
+  max_timeout_msec= MY_MIN(max_timeout_msec, ((ulonglong)INT_MAX32));
 #endif
+  abstime->max_timeout_msec= (long)max_timeout_msec;
+#endif /* !_WIN32 */
 }
 
 static inline void set_timespec(struct timespec *abstime, ulonglong sec)
@@ -771,4 +762,13 @@ static inline ulonglong diff_timespec(struct timespec *ts1, struct timespec *ts2
 #define GROUP_RWX       GROUP_READ | GROUP_WRITE | GROUP_EXECUTE
 #define OTHERS_RWX      OTHERS_READ | OTHERS_WRITE | OTHERS_EXECUTE
 
+/* Defaults */
+#define DEFAULT_SSL_CA_CERT     "ca.pem"
+#define DEFAULT_SSL_CA_KEY      "ca-key.pem"
+#define DEFAULT_SSL_SERVER_CERT "server-cert.pem"
+#define DEFAULT_SSL_SERVER_KEY  "server-key.pem"
+
+#if defined(_WIN32) || defined(_WIN64)
+  #define strcasecmp _stricmp
+#endif
 #endif  // MY_GLOBAL_INCLUDED

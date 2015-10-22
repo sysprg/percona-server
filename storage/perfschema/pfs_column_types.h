@@ -1,4 +1,4 @@
-/* Copyright (c) 2008, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2008, 2015, Oracle and/or its affiliates. All rights reserved.
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -55,9 +55,6 @@
 
 /** Size of the DIGEST columns. */
 #define COL_DIGEST_SIZE 64
-
-/** Size of the DIGEST_TEXT columns. */
-#define COL_DIGEST_TEXT_SIZE 1024
 
 /**
   Enum values for the TIMER_NAME columns.
@@ -214,13 +211,15 @@ enum enum_object_type
   OBJECT_TYPE_SCHEMA= 8,
   OBJECT_TYPE_COMMIT= 9,
   OBJECT_TYPE_USER_LEVEL_LOCK= 10,
-  OBJECT_TYPE_BACKUP= 11,
-  OBJECT_TYPE_BINLOG= 12,
+  OBJECT_TYPE_TABLESPACE= 11,
+  OBJECT_TYPE_LOCKING_SERVICE= 12,
+  OBJECT_TYPE_BACKUP= 13,
+  OBJECT_TYPE_BINLOG= 14
 };
 /** Integer, first value of @sa enum_object_type. */
 #define FIRST_OBJECT_TYPE (static_cast<int> (OBJECT_TYPE_EVENT))
 /** Integer, last value of @sa enum_object_type. */
-#define LAST_OBJECT_TYPE (static_cast<int> (OBJECT_TYPE_USER_LEVEL_LOCK))
+#define LAST_OBJECT_TYPE (static_cast<int> (OBJECT_TYPE_LOCKING_SERVICE))
 /** Integer, number of values of @sa enum_object_type. */
 #define COUNT_OBJECT_TYPE (LAST_OBJECT_TYPE - FIRST_OBJECT_TYPE + 1)
 

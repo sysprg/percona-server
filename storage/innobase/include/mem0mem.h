@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1994, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1994, 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -30,9 +30,6 @@ Created 6/9/1994 Heikki Tuuri
 #include "ut0mem.h"
 #include "ut0byte.h"
 #include "ut0rnd.h"
-#ifndef UNIV_HOTBACKUP
-# include "sync0mutex.h"
-#endif /* UNIV_HOTBACKUP */
 #include "mach0data.h"
 
 #include <memory>
@@ -300,7 +297,6 @@ mem_strdupl(
 @param[in]	heap	memory heap where string is allocated
 @param[in]	str	string to be copied
 @return own: a copy of the string */
-
 char*
 mem_heap_strdup(
 	mem_heap_t*	heap,
@@ -321,7 +317,6 @@ mem_heap_strdupl(
 /**********************************************************************//**
 Concatenate two strings and return the result, using a memory heap.
 @return own: the result */
-
 char*
 mem_heap_strcat(
 /*============*/
@@ -332,7 +327,6 @@ mem_heap_strcat(
 /**********************************************************************//**
 Duplicate a block of data, allocated from a memory heap.
 @return own: a copy of the data */
-
 void*
 mem_heap_dup(
 /*=========*/
@@ -346,7 +340,6 @@ formatted string from the given heap. This supports a very limited set of
 the printf syntax: types 's' and 'u' and length modifier 'l' (which is
 required for the 'u' type).
 @return heap-allocated formatted string */
-
 char*
 mem_heap_printf(
 /*============*/
@@ -365,7 +358,6 @@ mem_block_validate(
 /** Validates the contents of a memory heap.
 Asserts that the memory heap is consistent
 @param[in]	heap	Memory heap to validate */
-
 void
 mem_heap_validate(
 	const mem_heap_t*	heap);

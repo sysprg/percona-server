@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2014, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -14,17 +14,15 @@
    along with this program; if not, write to the Free Software Foundation,
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
-#define MYSQL_LEX 1
+#include "table_trigger_dispatcher.h"
 
-#include "my_global.h"
-#include "sql_priv.h"
+#include "auth_common.h"            // check_global_access
 #include "sp_head.h"                // sp_head
 #include "sql_parse.h"              // create_default_definer
 #include "sql_show.h"               // append_definer
 #include "sql_table.h"              // check_n_cut_mysql50_prefix
 
 #include "trigger_loader.h"
-#include "table_trigger_dispatcher.h"
 #include "trigger_chain.h"
 #include "trigger.h"
 
@@ -61,10 +59,9 @@ Table_trigger_dispatcher::Table_trigger_dispatcher(TABLE *subject_table)
 {
   memset(m_trigger_map, 0, sizeof(m_trigger_map));
   m_parse_error_message[0]= 0;
-  m_db_name.str= const_cast<char*>(subject_table->s->db.str);
+  m_db_name.str= subject_table->s->db.str;
   m_db_name.length= subject_table->s->db.length;
-  m_subject_table_name.str=
-                       const_cast<char*>(subject_table->s->table_name.str);
+  m_subject_table_name.str= subject_table->s->table_name.str;
   m_subject_table_name.length= subject_table->s->table_name.length;
 }
 
@@ -220,10 +217,11 @@ bool Table_trigger_dispatcher::create_trigger(
   */
 
   if (lex->definer &&
-      (strcmp(lex->definer->user.str, thd->security_ctx->priv_user) ||
+      (strcmp(lex->definer->user.str,
+              thd->security_context()->priv_user().str) ||
        my_strcasecmp(system_charset_info,
                      lex->definer->host.str,
-                     thd->security_ctx->priv_host)))
+                     thd->security_context()->priv_host().str)))
   {
     if (check_global_access(thd, SUPER_ACL))
     {
@@ -825,7 +823,7 @@ bool Table_trigger_dispatcher::add_tables_and_routines_for_triggers(
   for (int i= 0; i < (int) TRG_EVENT_MAX; ++i)
   {
     if (table_list->trg_event_map &
-        static_cast<uint8>(1 << static_cast<int>(i)))
+        static_cast<uint8>(1 << i))
     {
       for (int j= 0; j < (int) TRG_ACTION_MAX; ++j)
       {

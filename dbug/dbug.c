@@ -84,6 +84,8 @@
 #include <m_string.h>
 #include <errno.h>
 #include <ctype.h>
+#include "thr_mutex.h"
+#include "my_thread_local.h"
 
 #ifdef HAVE_SYS_TIME_H
 #include <sys/time.h>
@@ -329,7 +331,6 @@ static void DbugVfprintf(FILE *stream, const char* format, va_list args);
 ** Macros to allow dbugging with threads
 */
 
-#include <my_pthread.h>
 static native_mutex_t THR_LOCK_dbug;
 
 /**
@@ -1436,6 +1437,56 @@ void _db_doprnt_(const char *format,...)
   va_end(args);
 }
 
+
+/*
+ *  FUNCTION
+ *
+ *      _db_doputs_    handle print of debug lines
+ *
+ *  SYNOPSIS
+ *
+ *      VOID _db_doputs_(const char* log)
+ *      const char *log;
+ *
+ *  DESCRIPTION
+ *
+ *      This function handles the printing of the argument via the log
+ *      string.  The line number of the DBUG macro in the source is found in
+ *      u_line.
+ *
+ *      Note that the log string SHOULD NOT include a terminating
+ *      newline, this is supplied automatically.
+ */
+void _db_doputs_(const char *log)
+{
+  CODE_STATE *cs;
+  int save_errno;
+
+  get_code_state_or_return;
+
+  /* Dirty read, for DBUG_PUTS() performance. */
+  if (! DEBUGGING)
+    return;
+
+  read_lock_stack(cs);
+
+  save_errno= errno;
+  if (!cs->locked)
+    native_mutex_lock(&THR_LOCK_dbug);
+  DoPrefix(cs, cs->u_line);
+  if (TRACING)
+    Indent(cs, cs->level + 1);
+  else
+    (void) fprintf(cs->stack->out_file, "%s: ", cs->func);
+  (void) fprintf(cs->stack->out_file, "%s: ", cs->u_keyword);
+  fprintf(cs->stack->out_file, "%s\n", log);
+  DbugFlush(cs);
+  errno= save_errno;
+
+  unlock_stack(cs);
+}
+
+
 /*
  * This function is intended as a
  * vfprintf clone with consistent, platform independent output for 
@@ -1447,7 +1498,6 @@ static void DbugVfprintf(FILE *stream, const char* format, va_list args)
   (void) my_vsnprintf(cvtbuf, sizeof(cvtbuf), format, args);
   (void) fprintf(stream, "%s\n", cvtbuf);
 }
-
 
 /*
  *  FUNCTION

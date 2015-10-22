@@ -88,14 +88,23 @@ select * from performance_schema.threads;
 select * from performance_schema.users;
 select * from performance_schema.replication_connection_configuration;
 select * from performance_schema.replication_connection_status;
-select * from performance_schema.replication_execute_configuration;
-select * from performance_schema.replication_execute_status;
-select * from performance_schema.replication_execute_status_by_coordinator;
-select * from performance_schema.replication_execute_status_by_worker;
+select * from performance_schema.replication_applier_configuration;
+select * from performance_schema.replication_applier_status;
+select * from performance_schema.replication_applier_status_by_coordinator;
+select * from performance_schema.replication_applier_status_by_worker;
+select * from performance_schema.global_status;
+select * from performance_schema.status_by_thread;
+select * from performance_schema.status_by_user;
+select * from performance_schema.status_by_host;
+select * from performance_schema.status_by_account;
+select * from performance_schema.session_status;
+select * from performance_schema.global_variables;
+select * from performance_schema.variables_by_thread;
+select * from performance_schema.session_variables;
 --enable_result_log
 
 # This has a stable output, printing the result:
-show variables where
+show global variables where
     `Variable_name` != "performance_schema_max_statement_classes" and
     `Variable_name` like "performance_schema%";
 
@@ -108,6 +117,6 @@ show variables where
 
 --disable_result_log
 show engine PERFORMANCE_SCHEMA status;
-show status like "performance_schema%";
+show global status like "performance_schema%";
 --enable_result_log
 

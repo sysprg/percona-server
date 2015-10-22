@@ -18,8 +18,6 @@ SET default_storage_engine=InnoDB;
 #      www       WrongFile    WrongFile      WrongFile
 #   nolink       No           Yes, No ISL    No
 #
-set global innodb_file_per_table=on;
-set global innodb_file_format='Barracuda';
 CREATE TABLE yyy (c1 INT KEY, c2 TEXT) ENGINE=InnoDB  DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
 INSERT INTO yyy VALUES (1, 'yyy');
 CREATE TABLE nyy (c1 INT KEY, c2 TEXT) ENGINE=InnoDB  DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
@@ -163,30 +161,38 @@ yyy.ibd
 # Start the server and show the tablespaces.
 #
 # restart
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/yyy.ibd
-MYSQL_TMP_DIR/alt_dir/test/nyy.ibd
-MYSQL_TMP_DIR/alt_dir/test/yny.ibd
-MYSQL_TMP_DIR/alt_dir/test/yyn.ibd
-MYSQL_TMP_DIR/alt_dir/test/nyw.ibd
-MYSQL_TMP_DIR/new_dir/test/nwy.ibd
-MYSQL_TMP_DIR/new_dir/test/wny.ibd
-MYSQLD_DATADIR/test/ynw.ibd
-MYSQL_TMP_DIR/alt_dir/test/wyn.ibd
-MYSQLD_DATADIR/test/ywn.ibd
-MYSQL_TMP_DIR/alt_dir/test/nnn.ibd
-MYSQL_TMP_DIR/alt_dir/test/www.ibd
-MYSQL_TMP_DIR/alt_dir/test/nolink.ibd
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/yyy	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/yyy.ibd
+test/nyy	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/nyy.ibd
+test/yny	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/yny.ibd
+test/yyn	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/yyn.ibd
+test/nyw	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/nyw.ibd
+test/nwy	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/new_dir/test/nwy.ibd
+test/wny	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/new_dir/test/wny.ibd
+test/ynw	Single	DEFAULT	0	Compact or Redundant	MYSQLD_DATADIR/test/ynw.ibd
+test/wyn	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/wyn.ibd
+test/ywn	Single	DEFAULT	0	Compact or Redundant	MYSQLD_DATADIR/test/ywn.ibd
+test/nnn	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/nnn.ibd
+test/www	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/www.ibd
+test/nolink	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/nolink.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/nyw	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/nyw.ibd
+test/nwy	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/new_dir/test/nwy.ibd
+test/wny	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/new_dir/test/wny.ibd
+test/ynw	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQLD_DATADIR/test/ynw.ibd
+test/wyn	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/wyn.ibd
+test/ywn	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQLD_DATADIR/test/ywn.ibd
+test/nolink	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/nolink.ibd
 SELECT * FROM yyy;
-ERROR 42S02: Table 'test.yyy' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`yyy`.
 SELECT * FROM nyy;
-ERROR 42S02: Table 'test.nyy' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`nyy`.
 SELECT * FROM yny;
-ERROR 42S02: Table 'test.yny' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`yny`.
 SELECT * FROM yyn;
-ERROR 42S02: Table 'test.yyn' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`yyn`.
 SELECT * FROM nyw;
 c1	c2
 1	nyw
@@ -206,20 +212,20 @@ SELECT * FROM ywn;
 c1	c2
 1	ywn
 SELECT * FROM nnn;
-ERROR 42S02: Table 'test.nnn' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`nnn`.
 SELECT * FROM www;
-ERROR 42S02: Table 'test.www' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`www`.
 SELECT * FROM nolink;
 c1	c2
 1	no link file
 SHOW CREATE TABLE yyy;
-ERROR 42S02: Table 'test.yyy' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`yyy`.
 SHOW CREATE TABLE nyy;
-ERROR 42S02: Table 'test.nyy' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`nyy`.
 SHOW CREATE TABLE yny;
-ERROR 42S02: Table 'test.yny' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`yny`.
 SHOW CREATE TABLE yyn;
-ERROR 42S02: Table 'test.yyn' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`yyn`.
 SHOW CREATE TABLE nyw;
 Table	Create Table
 nyw	CREATE TABLE `nyw` (
@@ -263,9 +269,9 @@ ywn	CREATE TABLE `ywn` (
   PRIMARY KEY (`c1`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1
 SHOW CREATE TABLE nnn;
-ERROR 42S02: Table 'test.nnn' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`nnn`.
 SHOW CREATE TABLE www;
-ERROR 42S02: Table 'test.www' doesn't exist
+ERROR HY000: Tablespace is missing for table `test`.`www`.
 SHOW CREATE TABLE nolink;
 Table	Create Table
 nolink	CREATE TABLE `nolink` (
@@ -302,7 +308,6 @@ yny.ibd
 yny.isl
 ywn.frm
 ywn.ibd
-ywn.isl
 yyn.frm
 yyn.ibd
 yyn.isl
@@ -402,8 +407,6 @@ nolink.ibd.bak
 #    yw              Yes                 Wrong
 #    yy              Yes                 Yes  (both the same file)
 #
-set global innodb_file_per_table=on;
-set global innodb_file_format='Barracuda';
 CREATE TABLE ny (c1 INT KEY, c2 TEXT) ENGINE=InnoDB  DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
 INSERT INTO ny VALUES (1, 'ny');
 CREATE TABLE wy (c1 INT KEY, c2 TEXT) ENGINE=InnoDB  DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir';
@@ -526,14 +529,20 @@ yy	CREATE TABLE `yy` (
   `c2` text,
   PRIMARY KEY (`c1`)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1 DATA DIRECTORY='MYSQL_TMP_DIR/alt_dir/'
-SELECT path FROM information_schema.innodb_sys_datafiles
-WHERE path LIKE '%test%' ORDER BY space;
-path
-MYSQL_TMP_DIR/alt_dir/test/ny.ibd
-MYSQL_TMP_DIR/alt_dir/test/wy.ibd
-MYSQL_TMP_DIR/alt_dir/test/yn.ibd
-MYSQL_TMP_DIR/alt_dir/test/yw.ibd
-MYSQL_TMP_DIR/alt_dir/test/yy.ibd
+=== information_schema.innodb_sys_tablespaces and innodb_sys_datafiles ===
+Space_Name	Space_Type	Page_Size	Zip_Size	Formats_Permitted	Path
+test/ny	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/ny.ibd
+test/wy	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/wy.ibd
+test/yn	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/yn.ibd
+test/yw	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/yw.ibd
+test/yy	Single	DEFAULT	0	Compact or Redundant	MYSQL_TMP_DIR/alt_dir/test/yy.ibd
+=== information_schema.files ===
+Space_Name	File_Type	Engine	Status	Tablespace_Name	Path
+test/ny	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/ny.ibd
+test/wy	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/wy.ibd
+test/yn	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/yn.ibd
+test/yw	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/yw.ibd
+test/yy	TABLESPACE	InnoDB	NORMAL	innodb_file_per_table.##	MYSQL_TMP_DIR/alt_dir/test/yy.ibd
 #
 # List of files before removing unused files
 #

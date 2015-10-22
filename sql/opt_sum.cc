@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -47,9 +47,9 @@
   (assuming a index for column d of table t2 is defined)
 */
 
-#include "sql_priv.h"
 #include "key.h"                                // key_cmp_if_same
 #include "sql_select.h"
+#include "item_sum.h"                           // Item_sum
 
 static bool find_key_for_maxmin(bool max_fl, TABLE_REF *ref,
                                 Item_field *item_field, Item *cond,
@@ -71,7 +71,7 @@ static int maxmin_in_range(bool max_fl, Item_field *item_field, Item *cond);
     or HA_STATS_RECORDS_IS_EXACT
 
   RETURN
-    ULONGLONG_MAX	Error: Could not calculate number of rows
+    ULLONG_MAX          Error: Could not calculate number of rows
     #			Multiplication of number of rows in all tables
 */
 
@@ -83,7 +83,7 @@ static ulonglong get_exact_record_count(TABLE_LIST *tables)
     ha_rows tmp= 0;
     int error= tl->table->file->ha_records(&tmp);
     if (error != 0)
-      return ULONGLONG_MAX;
+      return ULLONG_MAX;
     count*= tmp;
   }
   return count;
@@ -345,7 +345,7 @@ int opt_sum_query(THD *thd,
               real query will be executed faster than one shown by EXPLAIN.
             */
             if (!thd->lex->describe &&
-                (count= get_exact_record_count(tables)) == ULONGLONG_MAX)
+                (count= get_exact_record_count(tables)) == ULLONG_MAX)
             {
               /* Error from handler in counting rows. Don't optimize count() */
               const_result= 0;
@@ -374,8 +374,7 @@ int opt_sum_query(THD *thd,
         {
           Item_func_match* fts_item= static_cast<Item_func_match*>(conds); 
           fts_item->set_hints(NULL, FT_NO_RANKING, HA_POS_ERROR, false);
-          fts_item->init_search();
-          if (thd->is_error())
+          if (fts_item->init_search(thd))
             break;
           count= fts_item->get_count();
         }
@@ -432,11 +431,20 @@ int opt_sum_query(THD *thd,
             DBUG_RETURN(error);
           }
 
+          DBUG_ASSERT(table->read_set == &table->def_read_set);
+          DBUG_ASSERT(bitmap_is_clear_all(&table->tmp_set));
+          table->read_set= &table->tmp_set;
+          // Set bits for user-defined parts of key
+          table->mark_columns_used_by_index_no_reset(ref.key, table->read_set);
+          // Set bits for the column that we need (may be in PK part)
+          bitmap_set_bit(table->read_set, item_field->field->field_index);
           error= is_max ?
                  get_index_max_value(table, &ref, range_fl) :
                  get_index_min_value(table, &ref, item_field, range_fl,
                                      prefix_len);
 
+          table->read_set= &table->def_read_set;
+          bitmap_clear_all(&table->tmp_set);
           /* Verify that the read tuple indeed matches the search key */
 	  if (!error && reckey_in_range(is_max, &ref, item_field, 
 			                conds, range_fl, prefix_len))

@@ -1,4 +1,6 @@
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 SELECT * FROM information_schema.columns
 WHERE table_schema = 'information_schema'
 AND table_name <> 'profiling' AND table_name not like 'innodb_%' AND table_name not like 'ndb%'
@@ -569,6 +571,7 @@ NULL	information_schema	COLUMNS	DATETIME_PRECISION	bigint	NULL	NULL	NULL	NULL	bi
 3.0000	information_schema	COLUMNS	EXTRA	varchar	30	90	utf8	utf8_general_ci	varchar(30)
 3.0000	information_schema	COLUMNS	PRIVILEGES	varchar	80	240	utf8	utf8_general_ci	varchar(80)
 3.0000	information_schema	COLUMNS	COLUMN_COMMENT	varchar	1024	3072	utf8	utf8_general_ci	varchar(1024)
+1.0000	information_schema	COLUMNS	GENERATION_EXPRESSION	longtext	4294967295	4294967295	utf8	utf8_general_ci	longtext
 3.0000	information_schema	COLUMN_PRIVILEGES	GRANTEE	varchar	81	243	utf8	utf8_general_ci	varchar(81)
 3.0000	information_schema	COLUMN_PRIVILEGES	TABLE_CATALOG	varchar	512	1536	utf8	utf8_general_ci	varchar(512)
 3.0000	information_schema	COLUMN_PRIVILEGES	TABLE_SCHEMA	varchar	64	192	utf8	utf8_general_ci	varchar(64)
@@ -607,7 +610,7 @@ NULL	information_schema	EVENTS	ORIGINATOR	bigint	NULL	NULL	NULL	NULL	bigint(10)
 3.0000	information_schema	EVENTS	COLLATION_CONNECTION	varchar	32	96	utf8	utf8_general_ci	varchar(32)
 3.0000	information_schema	EVENTS	DATABASE_COLLATION	varchar	32	96	utf8	utf8_general_ci	varchar(32)
 NULL	information_schema	FILES	FILE_ID	bigint	NULL	NULL	NULL	NULL	bigint(4)
-3.0000	information_schema	FILES	FILE_NAME	varchar	64	192	utf8	utf8_general_ci	varchar(64)
+3.0000	information_schema	FILES	FILE_NAME	varchar	4000	12000	utf8	utf8_general_ci	varchar(4000)
 3.0000	information_schema	FILES	FILE_TYPE	varchar	20	60	utf8	utf8_general_ci	varchar(20)
 3.0000	information_schema	FILES	TABLESPACE_NAME	varchar	64	192	utf8	utf8_general_ci	varchar(64)
 3.0000	information_schema	FILES	TABLE_CATALOG	varchar	64	192	utf8	utf8_general_ci	varchar(64)
@@ -732,7 +735,7 @@ NULL	information_schema	PARTITIONS	CHECKSUM	bigint	NULL	NULL	NULL	NULL	bigint(21
 3.0000	information_schema	PLUGINS	PLUGIN_LICENSE	varchar	80	240	utf8	utf8_general_ci	varchar(80)
 3.0000	information_schema	PLUGINS	LOAD_OPTION	varchar	64	192	utf8	utf8_general_ci	varchar(64)
 NULL	information_schema	PROCESSLIST	ID	bigint	NULL	NULL	NULL	NULL	bigint(21) unsigned
-3.0000	information_schema	PROCESSLIST	USER	varchar	16	48	utf8	utf8_general_ci	varchar(16)
+3.0000	information_schema	PROCESSLIST	USER	varchar	32	96	utf8	utf8_general_ci	varchar(32)
 3.0000	information_schema	PROCESSLIST	HOST	varchar	64	192	utf8	utf8_general_ci	varchar(64)
 3.0000	information_schema	PROCESSLIST	DB	varchar	64	192	utf8	utf8_general_ci	varchar(64)
 3.0000	information_schema	PROCESSLIST	COMMAND	varchar	16	48	utf8	utf8_general_ci	varchar(16)

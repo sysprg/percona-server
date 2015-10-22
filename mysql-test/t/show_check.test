@@ -323,9 +323,12 @@ create database mysqltest;
 show create database mysqltest;
 create table mysqltest.t1(a int);
 insert into mysqltest.t1 values(1);
+set @orig_sql_mode = @@sql_mode;
+set sql_mode=(select replace(@@sql_mode,'NO_AUTO_CREATE_USER',''));
 grant select on `mysqltest`.* to mysqltest_1@localhost;
 grant usage  on `mysqltest`.* to mysqltest_2@localhost;
 grant drop   on `mysqltest`.* to mysqltest_3@localhost;
+set sql_mode= @orig_sql_mode;
 
 connect (con1,localhost,mysqltest_1,,mysqltest);
 connection con1;
@@ -984,7 +987,10 @@ create database mysqltest;
 show create database mysqltest;
 create table mysqltest.t1(a int);
 insert into mysqltest.t1 values(1);
+set @orig_sql_mode = @@sql_mode;
+set sql_mode='';
 grant select on `mysqltest`.`t1` to mysqltest_4@localhost;
+set sql_mode= @orig_sql_mode;
 connect (con4,localhost,mysqltest_4,,mysqltest);
 connection con4;
 show create database mysqltest;
@@ -1438,6 +1444,26 @@ SHOW AUTHORS;
 --error ER_PARSE_ERROR
 SHOW CONTRIBUTORS;
 
+
+--echo #
+--echo # Bug#20709462: GENERATED COLUMNS NOT PRINTED CORRECTLY IN
+--echo #               SHOW CREATE TABLE
+--echo #
+
+CREATE TABLE t1 (i CHAR(3),
+                 n CHAR(20) CHARACTER SET utf8 GENERATED ALWAYS AS (md5(i)));
+
+--echo # Use SHOW CREATE TABLE output below unmodified to re-create table
+SHOW CREATE TABLE t1;
+
+DROP TABLE t1;
+
+CREATE TABLE `t1` (
+  `i` char(3) DEFAULT NULL,
+  `n` char(20) CHARACTER SET utf8 GENERATED ALWAYS AS (md5(i)) VIRTUAL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+DROP TABLE t1;
 
 # Wait till all disconnects are completed
 --source include/wait_until_count_sessions.inc

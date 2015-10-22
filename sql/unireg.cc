@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -24,13 +24,14 @@
     str is a (long) to record position where 0 is the first position.
 */
 
-#include "sql_priv.h"
 #include "unireg.h"
-#include "sql_partition.h"                    // struct partition_info
+#include "table.h"
+#include "sql_class.h"                        // THD, Internal_error_handler
+#include "partition_info.h"                   // partition_info
 #include "sql_table.h"                        // validate_comment_length   
-#include "sql_class.h"                  // THD, Internal_error_handler
-#include <m_ctype.h>
-#include <assert.h>
+
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
 
 #include <algorithm>
 
@@ -38,6 +39,9 @@ using std::min;
 using std::max;
 
 #define FCOMP			17		/* Bytes for a packed field */
+#define SC_INFO_LENGTH 4		/* Form format constant */
+#define TE_INFO_LENGTH 3
+#define MTYP_NOEMPTY_BIT 128
 
 static uchar * pack_screens(List<Create_field> &create_fields,
 			    uint *info_length, uint *screens, bool small_file);
@@ -62,32 +66,23 @@ static bool make_empty_rec(THD *thd, int file,
   XXX: what is a UNIREG  screen?
 */
 
-struct Pack_header_error_handler: public Internal_error_handler
+class Pack_header_error_handler: public Internal_error_handler
 {
+  bool m_is_handled;
+public:
   virtual bool handle_condition(THD *thd,
                                 uint sql_errno,
                                 const char* sqlstate,
                                 Sql_condition::enum_severity_level *level,
-                                const char* msg,
-                                Sql_condition ** cond_hdl);
-  bool is_handled;
-  Pack_header_error_handler() :is_handled(FALSE) {}
+                                const char* msg)
+  {
+    m_is_handled= (sql_errno == ER_TOO_MANY_FIELDS);
+    return m_is_handled;
+  }
+  Pack_header_error_handler() :m_is_handled(false) {}
+  bool is_handled() const { return m_is_handled; }
 };
 
-
-bool
-Pack_header_error_handler::
-handle_condition(THD *,
-                 uint sql_errno,
-                 const char*,
-                 Sql_condition::enum_severity_level*,
-                 const char*,
-                 Sql_condition ** cond_hdl)
-{
-  *cond_hdl= NULL;
-  is_handled= (sql_errno == ER_TOO_MANY_FIELDS);
-  return is_handled;
-}
 
 /*
   Create a frm (table definition) file
@@ -124,9 +119,7 @@ bool mysql_create_frm(THD *thd, const char *file_name,
   uchar fileinfo[64],forminfo[288],*keybuff, *forminfo_p= forminfo;
   uchar *screen_buff= NULL;
   char buff[128];
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   partition_info *part_info= thd->work_part_info;
-#endif
   Pack_header_error_handler pack_header_error_handler;
   int error;
   const uint format_section_header_size= 8;
@@ -157,7 +150,7 @@ bool mysql_create_frm(THD *thd, const char *file_name,
   if (error)
   {
     my_free(screen_buff);
-    if (! pack_header_error_handler.is_handled)
+    if (! pack_header_error_handler.is_handled())
       DBUG_RETURN(1);
 
     // Try again without UNIREG screens (to get more columns)
@@ -187,12 +180,10 @@ bool mysql_create_frm(THD *thd, const char *file_name,
       => Total 6 byte
   */
   create_info->extra_size+= 6;
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   if (part_info)
   {
     create_info->extra_size+= part_info->part_info_len;
   }
-#endif
 
   for (i= 0; i < keys; i++)
   {
@@ -257,12 +248,27 @@ bool mysql_create_frm(THD *thd, const char *file_name,
     table and column properties
   */
   if (create_info->tablespace)
+  {
     tablespace_length= strlen(create_info->tablespace);
+    /*
+      Make sure we have at least an IX lock on the tablespace name,
+      unless this is a temporary table. For temporary tables, the
+      tablespace name is not IX locked.
+    */
+    if (tablespace_length > 0 &&
+        !(create_info->options & HA_LEX_CREATE_TMP_TABLE))
+      DBUG_ASSERT(thd->mdl_context.owns_equal_or_stronger_lock(
+                                     MDL_key::TABLESPACE, "",
+                                     create_info->tablespace,
+                                     MDL_INTENTION_EXCLUSIVE));
+  }
   format_section_length=
     format_section_header_size +
     tablespace_length + 1 +
     create_fields.elements;
   create_info->extra_size+= format_section_length;
+
+  create_info->extra_size+= 2 + create_info->compress.length;
 
   if ((file=create_frm(thd, file_name, db, table, reclength, fileinfo,
 		       create_info, keys, key_info)) < 0)
@@ -292,13 +298,11 @@ bool mysql_create_frm(THD *thd, const char *file_name,
                                 (create_info->min_rows == 1) && (keys == 0));
   int2store(fileinfo+28,key_info_length);
 
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   if (part_info)
   {
     fileinfo[61]= (uchar) ha_legacy_type(part_info->default_engine_type);
     DBUG_PRINT("info", ("part_db_type = %d", fileinfo[61]));
   }
-#endif
   int2store(fileinfo+59,db_file->extra_rec_buf_length());
 
   if (mysql_file_pwrite(file, fileinfo, 64, 0L, MYF_RW) ||
@@ -325,7 +329,6 @@ bool mysql_create_frm(THD *thd, const char *file_name,
                str_db_type.length, MYF(MY_NABP)))
     goto err;
 
-#ifdef WITH_PARTITION_STORAGE_ENGINE
   if (part_info)
   {
     char auto_partitioned= part_info->is_auto_partitioned ? 1 : 0;
@@ -337,7 +340,6 @@ bool mysql_create_frm(THD *thd, const char *file_name,
       goto err;
   }
   else
-#endif
   {
     memset(buff, 0, 6);
     if (mysql_file_write(file, (uchar*) buff, 6, MYF_RW))
@@ -410,6 +412,18 @@ bool mysql_create_frm(THD *thd, const char *file_name,
     DBUG_PRINT("info", ("wrote format section, length: %u",
                         format_section_length));
     my_free(format_section_buff);
+  }
+
+  /* Write out the COMPRESS table attribute */
+  {
+    uchar length_buff[2];
+
+    int2store(length_buff, static_cast<uint16>(create_info->compress.length));
+
+    if (mysql_file_write(file, length_buff, 2, MYF(MY_NABP)) ||
+        mysql_file_write(file, (uchar*) create_info->compress.str,
+                         create_info->compress.length, MYF(MY_NABP)))
+      goto err;
   }
 
   mysql_file_seek(file, filepos, MY_SEEK_SET, MYF(0));
@@ -698,7 +712,7 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
   size_t length;
   uint int_count, int_length, no_empty, int_parts;
   uint time_stamp_pos,null_fields;
-  size_t reclength, totlength, n_length, com_length;
+  size_t reclength, totlength, n_length, com_length, gcol_info_length;
   DBUG_ENTER("pack_header");
 
   if (create_fields.elements > MAX_FIELDS)
@@ -709,8 +723,8 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
 
   totlength= 0L;
   reclength= data_offset;
-  no_empty=int_count=int_parts=int_length=time_stamp_pos=null_fields=
-    com_length=0;
+  no_empty=int_count=int_parts=int_length=time_stamp_pos=null_fields=0;
+  com_length=gcol_info_length=0;
   n_length=2L;
 
 	/* Check fields */
@@ -726,6 +740,27 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
                                 ER_TOO_LONG_FIELD_COMMENT,
                                 (char *) field->field_name))
       DBUG_RETURN(true);
+    if (field->gcol_info)
+    {
+      uint tmp_len= system_charset_info->cset->charpos(system_charset_info,
+                                                       field->gcol_info->expr_str.str,
+                                                       field->gcol_info->expr_str.str +
+                                                       field->gcol_info->expr_str.length,
+                                                       GENERATED_COLUMN_EXPRESSION_MAXLEN);
+
+      if (tmp_len < field->gcol_info->expr_str.length)
+      {
+        my_error(ER_WRONG_STRING_LENGTH, MYF(0),
+                 field->gcol_info->expr_str.str,"GENERATED COLUMN EXPRESSION",
+                 (uint) GENERATED_COLUMN_EXPRESSION_MAXLEN);
+        DBUG_RETURN(1);
+      }
+      /*
+        Sum up the length of the expression string and mandatory header bytes
+        to the total length.
+      */
+      gcol_info_length+= field->gcol_info->expr_str.length+(uint)FRM_GCOL_HEADER_SIZE;
+    }
     totlength+= field->length;
     com_length+= field->comment.length;
     if (MTYP_TYPENR(field->unireg_check) == Field::NOEMPTY ||
@@ -745,7 +780,14 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
       time_stamp_pos= (uint) field->offset+ (uint) data_offset + 1;
     length=field->pack_length;
     /* Ensure we don't have any bugs when generating offsets */
-    DBUG_ASSERT(reclength == field->offset + data_offset);
+    /**
+      Because the virtual generated columns are not stored physically,
+      they are put at the tail of record. The details can be checked
+      in mysql_prepare_create_table. So the offset is messed up by
+      vitual generated columns. The original assert is not correct
+      any more.
+      DBUG_ASSERT(reclength == field->offset + data_offset);
+     */
     if (field->offset + data_offset + length > reclength)
       reclength= field->offset + data_offset + length;
     n_length+= strlen(field->field_name) + 1;
@@ -811,8 +853,9 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
   }
   /* Hack to avoid bugs with small static rows in MySQL */
   reclength= max<size_t>(file->min_record_length(table_options), reclength);
-  if (info_length+(ulong) create_fields.elements*FCOMP+288+
-      n_length+int_length+com_length > 65535L || int_count > 255)
+  if (info_length + (ulong) create_fields.elements * FCOMP + 288 +
+      n_length + int_length + com_length + gcol_info_length > 65535L ||
+      int_count > 255)
   {
     my_message(ER_TOO_MANY_FIELDS, ER(ER_TOO_MANY_FIELDS), MYF(0));
     DBUG_RETURN(1);
@@ -820,7 +863,7 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
 
   memset(forminfo, 0, 288);
   length=(info_length+create_fields.elements*FCOMP+288+n_length+int_length+
-	  com_length);
+	  com_length + gcol_info_length);
   int2store(forminfo, static_cast<uint16>(length));
   forminfo[256] = (uint8) screens;
   int2store(forminfo+258,create_fields.elements);
@@ -837,7 +880,8 @@ static bool pack_header(uchar *forminfo, enum legacy_db_type table_type,
   int2store(forminfo+280,22);			/* Rows needed */
   int2store(forminfo+282,null_fields);
   int2store(forminfo+284, static_cast<uint16>(com_length));
-  /* Up to forminfo+288 is free to use for additional information */
+  int2store(forminfo+286,gcol_info_length);
+  /* forminfo+288 is free to use for additional information */
   DBUG_RETURN(0);
 } /* pack_header */
 
@@ -876,7 +920,7 @@ static bool pack_fields(File file, List<Create_field> &create_fields,
                         ulong data_offset)
 {
   uint i;
-  uint int_count;
+  uint int_count, gcol_info_length=0;
   size_t comment_length= 0;
   uchar buff[MAX_FIELD_WIDTH];
   Create_field *field;
@@ -914,6 +958,11 @@ static bool pack_fields(File file, List<Create_field> &create_fields,
     else
     {
       buff[11]= buff[14]= 0;			// Numerical
+    }
+    if (field->gcol_info)
+    {
+      gcol_info_length+= field->gcol_info->expr_str.length;
+      buff[10]|= (uchar)Field::GENERATED_FIELD;
     }
     int2store(buff+15, static_cast<uint16>(field->comment.length));
     comment_length+= field->comment.length;
@@ -1009,7 +1058,139 @@ static bool pack_fields(File file, List<Create_field> &create_fields,
 	  DBUG_RETURN(1);
     }
   }
+  if (gcol_info_length)
+  {
+    it.rewind();
+    int_count=0;
+    while ((field=it++))
+    {
+      /*
+        Pack each virtual field as follows:
+        byte 1      = 1 (always 1 to allow for future extensions)
+        byte 2,3    = expression length
+        byte 4      = flags, as of now:
+                        0 - no flags
+                        1 - field is physically stored
+        byte 5-...  = generated column expression (text data)
+      */
+      if (field->gcol_info && field->gcol_info->expr_str.length)
+      {
+        buff[0]= (uchar)1;
+        int2store(buff + 1, field->gcol_info->expr_str.length);
+        buff[3]= (uchar) field->stored_in_db;
+        if (my_write(file, buff, FRM_GCOL_HEADER_SIZE, MYF_RW))
+          DBUG_RETURN(1);
+        if (my_write(file,
+                     (uchar*) field->gcol_info->expr_str.str,
+                     field->gcol_info->expr_str.length,
+                     MYF_RW))
+          DBUG_RETURN(1);
+      }
+    }
+  }
   DBUG_RETURN(0);
+}
+
+
+/**
+  Auxiliary function which stores field's explicit or implicit default
+  value in record buffer.
+
+  @param         thd         Connection's context.
+  @param         table       Table for which field default value to be stored.
+  @param         field       Field definition object.
+  @param         rec_pos     Pointer to the main part of record buffer where
+                             field values are stored (as opposed to record
+                             preamble).
+  @param         null_pos    Pointer to the preamble part of record buffer
+                             where null bits and leftover bits from BIT fields
+                             are stored.
+  @param[in/out] null_count  Index of bit in preamble to be used for storing
+                             NULL/leftover bits for the field if necessary. On
+                             return incremented by number of bits in preamble
+                             used for this field.
+
+  @retval true  An error occured.
+  @retval false Success.
+*/
+
+bool make_default_value(THD *thd, TABLE *table, Create_field *field,
+                        uchar *rec_pos, uchar *null_pos, uint *null_count)
+{
+  Field *regfield= make_field(table->s,
+                              rec_pos + field->offset,
+                              field->length,
+                              null_pos + *null_count / 8,
+                              *null_count & 7,
+                              field->pack_flag,
+                              field->sql_type,
+                              field->charset,
+                              field->geom_type,
+                              field->unireg_check,
+                              field->save_interval ? field->save_interval :
+                              field->interval,
+                              field->field_name);
+  if (!regfield)
+    return true;   // End of memory
+
+  /* save_in_field() will access regfield->table->in_use */
+  regfield->init(table);
+
+  if (!(field->flags & NOT_NULL_FLAG))
+  {
+    regfield->set_null();
+    (*null_count)++;
+  }
+
+  if (field->sql_type == MYSQL_TYPE_BIT && !f_bit_as_char(field->pack_flag))
+    (*null_count)+= field->length & 7;
+
+  Field::utype type= (Field::utype) MTYP_TYPENR(field->unireg_check);
+
+  if (field->def)
+  {
+    /*
+      Storing the value of a function is pointless as this function may not
+      be constant.
+    */
+    DBUG_ASSERT(field->def->type() != Item::FUNC_ITEM);
+    type_conversion_status res= field->def->save_in_field(regfield, true);
+    if (res != TYPE_OK && res != TYPE_NOTE_TIME_TRUNCATED &&
+        res != TYPE_NOTE_TRUNCATED)
+    {
+      /*
+        clear current error and report INVALID DEFAULT value error message
+      */
+      if (thd->is_error())
+        thd->clear_error();
+
+      my_error(ER_INVALID_DEFAULT, MYF(0), regfield->field_name);
+      /*
+        Delete to avoid memory leak for fields that allocate extra
+        memory (e.g Field_blob::value)
+      */
+      delete regfield;
+      return true;
+    }
+  }
+  else if (regfield->real_type() == MYSQL_TYPE_ENUM &&
+           (field->flags & NOT_NULL_FLAG))
+  {
+    regfield->set_notnull();
+    regfield->store((longlong) 1, TRUE);
+  }
+  else if (type == Field::YES)		// Old unireg type
+    regfield->store(ER(ER_YES), strlen(ER(ER_YES)),system_charset_info);
+  else if (type == Field::NO)			// Old unireg type
+    regfield->store(ER(ER_NO), strlen(ER(ER_NO)),system_charset_info);
+  else
+    regfield->reset();
+  /*
+    Delete to avoid memory leak for fields that allocate extra
+    memory (e.g Field_blob::value)
+  */
+  delete regfield;
+  return false;
 }
 
 
@@ -1046,13 +1227,13 @@ static bool make_empty_rec(THD *thd, File file,
                            handler *handler)
 {
   int error= 0;
-  Field::utype type;
   uint null_count;
   uchar *buff,*null_pos;
   TABLE table;
   TABLE_SHARE share;
   Create_field *field;
   enum_check_fields old_count_cuted_fields= thd->count_cuted_fields;
+  bool has_vgc= false;
   DBUG_ENTER("make_empty_rec");
 
   /* We need a table to generate columns for default values */
@@ -1081,83 +1262,38 @@ static bool make_empty_rec(THD *thd, File file,
   thd->count_cuted_fields= CHECK_FIELD_WARN;    // To find wrong default values
   while ((field=it++))
   {
-    Field *regfield= make_field(&share,
-                                buff+field->offset + data_offset,
-                                field->length,
-                                null_pos + null_count / 8,
-                                null_count & 7,
-                                field->pack_flag,
-                                field->sql_type,
-                                field->charset,
-                                field->geom_type,
-                                field->unireg_check,
-                                field->save_interval ? field->save_interval :
-                                field->interval, 
-                                field->field_name);
-    if (!regfield)
-    {
-      error= 1;
-      goto err;                                 // End of memory
-    }
-
-    /* save_in_field() will access regfield->table->in_use */
-    regfield->init(&table);
-
-    if (!(field->flags & NOT_NULL_FLAG))
-    {
-      regfield->set_null();
-      null_count++;
-    }
-
-    if (field->sql_type == MYSQL_TYPE_BIT && !f_bit_as_char(field->pack_flag))
-      null_count+= field->length & 7;
-
-    type= (Field::utype) MTYP_TYPENR(field->unireg_check);
-
-    if (field->def)
+    if (field->stored_in_db)
     {
       /*
-        Storing the value of a function is pointless as this function may not
-        be constant.
+        Even though Create_field::offset for virtual generated columns already
+        point at the end of record buffer we still need separate pass for them
+        in order to allocate null bits from preamble tail as well.
       */
-      DBUG_ASSERT(field->def->type() != Item::FUNC_ITEM);
-      type_conversion_status res= field->def->save_in_field(regfield, true);
-      if (res != TYPE_OK && res != TYPE_NOTE_TIME_TRUNCATED &&
-          res != TYPE_NOTE_TRUNCATED)
+      if (make_default_value(thd, &table, field, buff + data_offset,
+                             null_pos, &null_count))
       {
-        /*
-          clear current error and report INVALID DEFAULT value error message
-          */
-        if (thd->is_error())
-          thd->clear_error();
-
-        my_error(ER_INVALID_DEFAULT, MYF(0), regfield->field_name);
         error= 1;
-        /*
-          Delete to avoid memory leak for fields that allocate extra
-          memory (e.g Field_blob::value)
-        */
-        delete regfield;
         goto err;
       }
     }
-    else if (regfield->real_type() == MYSQL_TYPE_ENUM &&
-	     (field->flags & NOT_NULL_FLAG))
-    {
-      regfield->set_notnull();
-      regfield->store((longlong) 1, TRUE);
-    }
-    else if (type == Field::YES)		// Old unireg type
-      regfield->store(ER(ER_YES), strlen(ER(ER_YES)),system_charset_info);
-    else if (type == Field::NO)			// Old unireg type
-      regfield->store(ER(ER_NO), strlen(ER(ER_NO)),system_charset_info);
     else
-      regfield->reset();
-    /*
-      Delete to avoid memory leak for fields that allocate extra
-      memory (e.g Field_blob::value)
-    */
-    delete regfield;
+      has_vgc= true;
+  }
+  if (has_vgc)
+  {
+    it.rewind();
+    while ((field=it++))
+    {
+      if (!field->stored_in_db)
+      {
+        if (make_default_value(thd, &table, field, buff + data_offset,
+                               null_pos, &null_count))
+        {
+          error= 1;
+          goto err;
+        }
+      }
+    }
   }
   DBUG_ASSERT(data_offset == ((null_count + 7) / 8));
 

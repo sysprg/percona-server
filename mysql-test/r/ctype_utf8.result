@@ -113,7 +113,7 @@ hex(a)	STRCMP(a,'a')	STRCMP(a,'a ')
 DROP TABLE t1;
 select insert('txs',2,1,'hi'),insert('is ',4,0,'a'),insert('txxxxt',2,4,'es');
 insert('txs',2,1,'hi')	insert('is ',4,0,'a')	insert('txxxxt',2,4,'es')
-this	is a	test
+this	is 	test
 select insert("aa",100,1,"b"),insert("aa",1,3,"b");
 insert("aa",100,1,"b")	insert("aa",1,3,"b")
 aa	b
@@ -153,6 +153,8 @@ F0CEC4	Пнд
 drop table t1;
 set LC_TIME_NAMES='en_US';
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 set names koi8r;
 create table t1 (s1 char(1) character set utf8);
 insert into t1 values (_koi8r'��');
@@ -1149,6 +1151,8 @@ ERROR 42000: Invalid default value for 'x'
 create table t1 (x enum('A', 'B') default 0) character set utf8;
 ERROR 42000: Invalid default value for 'x'
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 SET NAMES UTF8;
 CREATE TABLE t1 (
 `id` int(20) NOT NULL auto_increment,
@@ -1185,6 +1189,8 @@ ERR Имри.Афимим.Аеимимримдмримрмрирор имрим�
 DROP TABLE t1,t2;
 SET sql_mode = default;
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create table t1 (a char(20) character set utf8);
 insert into t1 values ('123456'),('андрей');
 alter table t1 modify a char(2) character set utf8;
@@ -1674,6 +1680,8 @@ xxx
 yyy
 DROP TABLE t1;
 SET sql_mode = 'NO_ENGINE_SUBSTITUTION';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 create table t1 (
 a varchar(26) not null
 ) default character set utf8;
@@ -2764,6 +2772,9 @@ drop table t1;
 select password('a'), hex(password('a'));
 password('a')	hex(password('a'))
 *667F407DE7C6AD07358FA38DAED7828A72014B4E	2A36363746343037444537433641443037333538464133384441454437383238413732303134423445
+Warnings:
+Warning	1681	'PASSWORD' is deprecated and will be removed in a future release.
+Warning	1681	'PASSWORD' is deprecated and will be removed in a future release.
 create table t1 as select password('a') as c1;
 show create table t1;
 Table	Create Table
@@ -3381,140 +3392,140 @@ t1	CREATE TABLE `t1` (
   `c1` varchar(1) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(Dimension(GeomFromText('LINESTRING(0 0,10 10)'))));
-hex(concat(Dimension(GeomFromText('LINESTRING(0 0,10 10)'))))
+select hex(concat(ST_Dimension(ST_GeomFromText('LINESTRING(0 0,10 10)'))));
+hex(concat(ST_Dimension(ST_GeomFromText('LINESTRING(0 0,10 10)'))))
 31
-create table t1 as select concat(Dimension(GeomFromText('LINSTRING(0 0,10 10)'))) as c1;
+create table t1 as select concat(ST_Dimension(ST_GeomFromText('LINSTRING(0 0,10 10)'))) as c1;
 ERROR 22023: Invalid GIS data provided to function st_geometryfromtext.
-select hex(concat(NumGeometries(MultiPointFromText('MULTIPOINT(0 0,10 10)'))));
-hex(concat(NumGeometries(MultiPointFromText('MULTIPOINT(0 0,10 10)'))))
+select hex(concat(ST_NumGeometries(ST_MultiPointFromText('MULTIPOINT(0 0,10 10)'))));
+hex(concat(ST_NumGeometries(ST_MultiPointFromText('MULTIPOINT(0 0,10 10)'))))
 32
-create table t1 as select concat(NumGeometries(MultiPointFromText('MULTIPOINT(0 0,10 10)'))) as c1;
+create table t1 as select concat(ST_NumGeometries(ST_MultiPointFromText('MULTIPOINT(0 0,10 10)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(10) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(NumPoints(MultiPointFromText('LINESTRING(0 0,10 10)'))));
-hex(concat(NumPoints(MultiPointFromText('LINESTRING(0 0,10 10)'))))
+select hex(concat(ST_NumPoints(ST_MultiPointFromText('LINESTRING(0 0,10 10)'))));
+hex(concat(ST_NumPoints(ST_MultiPointFromText('LINESTRING(0 0,10 10)'))))
 32
-create table t1 as select concat(NumPoints(MultiPointFromText('LINESTRING(0 0,10 10)'))) as c1;
+create table t1 as select concat(ST_NumPoints(ST_MultiPointFromText('LINESTRING(0 0,10 10)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(10) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(SRID(MultiPointFromText('MULTIPOINT(0 0,10 10)'))));
-hex(concat(SRID(MultiPointFromText('MULTIPOINT(0 0,10 10)'))))
+select hex(concat(ST_SRID(ST_MultiPointFromText('MULTIPOINT(0 0,10 10)'))));
+hex(concat(ST_SRID(ST_MultiPointFromText('MULTIPOINT(0 0,10 10)'))))
 30
-create table t1 as select concat(SRID(MultiPointFromText('MULTIPOINT(0 0,10 10)'))) as c1;
+create table t1 as select concat(ST_SRID(ST_MultiPointFromText('MULTIPOINT(0 0,10 10)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(10) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(NumInteriorRings(PolygonFromText('POLYGON((0 0,50 0,50 50,0 50,0 0), (10 10,20 10,20 20,10 20,10 10))'))));
-hex(concat(NumInteriorRings(PolygonFromText('POLYGON((0 0,50 0,50 50,0 50,0 0), (10 10,20 10,20 20,10 20,10 10))'))))
+select hex(concat(ST_NumInteriorRings(ST_PolygonFromText('POLYGON((0 0,50 0,50 50,0 50,0 0), (10 10,20 10,20 20,10 20,10 10))'))));
+hex(concat(ST_NumInteriorRings(ST_PolygonFromText('POLYGON((0 0,50 0,50 50,0 50,0 0), (10 10,20 10,20 20,10 20,10 10))'))))
 31
-create table t1 as select concat(NumInteriorRings(PolygonFromText('POLYGON((0 0,50 0,50 50,0 50,0 0), (10 10,20 10,20 20,10 20,10 10))'))) as c1;
+create table t1 as select concat(ST_NumInteriorRings(ST_PolygonFromText('POLYGON((0 0,50 0,50 50,0 50,0 0), (10 10,20 10,20 20,10 20,10 10))'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(10) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(IsEmpty(GeomFromText('POINT(1 1)'))));
-hex(concat(IsEmpty(GeomFromText('POINT(1 1)'))))
+select hex(concat(ST_IsEmpty(ST_GeomFromText('POINT(1 1)'))));
+hex(concat(ST_IsEmpty(ST_GeomFromText('POINT(1 1)'))))
 30
-create table t1 as select concat(IsEmpty(GeomFromText('Point(1 1)'))) as c1;
+create table t1 as select concat(ST_IsEmpty(ST_GeomFromText('Point(1 1)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(21) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(IsSimple(GeomFromText('POINT(1 1)'))));
-hex(concat(IsSimple(GeomFromText('POINT(1 1)'))))
+select hex(concat(ST_IsSimple(ST_GeomFromText('POINT(1 1)'))));
+hex(concat(ST_IsSimple(ST_GeomFromText('POINT(1 1)'))))
 31
-create table t1 as select concat(IsSimple(GeomFromText('Point(1 1)'))) as c1;
+create table t1 as select concat(ST_IsSimple(ST_GeomFromText('Point(1 1)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(21) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(IsClosed(GeomFromText('LineString(1 1,2 2)'))));
-hex(concat(IsClosed(GeomFromText('LineString(1 1,2 2)'))))
+select hex(concat(ST_IsClosed(ST_GeomFromText('LineString(1 1,2 2)'))));
+hex(concat(ST_IsClosed(ST_GeomFromText('LineString(1 1,2 2)'))))
 30
-create table t1 as select concat(IsClosed(GeomFromText('LineString(1 1,2 2)'))) as c1;
+create table t1 as select concat(ST_IsClosed(ST_GeomFromText('LineString(1 1,2 2)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(21) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(Equals(GeomFromText('Point(1 1)'),GeomFromText('Point(1 1)'))));
-hex(concat(Equals(GeomFromText('Point(1 1)'),GeomFromText('Point(1 1)'))))
+select hex(concat(MBREquals(ST_GeomFromText('Point(1 1)'),ST_GeomFromText('Point(1 1)'))));
+hex(concat(MBREquals(ST_GeomFromText('Point(1 1)'),ST_GeomFromText('Point(1 1)'))))
 31
-create table t1 as select concat(Equals(GeomFromText('Point(1 1)'),GeomFromText('Point(1 1)'))) as c1;
+create table t1 as select concat(MBREquals(ST_GeomFromText('Point(1 1)'),ST_GeomFromText('Point(1 1)'))) as c1;
 drop table t1;
-select hex(concat(x(GeomFromText('Point(1 2)'))));
-hex(concat(x(GeomFromText('Point(1 2)'))))
+select hex(concat(ST_X(ST_GeomFromText('Point(1 2)'))));
+hex(concat(ST_X(ST_GeomFromText('Point(1 2)'))))
 31
-create table t1 as select concat(x(GeomFromText('Point(1 2)'))) as c1;
+create table t1 as select concat(ST_X(ST_GeomFromText('Point(1 2)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(23) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(y(GeomFromText('Point(1 2)'))));
-hex(concat(y(GeomFromText('Point(1 2)'))))
+select hex(concat(ST_Y(ST_GeomFromText('Point(1 2)'))));
+hex(concat(ST_Y(ST_GeomFromText('Point(1 2)'))))
 32
-create table t1 as select concat(x(GeomFromText('Point(1 2)'))) as c1;
+create table t1 as select concat(ST_X(ST_GeomFromText('Point(1 2)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(23) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(GLength(GeomFromText('LineString(1 2,2 2)'))));
-hex(concat(GLength(GeomFromText('LineString(1 2,2 2)'))))
+select hex(concat(ST_Length(ST_GeomFromText('LineString(1 2,2 2)'))));
+hex(concat(ST_Length(ST_GeomFromText('LineString(1 2,2 2)'))))
 31
-create table t1 as select concat(GLength(GeomFromText('LineString(1 2, 2 2)'))) as c1;
+create table t1 as select concat(ST_Length(ST_GeomFromText('LineString(1 2, 2 2)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(23) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(Area(GeomFromText('Polygon((0 0,1 0,1 1,0 1,0 0))'))));
-hex(concat(Area(GeomFromText('Polygon((0 0,1 0,1 1,0 1,0 0))'))))
+select hex(concat(ST_Area(ST_GeomFromText('Polygon((0 0,1 0,1 1,0 1,0 0))'))));
+hex(concat(ST_Area(ST_GeomFromText('Polygon((0 0,1 0,1 1,0 1,0 0))'))))
 31
-create table t1 as select concat(Area(GeomFromText('Polygon((0 0,1 0,1 1,0 1,0 0))'))) as c1;
+create table t1 as select concat(ST_Area(ST_GeomFromText('Polygon((0 0,1 0,1 1,0 1,0 0))'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(23) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(GeometryType(GeomFromText('Point(1 2)'))));
-hex(concat(GeometryType(GeomFromText('Point(1 2)'))))
+select hex(concat(ST_GeometryType(ST_GeomFromText('Point(1 2)'))));
+hex(concat(ST_GeometryType(ST_GeomFromText('Point(1 2)'))))
 504F494E54
-create table t1 as select concat(GeometryType(GeomFromText('Point(1 2)'))) as c1;
+create table t1 as select concat(ST_GeometryType(ST_GeomFromText('Point(1 2)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
   `c1` varchar(20) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
-select hex(concat(AsText(GeomFromText('Point(1 2)'))));
-hex(concat(AsText(GeomFromText('Point(1 2)'))))
+select hex(concat(ST_AsText(ST_GeomFromText('Point(1 2)'))));
+hex(concat(ST_AsText(ST_GeomFromText('Point(1 2)'))))
 504F494E542831203229
-create table t1 as select concat(AsText(GeomFromText('Point(1 2)'))) as c1;
+create table t1 as select concat(ST_AsText(ST_GeomFromText('Point(1 2)'))) as c1;
 show create table t1;
 Table	Create Table
 t1	CREATE TABLE `t1` (
@@ -3532,6 +3543,8 @@ t1	CREATE TABLE `t1` (
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 drop table t1;
 SET sql_mode = '';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 select hex(concat(period_diff(200902, 200802)));
 hex(concat(period_diff(200902, 200802)))
 3132
@@ -4830,29 +4843,31 @@ drop function f1;
 #
 # Bug#54668 User variable assignments get wrong type
 #
-SET @x=md5('a');
-SELECT charset(@x), collation(@x);
-charset(@x)	collation(@x)
+SET @ST_X=md5('a');
+SELECT charset(@ST_X), collation(@ST_X);
+charset(@ST_X)	collation(@ST_X)
 utf8	utf8_general_ci
-SET @x=password('a');
-SELECT charset(@x), collation(@x);
-charset(@x)	collation(@x)
+SET @ST_X=password('a');
+Warnings:
+Warning	1681	'PASSWORD' is deprecated and will be removed in a future release.
+SELECT charset(@ST_X), collation(@ST_X);
+charset(@ST_X)	collation(@ST_X)
 utf8	utf8_general_ci
-SET @x=sha('a');
-SELECT charset(@x), collation(@x);
-charset(@x)	collation(@x)
+SET @ST_X=sha('a');
+SELECT charset(@ST_X), collation(@ST_X);
+charset(@ST_X)	collation(@ST_X)
 utf8	utf8_general_ci
-SET @x=sha1('a');
-SELECT charset(@x), collation(@x);
-charset(@x)	collation(@x)
+SET @ST_X=sha1('a');
+SELECT charset(@ST_X), collation(@ST_X);
+charset(@ST_X)	collation(@ST_X)
 utf8	utf8_general_ci
-SET @x=astext(point(1,2));
-SELECT charset(@x), collation(@x);
-charset(@x)	collation(@x)
+SET @ST_X=ST_astext(point(1,2));
+SELECT charset(@ST_X), collation(@ST_X);
+charset(@ST_X)	collation(@ST_X)
 utf8	utf8_general_ci
-SET @x=aswkt(point(1,2));
-SELECT charset(@x), collation(@x);
-charset(@x)	collation(@x)
+SET @ST_X=ST_AsWKT(point(1,2));
+SELECT charset(@ST_X), collation(@ST_X);
+charset(@ST_X)	collation(@ST_X)
 utf8	utf8_general_ci
 #
 # Bug#54916 GROUP_CONCAT + IFNULL truncates output
@@ -4993,11 +5008,11 @@ t2	CREATE TABLE `t2` (
   `SOUNDEX(1)` varchar(4) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 DROP TABLE t2;
-CREATE TABLE t2 AS SELECT EXPORT_SET(1,'Y','N','',8);
+CREATE TABLE t2 AS SELECT EXPORT_SET(1,'ST_Y','N','',8);
 SHOW CREATE TABLE t2;
 Table	Create Table
 t2	CREATE TABLE `t2` (
-  `EXPORT_SET(1,'Y','N','',8)` varchar(64) CHARACTER SET utf8 DEFAULT NULL
+  `EXPORT_SET(1,'ST_Y','N','',8)` varchar(256) CHARACTER SET utf8 DEFAULT NULL
 ) ENGINE=MyISAM DEFAULT CHARSET=latin1
 DROP TABLE t2;
 DROP TABLE t1;
@@ -5140,6 +5155,8 @@ DROP FUNCTION f1;
 DROP TABLE t1;
 SET NAMES latin1;
 SET sql_mode='';
+Warnings:
+Warning	3090	Changing sql mode 'NO_AUTO_CREATE_USER' is deprecated. It will be removed in a future release.
 CREATE TABLE t1(a char(215) CHARACTER SET utf8 NOT NULL DEFAULT '', KEY(a));
 INSERT INTO t1 VALUES ();
 SELECT maketime(`a`,`a`,`a`) FROM t1 GROUP BY 1;
@@ -5157,8 +5174,7 @@ INSERT INTO t1 VALUES (0), (0), (1), (0), (0);
 SELECT COUNT(*) FROM t1, t1 t2 
 GROUP BY INSERT('', t2.a, t1.a, (@@global.max_binlog_size));
 COUNT(*)
-20
-5
+25
 DROP TABLE t1;
 #
 # Bug#11764503 (Bug#57341) Query in EXPLAIN EXTENDED shows wrong characters
@@ -5601,6 +5617,10 @@ NULL
 SELECT inet6_aton(soundex('a'));
 inet6_aton(soundex('a'))
 NULL
+#
+# Bug#19047425 UNINITIALISED VALUE IN STR_TO_IPV6
+#
+do is_ipv4_mapped(inet6_aton(convert(_ascii "a:" using utf8)));
 #
 # End of 5.6 tests
 #

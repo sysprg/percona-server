@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2014, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -18,9 +18,6 @@
 /* Copy data from a textfile to table */
 /* 2006-12 Erik Wetterberg : LOAD XML added */
 
-#include "sql_priv.h"
-#include "unireg.h"
-#include "sql_load.h"
 #include "sql_load.h"
 #include "sql_cache.h"                          // query_cache_*
 #include "sql_base.h"          // fill_record_n_invoke_before_triggers
@@ -38,6 +35,13 @@
 #include "rpl_slave.h"
 #include "table_trigger_dispatcher.h"  // Table_trigger_dispatcher
 #include "sql_show.h"
+#include "item_timefunc.h"  // Item_func_now_local
+#include "rpl_rli.h"     // Relay_log_info
+#include "log.h"
+
+#include "pfs_file_provider.h"
+#include "mysql/psi/mysql_file.h"
+
 #include <algorithm>
 
 using std::min;
@@ -187,6 +191,7 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
   const String *escaped=    ex->field.escaped;
   const String *enclosed=   ex->field.enclosed;
   bool is_fifo=0;
+  SELECT_LEX *select= thd->lex->select_lex;
 #ifndef EMBEDDED_LIBRARY
   LOAD_FILE_INFO lf_info;
   THD::killed_state killed_status= THD::NOT_KILLED;
@@ -232,20 +237,22 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
                  ER(WARN_NON_ASCII_SEPARATOR_NOT_IMPLEMENTED));
   } 
 
-  if (open_and_lock_tables(thd, table_list, TRUE, 0))
-    DBUG_RETURN(TRUE);
-  if (setup_tables_and_check_access(thd, &thd->lex->select_lex->context,
-                                    &thd->lex->select_lex->top_join_list,
-                                    table_list,
-                                    &thd->lex->select_lex->leaf_tables, FALSE,
-                                    INSERT_ACL | UPDATE_ACL,
-                                    INSERT_ACL | UPDATE_ACL))
-     DBUG_RETURN(true);
+  if (open_and_lock_tables(thd, table_list, 0))
+    DBUG_RETURN(true);
+
+  if (select->setup_tables(thd, table_list, false))
+    DBUG_RETURN(true);
+
+  if (run_before_dml_hook(thd))
+    DBUG_RETURN(true);
+
+  if (table_list->is_view() && select->resolve_derived(thd, false))
+    DBUG_RETURN(true);                   /* purecov: inspected */
 
   TABLE_LIST *const insert_table_ref=
-    table_list->updatable &&             // View must be updatable
-    !table_list->multitable_view &&      // Multi-table view not allowed
-    !table_list->derived ?               // derived tables not allowed
+    table_list->is_updatable() &&        // View must be updatable
+    !table_list->is_multiple_tables() && // Multi-table view not allowed
+    !table_list->is_derived() ?          // derived tables not allowed
     table_list->updatable_base_table() : NULL;
 
   if (insert_table_ref == NULL ||
@@ -254,9 +261,19 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
     my_error(ER_NON_UPDATABLE_TABLE, MYF(0), table_list->alias, "LOAD");
     DBUG_RETURN(TRUE);
   }
-  if (table_list->prepare_where(thd, 0, TRUE) ||
-      table_list->prepare_check_option(thd))
-    DBUG_RETURN(TRUE);
+  if (select->derived_table_count &&
+      select->check_view_privileges(thd, INSERT_ACL, SELECT_ACL))
+    DBUG_RETURN(true);                   /* purecov: inspected */
+
+  if (table_list->is_merged())
+  {
+    if (table_list->prepare_check_option(thd))
+      DBUG_RETURN(TRUE);
+
+    if (handle_duplicates == DUP_REPLACE &&
+        table_list->prepare_replace_filter(thd))
+      DBUG_RETURN(true);
+  }
 
   // Pass the check option down to the underlying table:
   insert_table_ref->check_option= table_list->check_option;
@@ -300,23 +317,45 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
       Let us also prepare SET clause, altough it is probably empty
       in this case.
     */
-    if (setup_fields(thd, Ref_ptr_array(),
-                     set_fields, MARK_COLUMNS_WRITE, 0, 0) ||
-        setup_fields(thd, Ref_ptr_array(), set_values, MARK_COLUMNS_READ, 0, 0))
+    if (setup_fields(thd, Ref_ptr_array(), set_fields, INSERT_ACL, NULL,
+                     false, true) ||
+        setup_fields(thd, Ref_ptr_array(), set_values, SELECT_ACL, NULL,
+                     false, false))
       DBUG_RETURN(TRUE);
   }
   else
   {						// Part field list
-    /* TODO: use this conds for 'WITH CHECK OPTIONS' */
-    if (setup_fields(thd, Ref_ptr_array(),
-                     fields_vars, MARK_COLUMNS_WRITE, 0, 0) ||
-        setup_fields(thd, Ref_ptr_array(),
-                     set_fields, MARK_COLUMNS_WRITE, 0, 0))
+    /*
+      Because fields_vars may contain user variables,
+      pass false for column_update in first call below.
+    */
+    if (setup_fields(thd, Ref_ptr_array(), fields_vars, INSERT_ACL, NULL,
+                     false, false) ||
+        setup_fields(thd, Ref_ptr_array(), set_fields, INSERT_ACL, NULL,
+                     false, true))
       DBUG_RETURN(TRUE);
+
+    /*
+      Special updatability test is needed because fields_vars may contain
+      a mix of column references and user variables.
+    */
+    Item *item;
+    List_iterator<Item> it(fields_vars);
+    while ((item= it++))
+    {
+      if ((item->type() == Item::FIELD_ITEM ||
+           item->type() == Item::REF_ITEM) &&
+          item->field_for_view_update() == NULL)
+      {
+        my_error(ER_NONUPDATEABLE_COLUMN, MYF(0), item->item_name.ptr());
+        DBUG_RETURN(true);
+      }
+    }
     /* We explicitly ignore the return value */
     (void)check_that_all_fields_are_given_values(thd, table, table_list);
     /* Fix the expressions in SET clause */
-    if (setup_fields(thd, Ref_ptr_array(), set_values, MARK_COLUMNS_READ, 0, 0))
+    if (setup_fields(thd, Ref_ptr_array(), set_values, SELECT_ACL, NULL,
+                     false, false))
       DBUG_RETURN(TRUE);
   }
 
@@ -381,7 +420,8 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
 #ifndef EMBEDDED_LIBRARY
   if (read_file_from_client)
   {
-    (void)net_request_file(&thd->net,ex->file_name);
+    (void)net_request_file(thd->get_protocol_classic()->get_net(),
+                           ex->file_name);
     file = -1;
   }
   else
@@ -400,12 +440,14 @@ int mysql_load(THD *thd,sql_exchange *ex,TABLE_LIST *table_list,
                        MY_RETURN_REAL_PATH);
     }
 
-    if (thd->slave_thread)
+    if (thd->slave_thread & ((SYSTEM_THREAD_SLAVE_SQL |
+                             (SYSTEM_THREAD_SLAVE_WORKER))!=0))
     {
 #if defined(HAVE_REPLICATION) && !defined(MYSQL_CLIENT)
-      DBUG_ASSERT(active_mi != NULL);
-      if (strncmp(active_mi->rli->slave_patternload_file, name,
-                  active_mi->rli->slave_patternload_file_size))
+      Relay_log_info* rli= thd->rli_slave->get_c_rli();
+
+      if (strncmp(rli->slave_patternload_file, name,
+                  rli->slave_patternload_file_size))
       {
         /*
           LOAD DATA INFILE in the slave SQL Thread can only read from 
@@ -728,9 +770,9 @@ static bool write_execute_load_query_log_event(THD *thd, sql_exchange* ex,
   /*
     prepare fields-list and SET if needed; print_query won't do that for us.
   */
-  if (!thd->lex->field_list.is_empty())
+  if (!thd->lex->load_field_list.is_empty())
   {
-    List_iterator<Item>  li(thd->lex->field_list);
+    List_iterator<Item> li(thd->lex->load_field_list);
 
     pfields.append(" (");
     n= 0;
@@ -749,9 +791,9 @@ static bool write_execute_load_query_log_event(THD *thd, sql_exchange* ex,
     pfields.append(")");
   }
 
-  if (!thd->lex->update_list.is_empty())
+  if (!thd->lex->load_update_list.is_empty())
   {
-    List_iterator<Item> lu(thd->lex->update_list);
+    List_iterator<Item> lu(thd->lex->load_update_list);
     List_iterator<String> ls(thd->lex->load_set_str_list);
 
     pfields.append(" SET ");
@@ -767,7 +809,7 @@ static bool write_execute_load_query_log_event(THD *thd, sql_exchange* ex,
       // Extract exact Item value
       str->copy();
       pfields.append(str->ptr());
-      str->free();
+      str->mem_free();
     }
     /*
       Clear the SET string list once the SET command is reconstructed
@@ -793,8 +835,9 @@ static bool write_execute_load_query_log_event(THD *thd, sql_exchange* ex,
     e(thd, load_data_query, end-load_data_query,
       static_cast<uint>(fname_start - load_data_query - 1),
       static_cast<uint>(fname_end - load_data_query),
-      (duplicates == DUP_REPLACE) ? LOAD_DUP_REPLACE :
-      (thd->lex->is_ignore() ? LOAD_DUP_IGNORE : LOAD_DUP_ERROR),
+      (duplicates == DUP_REPLACE) ? binary_log::LOAD_DUP_REPLACE :
+      (thd->lex->is_ignore() ? binary_log::LOAD_DUP_IGNORE :
+                               binary_log::LOAD_DUP_ERROR),
       transactional_table, FALSE, FALSE, errcode);
   return mysql_bin_log.write_event(&e);
 }
@@ -844,7 +887,7 @@ read_fixed_length(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
     */
     if (validate_default_values_of_unset_fields(thd, table))
     {
-      read_info.error= 1;
+      read_info.error= true;
       break;
     }
 
@@ -1001,7 +1044,7 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
     */
     if (validate_default_values_of_unset_fields(thd, table))
     {
-      read_info.error= 1;
+      read_info.error= true;
       break;
     }
 
@@ -1061,11 +1104,6 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
           ((Item_user_var_as_out_param *)item)->set_null_value(
                                                   read_info.read_charset);
         }
-        else
-        {
-          my_error(ER_LOAD_DATA_INVALID_COLUMN, MYF(0), item->full_name());
-          DBUG_RETURN(1);
-        }
 
 	continue;
       }
@@ -1085,15 +1123,10 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
         ((Item_user_var_as_out_param *)item)->set_value((char*) pos, length,
                                                         read_info.read_charset);
       }
-      else
-      {
-        my_error(ER_LOAD_DATA_INVALID_COLUMN, MYF(0), item->full_name());
-        DBUG_RETURN(1);
-      }
     }
 
     if (thd->is_error())
-      read_info.error= 1;
+      read_info.error= true;
 
     if (read_info.error)
       break;
@@ -1143,11 +1176,6 @@ read_sep_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
           DBUG_ASSERT(NULL != dynamic_cast<Item_user_var_as_out_param*>(item));
           ((Item_user_var_as_out_param *)item)->set_null_value(
                                                   read_info.read_charset);
-        }
-        else
-        {
-          my_error(ER_LOAD_DATA_INVALID_COLUMN, MYF(0), item->full_name());
-          DBUG_RETURN(1);
         }
       }
     }
@@ -1264,7 +1292,7 @@ read_xml_field(THD *thd, COPY_INFO &info, TABLE_LIST *table_list,
     */
     if (validate_default_values_of_unset_fields(thd, table))
     {
-      read_info.error= 1;
+      read_info.error= true;
       break;
     }
     
@@ -1474,8 +1502,8 @@ READ_INFO::READ_INFO(File file_par, uint tot_length, const CHARSET_INFO *cs,
   stack=stack_pos=(int*) sql_alloc(sizeof(int)*length);
 
   if (!(buffer=(uchar*) my_malloc(key_memory_READ_INFO,
-                                  buff_length+1,MYF(0))))
-    error=1; /* purecov: inspected */
+                                  buff_length+1, MYF(MY_WME))))
+    error= true; /* purecov: inspected */
   else
   {
     end_of_buff=buffer+buff_length;
@@ -1486,7 +1514,7 @@ READ_INFO::READ_INFO(File file_par, uint tot_length, const CHARSET_INFO *cs,
     {
       my_free(buffer); /* purecov: inspected */
       buffer= NULL;
-      error=1;
+      error= true;
     }
     else
     {
@@ -1692,7 +1720,10 @@ int READ_INFO::read_field()
       GET_MBCHARLEN(read_charset, chr, ml);
       if (ml == 0)
       {
-        error= 1;
+        *to= '\0';
+        my_error(ER_INVALID_CHARACTER_STRING, MYF(0),
+                 read_charset->csname, buffer);
+        error= true;
         return 1;
       }
 
@@ -1725,6 +1756,12 @@ int READ_INFO::read_field()
           PUSH(*--to);
         chr= GET;
       }
+      else if (ml > 1)
+      {
+        // Buffer is too small, exit while loop, and reallocate.
+        PUSH(chr);
+        break;
+      }
       *to++ = (uchar) chr;
     }
     /*
@@ -1733,7 +1770,7 @@ int READ_INFO::read_field()
     if (!(new_buffer=(uchar*) my_realloc(key_memory_READ_INFO,
                                          (char*) buffer,buff_length+1+IO_SIZE,
 					MYF(MY_WME))))
-      return (error=1);
+      return (error= true);
     to=new_buffer + (to-buffer);
     buffer=new_buffer;
     buff_length+=IO_SIZE;

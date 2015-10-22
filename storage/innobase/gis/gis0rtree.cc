@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2015, Oracle and/or its affiliates. All Rights Reserved.
 
 This program is free software; you can redistribute it and/or modify it under
 the terms of the GNU General Public License as published by the Free Software
@@ -123,8 +123,9 @@ rtr_page_split_initialize_nodes(
 
 /**********************************************************************//**
 Builds a Rtree node pointer out of a physical record and a page number.
+Note: For Rtree, we just keep the mbr and page no field in non-leaf level
+page. It's different with Btree, Btree still keeps PK fields so far.
 @return	own: node pointer */
-
 dtuple_t*
 rtr_index_build_node_ptr(
 /*=====================*/
@@ -143,16 +144,13 @@ rtr_index_build_node_ptr(
 	dfield_t*	field;
 	byte*		buf;
 	ulint		n_unique;
+	ulint		info_bits;
 
-	n_unique = dict_index_get_n_unique_in_tree(index);
+	ut_ad(dict_index_is_spatial(index));
+
+	n_unique = DICT_INDEX_SPATIAL_NODEPTR_SIZE;
 
 	tuple = dtuple_create(heap, n_unique + 1);
-
-	/* When searching in the tree for the node pointer, we must not do
-	comparison on the last field, the page number field, as on upper
-	levels in the tree there may be identical node pointers with a
-	different page number; therefore, we set the n_fields_cmp to one
-	less: */
 
 	dtuple_set_n_fields_cmp(tuple, n_unique);
 
@@ -168,10 +166,9 @@ rtr_index_build_node_ptr(
 
 	dtype_set(dfield_get_type(field), DATA_SYS_CHILD, DATA_NOT_NULL, 4);
 
-	/* Copy the prefix */
-	rec_copy_prefix_to_dtuple(tuple, rec, index, n_unique, heap);
-	dtuple_set_info_bits(tuple, dtuple_get_info_bits(tuple)
-				    | REC_STATUS_NODE_PTR);
+	/* Set info bits. */
+	info_bits = rec_get_info_bits(rec, dict_table_is_comp(index->table));
+	dtuple_set_info_bits(tuple, info_bits | REC_STATUS_NODE_PTR);
 
 	/* Set mbr as index entry data */
 	field = dtuple_get_nth_field(tuple, 0);
@@ -464,7 +461,7 @@ update_mbr:
 			cur2_rec = cursor2->page_cur.rec;
 			offsets2 = rec_get_offsets(cur2_rec, index, NULL,
 						   ULINT_UNDEFINED, &heap);
-			
+
 			cur2_rec_info = rec_get_info_bits(cur2_rec,
 						rec_offs_comp(offsets2));
 			if (cur2_rec_info & REC_INFO_MIN_REC_FLAG) {
@@ -615,7 +612,8 @@ update_mbr:
 			page_rec_get_next(page_get_infimum_rec(page)),
 			page_is_comp(page)));
 	}
-#endif
+#endif /* UNIV_DEBUG */
+
 	mem_heap_free(heap);
 
 	return(true);
@@ -956,6 +954,9 @@ rtr_split_page_move_rec_list(
 		}
 	}
 
+	/* Update the lock table */
+	lock_rtr_move_rec_list(new_block, block, rec_move, moved);
+
 	/* Delete recs in second group from the old page. */
 	for (cur_split_node = node_array;
 	     cur_split_node < end_split_node; ++cur_split_node) {
@@ -971,9 +972,6 @@ rtr_split_page_move_rec_list(
 		}
 	}
 
-	/* Update the lock table */
-	lock_rtr_move_rec_list(new_block, block, rec_move, moved);
-
 	return(true);
 }
 
@@ -985,7 +983,6 @@ function must always succeed, we cannot reverse it: therefore enough
 free disk space (2 pages) must be guaranteed to be available before
 this function is called.
 @return inserted record */
-
 rec_t*
 rtr_page_split_and_insert(
 /*======================*/
@@ -1042,10 +1039,8 @@ func_start:
 	ut_ad(!dict_index_is_online_ddl(cursor->index)
 	      || (flags & BTR_CREATE_FLAG)
 	      || dict_index_is_clust(cursor->index));
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(rw_lock_own_flagged(dict_index_get_lock(cursor->index),
 				  RW_LOCK_FLAG_X | RW_LOCK_FLAG_SX));
-#endif /* UNIV_SYNC_DEBUG */
 
 	block = btr_cur_get_block(cursor);
 	page = buf_block_get_frame(block);
@@ -1121,7 +1116,13 @@ func_start:
 					     first_rec_group,
 					     new_block, block, first_rec,
 					     cursor->index, *heap, mtr)) {
-		ulint n = 0;
+		ulint			n		= 0;
+		rec_t*			rec;
+		ulint			moved		= 0;
+		ulint			max_to_move	= 0;
+		rtr_rec_move_t*		rec_move	= NULL;
+		ulint			pos;
+
 		/* For some reason, compressing new_page failed,
 		even though it should contain fewer records than
 		the original page.  Copy the page byte for byte
@@ -1133,6 +1134,36 @@ func_start:
 				   page_zip, page, cursor->index, mtr);
 
 		page_cursor = btr_cur_get_page_cur(cursor);
+
+		/* Move locks on recs. */
+		max_to_move = page_get_n_recs(page);
+		rec_move = static_cast<rtr_rec_move_t*>(mem_heap_alloc(
+				*heap,
+				sizeof (*rec_move) * max_to_move));
+
+		/* Init the rec_move array for moving lock on recs.  */
+		for (cur_split_node = rtr_split_node_array;
+		     cur_split_node < end_split_node - 1; ++cur_split_node) {
+			if (cur_split_node->n_node != first_rec_group) {
+				pos = page_rec_get_n_recs_before(
+					cur_split_node->key);
+				rec = page_rec_get_nth(new_page, pos);
+				ut_a(rec);
+
+				rec_move[moved].new_rec = rec;
+				rec_move[moved].old_rec = cur_split_node->key;
+				rec_move[moved].moved = false;
+				moved++;
+
+				if (moved > max_to_move) {
+					ut_ad(0);
+					break;
+				}
+			}
+		}
+
+		/* Update the lock table */
+		lock_rtr_move_rec_list(new_block, block, rec_move, moved);
 
 		/* Delete recs in first group from the new page. */
 		for (cur_split_node = rtr_split_node_array;
@@ -1283,7 +1314,6 @@ func_start:
 /****************************************************************//**
 Following the right link to find the proper block for insert.
 @return the proper block.*/
-
 dberr_t
 rtr_ins_enlarge_mbr(
 /*================*/
@@ -1364,7 +1394,6 @@ IMPORTANT: The caller will have to update IBUF_BITMAP_FREE
 if new_block is a compressed leaf page in a secondary index.
 This has to be done either within the same mini-transaction,
 or by invoking ibuf_reset_free_bits() before mtr_commit(). */
-
 void
 rtr_page_copy_rec_list_end_no_locks(
 /*================================*/
@@ -1467,20 +1496,15 @@ rtr_page_copy_rec_list_end_no_locks(
 		ins_rec = page_cur_insert_rec_low(cur_rec, index,
 						  cur1_rec, offsets, mtr);
 		if (UNIV_UNLIKELY(!ins_rec)) {
-			buf_page_print(new_page, univ_page_size,
-				       BUF_PAGE_PRINT_NO_CRASH);
-			buf_page_print(page_align(rec), univ_page_size,
-				       BUF_PAGE_PRINT_NO_CRASH);
-
 			fprintf(stderr, "page number %ld and %ld\n",
 				(long)new_block->page.id.page_no(),
 				(long)block->page.id.page_no());
-			ib_logf(IB_LOG_LEVEL_FATAL,
-				"rec offset %lu, cur1 offset %lu,"
-				" cur_rec offset %lu",
-				(ulong) page_offset(rec),
-				(ulong) page_offset(page_cur_get_rec(&cur1)),
-				(ulong) page_offset(cur_rec));
+
+			ib::fatal() << "rec offset " << page_offset(rec)
+				<< ", cur1 offset "
+				<<  page_offset(page_cur_get_rec(&cur1))
+				<< ", cur_rec offset "
+				<< page_offset(cur_rec);
 		}
 
 		rec_move[moved].new_rec = ins_rec;
@@ -1501,7 +1525,6 @@ next:
 
 /*************************************************************//**
 Copy recs till a specified rec from a page to new_block of rtree. */
-
 void
 rtr_page_copy_rec_list_start_no_locks(
 /*==================================*/
@@ -1595,22 +1618,15 @@ rtr_page_copy_rec_list_start_no_locks(
 		ins_rec = page_cur_insert_rec_low(cur_rec, index,
 						  cur1_rec, offsets, mtr);
 		if (UNIV_UNLIKELY(!ins_rec)) {
-
-			buf_page_print(buf_block_get_frame(new_block),
-				       univ_page_size,
-				       BUF_PAGE_PRINT_NO_CRASH);
-			buf_page_print(page_align(rec), univ_page_size,
-				       BUF_PAGE_PRINT_NO_CRASH);
-
 			fprintf(stderr, "page number %ld and %ld\n",
 				(long)new_block->page.id.page_no(),
 				(long)block->page.id.page_no());
-			ib_logf(IB_LOG_LEVEL_FATAL,
-				"rec offset %lu, cur1 offset %lu,"
-				" cur_rec offset %lu",
-				(ulong) page_offset(rec),
-				(ulong) page_offset(page_cur_get_rec(&cur1)),
-				(ulong) page_offset(cur_rec));
+
+			ib::fatal() << "rec offset " << page_offset(rec)
+				<< ", cur1 offset "
+				<<  page_offset(page_cur_get_rec(&cur1))
+				<< ", cur_rec offset "
+				<< page_offset(cur_rec);
 		}
 
 		rec_move[moved].new_rec = ins_rec;
@@ -1747,7 +1763,6 @@ rtr_merge_and_update_mbr(
 
 /*************************************************************//**
 Deletes on the upper level the node pointer to a page. */
-
 void
 rtr_node_ptr_delete(
 /*================*/
@@ -1772,7 +1787,6 @@ rtr_node_ptr_delete(
 /**************************************************************//**
 Check whether a Rtree page is child of a parent page
 @return true if there is child/parent relationship */
-
 bool
 rtr_check_same_block(
 /*================*/
@@ -1807,7 +1821,6 @@ rtr_check_same_block(
 /****************************************************************//**
 Calculate the area increased for a new record
 @return area increased */
-
 double
 rtr_rec_cal_increase(
 /*=================*/
@@ -1839,4 +1852,163 @@ rtr_rec_cal_increase(
 		static_cast<int>(dtuple_f_len), area);
 
 	return(ret);
+}
+
+/** Estimates the number of rows in a given area.
+@param[in]	index	index
+@param[in]	tuple	range tuple containing mbr, may also be empty tuple
+@param[in]	mode	search mode
+@return estimated number of rows */
+int64_t
+rtr_estimate_n_rows_in_range(
+	dict_index_t*	index,
+	const dtuple_t*	tuple,
+	page_cur_mode_t	mode)
+{
+	/* Check tuple & mode */
+	if (tuple->n_fields == 0) {
+		return(HA_POS_ERROR);
+	}
+
+	switch (mode) {
+	case PAGE_CUR_DISJOINT:
+	case PAGE_CUR_CONTAIN:
+	case PAGE_CUR_INTERSECT:
+	case PAGE_CUR_WITHIN:
+	case PAGE_CUR_MBR_EQUAL:
+		break;
+	default:
+		return(HA_POS_ERROR);
+	}
+
+	DBUG_EXECUTE_IF("rtr_pcur_move_to_next_return",
+		return(2);
+	);
+
+	/* Read mbr from tuple. */
+	const dfield_t*	dtuple_field;
+	ulint		dtuple_f_len __attribute__((unused));
+	rtr_mbr_t	range_mbr;
+	double		range_area;
+	byte*		range_mbr_ptr;
+
+	dtuple_field = dtuple_get_nth_field(tuple, 0);
+	dtuple_f_len = dfield_get_len(dtuple_field);
+	range_mbr_ptr = reinterpret_cast<byte*>(dfield_get_data(dtuple_field));
+
+	ut_ad(dtuple_f_len >= DATA_MBR_LEN);
+	rtr_read_mbr(range_mbr_ptr, &range_mbr);
+	range_area = (range_mbr.xmax - range_mbr.xmin)
+		 * (range_mbr.ymax - range_mbr.ymin);
+
+	/* Get index root page. */
+	page_size_t	page_size(dict_table_page_size(index->table));
+	page_id_t	page_id(dict_index_get_space(index),
+				dict_index_get_page(index));
+	mtr_t		mtr;
+	buf_block_t*	block;
+	page_t*		page;
+	ulint		n_recs;
+
+	mtr_start(&mtr);
+	mtr.set_named_space(dict_index_get_space(index));
+	mtr_s_lock(dict_index_get_lock(index), &mtr);
+
+	block = btr_block_get(page_id, page_size, RW_S_LATCH, index, &mtr);
+	page = buf_block_get_frame(block);
+	n_recs = page_header_get_field(page, PAGE_N_RECS);
+
+	if (n_recs == 0) {
+		mtr_commit(&mtr);
+		return(HA_POS_ERROR);
+	}
+
+	rec_t*		rec;
+	byte*		field;
+	ulint		len;
+	ulint*		offsets = NULL;
+	mem_heap_t*	heap;
+
+	heap = mem_heap_create(512);
+	rec = page_rec_get_next(page_get_infimum_rec(page));
+	offsets = rec_get_offsets(rec, index, offsets, ULINT_UNDEFINED, &heap);
+
+	/* Scan records in root page and calculate area. */
+	double	area = 0;
+	while (!page_rec_is_supremum(rec)) {
+		rtr_mbr_t	mbr;
+		double		rec_area;
+
+		field = rec_get_nth_field(rec, offsets, 0, &len);
+		ut_ad(len == DATA_MBR_LEN);
+
+		rtr_read_mbr(field, &mbr);
+
+		rec_area = (mbr.xmax - mbr.xmin) * (mbr.ymax - mbr.ymin);
+
+		if (rec_area == 0) {
+			switch (mode) {
+			case PAGE_CUR_CONTAIN:
+			case PAGE_CUR_INTERSECT:
+				area += 1;
+				break;
+
+			case PAGE_CUR_DISJOINT:
+				break;
+
+			case PAGE_CUR_WITHIN:
+			case PAGE_CUR_MBR_EQUAL:
+				if (rtree_key_cmp(
+					PAGE_CUR_WITHIN, range_mbr_ptr,
+					DATA_MBR_LEN, field, DATA_MBR_LEN)
+				    == 0) {
+					area += 1;
+				}
+
+				break;
+
+			default:
+				ut_error;
+			}
+		} else {
+			switch (mode) {
+			case PAGE_CUR_CONTAIN:
+			case PAGE_CUR_INTERSECT:
+				area += rtree_area_overlapping(range_mbr_ptr,
+						field, DATA_MBR_LEN) / rec_area;
+				break;
+
+			case PAGE_CUR_DISJOINT:
+				area += 1;
+				area -= rtree_area_overlapping(range_mbr_ptr,
+						field, DATA_MBR_LEN) / rec_area;
+				break;
+
+			case PAGE_CUR_WITHIN:
+			case PAGE_CUR_MBR_EQUAL:
+				if (rtree_key_cmp(
+					PAGE_CUR_WITHIN, range_mbr_ptr,
+					DATA_MBR_LEN, field, DATA_MBR_LEN)
+				    == 0) {
+					area += range_area / rec_area;
+				}
+
+				break;
+			default:
+				ut_error;
+			}
+		}
+
+		rec = page_rec_get_next(rec);
+	}
+
+	mtr_commit(&mtr);
+	mem_heap_free(heap);
+
+	if (my_isinf(area) || my_isnan(area)) {
+		return(HA_POS_ERROR);
+	}
+
+	return(static_cast<int64_t>(dict_table_get_n_rows(index->table)
+				    * area / n_recs));
 }

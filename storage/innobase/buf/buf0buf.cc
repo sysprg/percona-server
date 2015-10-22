@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2014, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -301,6 +301,15 @@ static buf_pool_chunk_map_t*			buf_chunk_map_reg;
 The map pointed by this should not be updated */
 static buf_pool_chunk_map_t*	buf_chunk_map_ref = NULL;
 
+#ifdef UNIV_DEBUG
+/** Protect reference for buf_chunk_map_ref from deleting map,
+because the reference can be caused by debug assertion code. */
+static rw_lock_t*	buf_chunk_map_latch;
+
+/** Disable resizing buffer pool to make assertion code not expensive. */
+my_bool			buf_disable_resize_buffer_pool_debug = TRUE;
+#endif /* UNIV_DEBUG */
+
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
 /** This is used to insert validation operations in execution
 in the debug version */
@@ -347,7 +356,6 @@ buf_pool_register_chunk(
 Gets the smallest oldest_modification lsn for any page in the pool. Returns
 zero if all modified pages have been flushed to disk.
 @return oldest modification in pool, zero if none */
-
 lsn_t
 buf_pool_get_oldest_modification(void)
 /*==================================*/
@@ -394,7 +402,6 @@ buf_pool_get_oldest_modification(void)
 
 /********************************************************************//**
 Get total buffer pool statistics. */
-
 void
 buf_get_total_list_len(
 /*===================*/
@@ -421,7 +428,6 @@ buf_get_total_list_len(
 
 /********************************************************************//**
 Get total list size in bytes from all buffer pools. */
-
 void
 buf_get_total_list_size_in_bytes(
 /*=============================*/
@@ -447,7 +453,6 @@ buf_get_total_list_size_in_bytes(
 
 /********************************************************************//**
 Get total buffer pool statistics. */
-
 void
 buf_get_total_stat(
 /*===============*/
@@ -481,7 +486,6 @@ buf_get_total_stat(
 /********************************************************************//**
 Allocates a buffer block.
 @return own: the allocated block, in state BUF_BLOCK_MEMORY */
-
 buf_block_t*
 buf_block_alloc(
 /*============*/
@@ -525,6 +529,181 @@ buf_page_is_zeroes(
 	return(true);
 }
 
+/** Checks if the page is in crc32 checksum format.
+@param[in]	read_buf	database page
+@param[in]	checksum_field1	new checksum field
+@param[in]	checksum_field2	old checksum field
+@param[in]	page_no		page number of given read_buf
+@param[in]	is_log_enabled	true if log option is enabled
+@param[in]	log_file	file pointer to log_file
+@param[in]	curr_algo	current checksum algorithm
+@return true if the page is in crc32 checksum format. */
+UNIV_INLINE
+bool
+buf_page_is_checksum_valid_crc32(
+	const byte*			read_buf,
+	ulint				checksum_field1,
+	ulint				checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+	,uintmax_t			page_no,
+	bool				is_log_enabled,
+	FILE*				log_file,
+	const srv_checksum_algorithm_t	curr_algo
+#endif /* UNIV_INNOCHECKSUM */
+	)
+{
+	const uint32_t	crc32 = buf_calc_page_crc32(read_buf);
+
+#ifdef UNIV_INNOCHECKSUM
+	if (is_log_enabled
+	    && curr_algo == SRV_CHECKSUM_ALGORITHM_STRICT_CRC32) {
+		fprintf(log_file, "page::%" PRIuMAX ";"
+			" crc32 calculated = %u;"
+			" recorded checksum field1 = %lu recorded"
+			" checksum field2 =%lu\n", page_no,
+			crc32, checksum_field1, checksum_field2);
+	}
+#endif /* UNIV_INNOCHECKSUM */
+
+	if (checksum_field1 != checksum_field2) {
+		return(false);
+	}
+
+	if (checksum_field1 == crc32) {
+		return(true);
+	}
+
+	const uint32_t	crc32_legacy = buf_calc_page_crc32(read_buf, true);
+
+	if (checksum_field1 == crc32_legacy) {
+		return(true);
+	}
+
+	return(false);
+}
+
+/** Checks if the page is in innodb checksum format.
+@param[in]	read_buf	database page
+@param[in]	checksum_field1	new checksum field
+@param[in]	checksum_field2	old checksum field
+@param[in]	page_no		page number of given read_buf
+@param[in]	is_log_enabled	true if log option is enabled
+@param[in]	log_file	file pointer to log_file
+@param[in]	curr_algo	current checksum algorithm
+@return true if the page is in innodb checksum format. */
+UNIV_INLINE
+bool
+buf_page_is_checksum_valid_innodb(
+	const byte*			read_buf,
+	ulint				checksum_field1,
+	ulint				checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+	,uintmax_t			page_no,
+	bool				is_log_enabled,
+	FILE*				log_file,
+	const srv_checksum_algorithm_t	curr_algo
+#endif /* UNIV_INNOCHECKSUM */
+	)
+{
+	/* There are 2 valid formulas for
+	checksum_field2 (old checksum field) which algo=innodb could have
+	written to the page:
+
+	1. Very old versions of InnoDB only stored 8 byte lsn to the
+	start and the end of the page.
+
+	2. Newer InnoDB versions store the old formula checksum
+	(buf_calc_page_old_checksum()). */
+
+	ulint	old_checksum = buf_calc_page_old_checksum(read_buf);
+	ulint	new_checksum = buf_calc_page_new_checksum(read_buf);
+
+#ifdef UNIV_INNOCHECKSUM
+	if (is_log_enabled
+	    && curr_algo == SRV_CHECKSUM_ALGORITHM_INNODB) {
+		fprintf(log_file, "page::%" PRIuMAX ";"
+			" old style: calculated ="
+			" %lu; recorded = %lu\n",
+			page_no, old_checksum,
+			checksum_field2);
+		fprintf(log_file, "page::%" PRIuMAX ";"
+			" new style: calculated ="
+			" %lu; crc32 = %u; recorded = %lu\n",
+			page_no, new_checksum,
+			buf_calc_page_crc32(read_buf), checksum_field1);
+	}
+
+	if (is_log_enabled
+	    && curr_algo == SRV_CHECKSUM_ALGORITHM_STRICT_INNODB) {
+		fprintf(log_file, "page::%" PRIuMAX ";"
+			" old style: calculated ="
+			" %lu; recorded checksum = %lu\n",
+			page_no, old_checksum,
+			checksum_field2);
+		fprintf(log_file, "page::%" PRIuMAX ";"
+			" new style: calculated ="
+			" %lu; recorded checksum  = %lu\n",
+			page_no, new_checksum,
+			checksum_field1);
+	}
+#endif /* UNIV_INNOCHECKSUM */
+
+	if (checksum_field2 != mach_read_from_4(read_buf + FIL_PAGE_LSN)
+	    && checksum_field2 != old_checksum) {
+		return(false);
+	}
+
+	/* old field is fine, check the new field */
+
+	/* InnoDB versions < 4.0.14 and < 4.1.1 stored the space id
+	(always equal to 0), to FIL_PAGE_SPACE_OR_CHKSUM */
+
+	if (checksum_field1 != 0 && checksum_field1 != new_checksum) {
+		return(false);
+	}
+
+	return(true);
+}
+
+/** Checks if the page is in none checksum format.
+@param[in]	read_buf	database page
+@param[in]	checksum_field1	new checksum field
+@param[in]	checksum_field2	old checksum field
+@param[in]	page_no		page number of given read_buf
+@param[in]	is_log_enabled	true if log option is enabled
+@param[in]	log_file	file pointer to log_file
+@param[in]	curr_algo	current checksum algorithm
+@return true if the page is in none checksum format. */
+UNIV_INLINE
+bool
+buf_page_is_checksum_valid_none(
+	const byte*			read_buf,
+	ulint				checksum_field1,
+	ulint				checksum_field2
+#ifdef	UNIV_INNOCHECKSUM
+	,uintmax_t			page_no,
+	bool				is_log_enabled,
+	FILE*				log_file,
+	const srv_checksum_algorithm_t	curr_algo
+#endif	/* UNIV_INNOCHECKSUM */
+	)
+{
+
+#ifdef UNIV_INNOCHECKSUM
+	if (is_log_enabled
+	    && curr_algo == SRV_CHECKSUM_ALGORITHM_STRICT_NONE) {
+		fprintf(log_file,
+			"page::%" PRIuMAX "; none checksum: calculated"
+			" = %lu; recorded checksum_field1 = %lu"
+			" recorded checksum_field2 = %lu\n",
+			page_no, BUF_NO_CHECKSUM_MAGIC,
+			checksum_field1, checksum_field2);
+	}
+#endif /* UNIV_INNOCHECKSUM */
+
+	return(checksum_field1 == checksum_field2
+	       && checksum_field1 == BUF_NO_CHECKSUM_MAGIC);
+}
 
 /** Checks if a page is corrupt.
 @param[in]	check_lsn	true if we need to check and complain about
@@ -553,8 +732,6 @@ buf_page_is_corrupted(
 {
 	ulint		checksum_field1;
 	ulint		checksum_field2;
-	ibool		crc32_inited = FALSE;
-	ib_uint32_t	crc32 = ULINT32_UNDEFINED;
 
 	if (!page_size.is_compressed()
 	    && memcmp(read_buf + FIL_PAGE_LSN + 4,
@@ -624,19 +801,34 @@ buf_page_is_corrupted(
 	checksum_field2 = mach_read_from_4(
 		read_buf + page_size.logical() - FIL_PAGE_END_LSN_OLD_CHKSUM);
 
+#if FIL_PAGE_LSN % 8
+#error "FIL_PAGE_LSN must be 64 bit aligned"
+#endif
+
 	/* declare empty pages non-corrupted */
-	if (checksum_field1 == 0 && checksum_field2 == 0
-	    && mach_read_from_4(read_buf + FIL_PAGE_LSN) == 0) {
+	if (checksum_field1 == 0
+	    && checksum_field2 == 0
+	    && *reinterpret_cast<const ib_uint64_t*>(
+		    read_buf + FIL_PAGE_LSN) == 0) {
+
 		/* make sure that the page is really empty */
 
-#ifdef UNIV_INNOCHECKSUM
 		ulint	i;
 
-		for (i = 0; i < page_size.logical(); i++) {
-			if (read_buf[i] != 0)
-				break;
-		}
+		for (i = 0; i < page_size.logical(); ++i) {
 
+			/* The FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID has been
+			repurposed for page compression. It can be
+			set for uncompressed empty pages. */
+
+			if ((i < FIL_PAGE_FILE_FLUSH_LSN
+			     || i >= FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID)
+			    && read_buf[i] != 0) {
+
+				break;
+			}
+		}
+#ifdef UNIV_INNOCHECKSUM
 		if (i >= page_size.logical()) {
 			if (is_log_enabled) {
 				fprintf(log_file, "Page::%" PRIuMAX
@@ -646,260 +838,224 @@ buf_page_is_corrupted(
 			return(FALSE);
 		}
 #else
-		for (ulint i = 0; i < page_size.logical(); i++) {
-			if (read_buf[i] != 0) {
-				return(TRUE);
-			}
-		}
-
-		return(FALSE);
+		return(i < page_size.logical());
 #endif /* UNIV_INNOCHECKSUM */
-
 	}
 
-	switch ((srv_checksum_algorithm_t) srv_checksum_algorithm) {
+#ifndef UNIV_INNOCHECKSUM
+	const page_id_t	page_id(mach_read_from_4(
+					read_buf + FIL_PAGE_SPACE_ID),
+				mach_read_from_4(
+					read_buf + FIL_PAGE_OFFSET));
+#endif /* UNIV_INNOCHECKSUM */
+
+	DBUG_EXECUTE_IF("buf_page_import_corrupt_failure", return(TRUE); );
+	const srv_checksum_algorithm_t	curr_algo =
+		static_cast<srv_checksum_algorithm_t>(srv_checksum_algorithm);
+
+	switch (curr_algo) {
+	case SRV_CHECKSUM_ALGORITHM_CRC32:
 	case SRV_CHECKSUM_ALGORITHM_STRICT_CRC32:
 
-		crc32 = buf_calc_page_crc32(read_buf);
+		if (buf_page_is_checksum_valid_crc32(read_buf,
+			checksum_field1, checksum_field2
 #ifdef UNIV_INNOCHECKSUM
-		if (is_log_enabled) {
-			fprintf(log_file, "page::%" PRIuMAX ";"
-				" crc32 calculated = %u;"
-				" recorded checksum field1 = %lu recorded"
-				" checksum field2 =%lu\n", page_no, crc32,
-				checksum_field1, checksum_field2);
+			, page_no, is_log_enabled, log_file, curr_algo
+#endif /* UNIV_INNOCHECKSUM */
+			)) {
+			return(FALSE);
 		}
-#endif /* UNIV_INNOCHECKSUM */
 
-		return(checksum_field1 != crc32 || checksum_field2 != crc32);
-
-	case SRV_CHECKSUM_ALGORITHM_STRICT_INNODB:
+		if (buf_page_is_checksum_valid_none(read_buf,
+			checksum_field1, checksum_field2
 #ifdef UNIV_INNOCHECKSUM
-		if (is_log_enabled) {
-			fprintf(log_file, "page::%" PRIuMAX ";"
-				" old style: calculated ="
-				" %lu; recorded checksum = %lu\n",
-				page_no, buf_calc_page_old_checksum(read_buf),
-				checksum_field2);
-			fprintf(log_file, "page::%" PRIuMAX ";"
-				" new style: calculated ="
-				" %lu; recorded checksum  = %lu\n",
-				page_no, buf_calc_page_new_checksum(read_buf),
-				checksum_field1);
-		}
-#endif /* UNIV_INNOCHECKSUM */
-
-		return(checksum_field1
-		       != buf_calc_page_new_checksum(read_buf)
-		       || checksum_field2
-		       != buf_calc_page_old_checksum(read_buf));
-
-	case SRV_CHECKSUM_ALGORITHM_STRICT_NONE:
-#ifdef UNIV_INNOCHECKSUM
-		if (is_log_enabled) {
-			fprintf(log_file,
-				"page::%" PRIuMAX "; none checksum: calculated"
-				" = %lu; recorded checksum_field1 = %lu"
-				" recorded checksum_field2 = %lu\n",
-				page_no, BUF_NO_CHECKSUM_MAGIC,
-				checksum_field1, checksum_field2);
-		}
-#endif /* UNIV_INNOCHECKSUM */
-
-		return(checksum_field1 != BUF_NO_CHECKSUM_MAGIC
-		       || checksum_field2 != BUF_NO_CHECKSUM_MAGIC);
-
-	case SRV_CHECKSUM_ALGORITHM_CRC32:
-	case SRV_CHECKSUM_ALGORITHM_INNODB:
-		/* There are 3 valid formulas for
-		checksum_field2 (old checksum field):
-
-		1. Very old versions of InnoDB only stored 8 byte lsn to the
-		start and the end of the page.
-
-		2. InnoDB versions before MySQL 5.6.3 store the old formula
-		checksum (buf_calc_page_old_checksum()).
-
-		3. InnoDB versions 5.6.3 and newer with
-		innodb_checksum_algorithm=strict_crc32|crc32 store CRC32. */
-
-		/* since innodb_checksum_algorithm is not strict_* allow
-		any of the algos to match for the old field */
-
-		if (checksum_field2
-		    != mach_read_from_4(read_buf + FIL_PAGE_LSN)
-		    && checksum_field2 != BUF_NO_CHECKSUM_MAGIC) {
-
-			/* The checksum does not match any of the
-			fast to check. First check the selected algorithm
-			for writing checksums because we assume that the
-			chance of it matching is higher. */
-
-			if (srv_checksum_algorithm
-			    == SRV_CHECKSUM_ALGORITHM_CRC32) {
-
-				crc32 = buf_calc_page_crc32(read_buf);
-				crc32_inited = TRUE;
-
-				if (checksum_field2 != crc32
-				    && checksum_field2
-				    != buf_calc_page_old_checksum(read_buf)) {
-
-					return(TRUE);
-				}
-			} else {
-				ut_ad(srv_checksum_algorithm
-				     == SRV_CHECKSUM_ALGORITHM_INNODB);
-#ifdef UNIV_INNOCHECKSUM
-				if (is_log_enabled) {
-					fprintf(log_file, "page::%" PRIuMAX ";"
-						" old style: calculated = %lu;"
-						" recorded = %lu\n", page_no,
-						buf_calc_page_old_checksum(
-							read_buf),
-						checksum_field2);
-				}
-#endif /* UNIV_INNOCHECKSUM */
-				if (checksum_field2
-				    != buf_calc_page_old_checksum(read_buf)) {
-
-					crc32 = buf_calc_page_crc32(read_buf);
-					crc32_inited = TRUE;
-
-					if (checksum_field2 != crc32) {
-#ifdef UNIV_INNOCHECKSUM
-						if (is_log_enabled) {
-							fprintf(log_file, "Fail"
-								"; page %"
-								PRIuMAX
-								" invalid (fails"
-								" old style"
-								" checksum)\n",
-								page_no);
-						}
-#endif /* UNIV_INNOCHECKSUM */
-						return(TRUE);
-					}
-				}
+			, page_no, is_log_enabled, log_file, curr_algo)) {
+#else /* UNIV_INNOCHECKSUM */
+		)) {
+			if (curr_algo
+			    == SRV_CHECKSUM_ALGORITHM_STRICT_CRC32) {
+				page_warn_strict_checksum(
+					curr_algo,
+					SRV_CHECKSUM_ALGORITHM_NONE,
+					page_id);
 			}
-		}
-
-		/* old field is fine, check the new field */
-
-		/* InnoDB versions < 4.0.14 and < 4.1.1 stored the space id
-		(always equal to 0), to FIL_PAGE_SPACE_OR_CHKSUM */
-
-		if (checksum_field1 != 0
-		    && checksum_field1 != BUF_NO_CHECKSUM_MAGIC) {
-
-			/* The checksum does not match any of the
-			fast to check. First check the selected algorithm
-			for writing checksums because we assume that the
-			chance of it matching is higher. */
-
-			if (srv_checksum_algorithm
-			    == SRV_CHECKSUM_ALGORITHM_CRC32) {
-
-				if (!crc32_inited) {
-					crc32 = buf_calc_page_crc32(read_buf);
-					crc32_inited = TRUE;
-				}
-
-				if (checksum_field1 != crc32
-				    && checksum_field1
-				    != buf_calc_page_new_checksum(read_buf)) {
-
-					return(TRUE);
-				}
-			} else {
-				ut_ad(srv_checksum_algorithm
-				     == SRV_CHECKSUM_ALGORITHM_INNODB);
-#ifdef UNIV_INNOCHECKSUM
-				if (is_log_enabled) {
-					fprintf(log_file, "page::%" PRIuMAX ";"
-						" new style: calculated = %lu;"
-						" crc32 = %u; recorded = %lu\n",
-						page_no,
-						buf_calc_page_new_checksum(
-							read_buf),
-						buf_calc_page_crc32(read_buf),
-						checksum_field1);
-				}
-#endif /* UNIV_INNOCHECKSUM */
-				if (checksum_field1
-				    != buf_calc_page_new_checksum(read_buf)) {
-
-					if (!crc32_inited) {
-						crc32 = buf_calc_page_crc32(
-							read_buf);
-						crc32_inited = TRUE;
-					}
-
-					if (checksum_field1 != crc32) {
-#ifdef UNIV_INNOCHECKSUM
-					if (is_log_enabled) {
-						fprintf(log_file,"Fail;"
-							" page %" PRIuMAX
-							" invalid (fails"
-							" innodb and"
-							" crc32 checksum\n",
-							page_no);
-					}
 #endif /* UNIV_INNOCHECKSUM */
 
-						return(TRUE);
-					}
-				}
-			}
-		}
-
-#ifdef UNIV_INNOCHECKSUM
-		if (is_log_enabled
-			&& (checksum_field1 == BUF_NO_CHECKSUM_MAGIC
-			|| checksum_field2 == BUF_NO_CHECKSUM_MAGIC)) {
-
-			fprintf(log_file, "page::%" PRIuMAX "; old style:"
-				" calculated = %lu; recorded ="
-				" %lu\n", page_no,
-				buf_calc_page_old_checksum(read_buf),
-				checksum_field2);
-			fprintf(log_file, "page::%" PRIuMAX "; new style:"
-				" calculated = %lu; crc32 = %u;"
-				" recorded = %lu\n", page_no,
-				buf_calc_page_new_checksum(read_buf),
-				buf_calc_page_crc32(read_buf),
-				checksum_field1);
-		}
-#endif /* UNIV_INNOCHECKSUM */
-
-		/* If CRC32 is stored in at least one of the fields, then the
-		other field must also be CRC32 */
-		if (crc32_inited
-		    && ((checksum_field1 == crc32
-			 && checksum_field2 != crc32)
-			|| (checksum_field1 != crc32
-			    && checksum_field2 == crc32))) {
 #ifdef UNIV_INNOCHECKSUM
 			if (is_log_enabled) {
-				fprintf(log_file, "Fail; page %" PRIuMAX
-					" invalid (fails crc32 checksum)\n",
-					page_no);
+
+				fprintf(log_file, "page::%" PRIuMAX ";"
+					" old style: calculated = %lu;"
+					" recorded = %lu\n", page_no,
+					buf_calc_page_old_checksum(read_buf),
+					checksum_field2);
+				fprintf(log_file, "page::%" PRIuMAX ";"
+					" new style: calculated = %lu;"
+					" crc32 = %u; recorded = %lu\n",
+					page_no,
+					buf_calc_page_new_checksum(read_buf),
+					buf_calc_page_crc32(read_buf),
+					checksum_field1);
+			}
+#endif /* UNIV_INNOCHECKSUM */
+			return(FALSE);
+		}
+
+		if (buf_page_is_checksum_valid_innodb(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo)) {
+#else /* UNIV_INNOCHECKSUM */
+		)) {
+			if (curr_algo
+			    == SRV_CHECKSUM_ALGORITHM_STRICT_CRC32) {
+				page_warn_strict_checksum(
+					curr_algo,
+					SRV_CHECKSUM_ALGORITHM_INNODB,
+					page_id);
+			}
+#endif /* UNIV_INNOCHECKSUM */
+			return(FALSE);
+		}
+
+#ifdef UNIV_INNOCHECKSUM
+		if (is_log_enabled) {
+			fprintf(log_file, "Fail; page %" PRIuMAX
+				" invalid (fails crc32 checksum)\n",
+				page_no);
+		}
+#endif /* UNIV_INNOCHECKSUM */
+		return(TRUE);
+
+	case SRV_CHECKSUM_ALGORITHM_INNODB:
+	case SRV_CHECKSUM_ALGORITHM_STRICT_INNODB:
+
+		if (buf_page_is_checksum_valid_innodb(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo
+#endif /* UNIV_INNOCHECKSUM */
+		)) {
+			return(FALSE);
+		}
+
+		if (buf_page_is_checksum_valid_none(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo)) {
+#else	/* UNIV_INNOCHECKSUM */
+		)) {
+			if (curr_algo
+			    == SRV_CHECKSUM_ALGORITHM_STRICT_INNODB) {
+				page_warn_strict_checksum(
+					curr_algo,
+					SRV_CHECKSUM_ALGORITHM_NONE,
+					page_id);
 			}
 #endif /* UNIV_INNOCHECKSUM */
 
-			return(TRUE);
+#ifdef UNIV_INNOCHECKSUM
+			if (is_log_enabled) {
+				fprintf(log_file, "page::%" PRIuMAX ";"
+					" old style: calculated = %lu;"
+					" recorded = %lu\n", page_no,
+					buf_calc_page_old_checksum(read_buf),
+					checksum_field2);
+				fprintf(log_file, "page::%" PRIuMAX ";"
+					" new style: calculated = %lu;"
+					" crc32 = %u; recorded = %lu\n",
+					page_no,
+					buf_calc_page_new_checksum(read_buf),
+					buf_calc_page_crc32(read_buf),
+					checksum_field1);
+			}
+#endif /* UNIV_INNOCHECKSUM */
+			return(FALSE);
 		}
 
-		break;
+		if (buf_page_is_checksum_valid_crc32(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo)) {
+#else /* UNIV_INNOCHECKSUM */
+		)) {
+			if (curr_algo
+			    == SRV_CHECKSUM_ALGORITHM_STRICT_INNODB) {
+				page_warn_strict_checksum(
+					curr_algo,
+					SRV_CHECKSUM_ALGORITHM_CRC32,
+					page_id);
+			}
+#endif /* UNIV_INNOCHECKSUM */
+
+			return(FALSE);
+		}
+
+#ifdef UNIV_INNOCHECKSUM
+		if (is_log_enabled) {
+			fprintf(log_file, "Fail; page %" PRIuMAX
+				" invalid (fails innodb checksum)\n",
+				page_no);
+		}
+#endif /* UNIV_INNOCHECKSUM */
+		return(TRUE);
+
+	case SRV_CHECKSUM_ALGORITHM_STRICT_NONE:
+
+		if (buf_page_is_checksum_valid_none(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo
+#endif /* UNIV_INNOCHECKSUM */
+		)) {
+			return(false);
+		}
+
+		if (buf_page_is_checksum_valid_crc32(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo)) {
+#else /* UNIV_INNOCHECKSUM */
+		)) {
+			page_warn_strict_checksum(
+				curr_algo,
+				SRV_CHECKSUM_ALGORITHM_CRC32,
+				page_id);
+#endif /* UNIV_INNOCHECKSUM */
+			return(FALSE);
+		}
+
+		if (buf_page_is_checksum_valid_innodb(read_buf,
+			checksum_field1, checksum_field2
+#ifdef UNIV_INNOCHECKSUM
+			, page_no, is_log_enabled, log_file, curr_algo)) {
+#else /* UNIV_INNOCHECKSUM */
+		)) {
+			page_warn_strict_checksum(
+				curr_algo,
+				SRV_CHECKSUM_ALGORITHM_INNODB,
+				page_id);
+#endif /* UNIV_INNOCHECKSUM */
+			return(FALSE);
+		}
+
+#ifdef UNIV_INNOCHECKSUM
+		if (is_log_enabled) {
+			fprintf(log_file, "Fail; page %" PRIuMAX
+				" invalid (fails none checksum)\n",
+				page_no);
+		}
+#endif /* UNIV_INNOCHECKSUM */
+		return(TRUE);
+
 	case SRV_CHECKSUM_ALGORITHM_NONE:
 		/* should have returned FALSE earlier */
-		ut_error;
+		break;
 	/* no default so the compiler will emit a warning if new enum
 	is added and not handled here */
 	}
 
-	DBUG_EXECUTE_IF("buf_page_import_corrupt_failure", return(TRUE); );
-
+	ut_error;
 	return(FALSE);
 }
 
@@ -950,6 +1106,10 @@ buf_page_print(
 			<< page_zip_calc_checksum(
 				read_buf, page_size.physical(),
 				SRV_CHECKSUM_ALGORITHM_CRC32)
+			<< "/"
+			<< page_zip_calc_checksum(
+				read_buf, page_size.physical(),
+				SRV_CHECKSUM_ALGORITHM_CRC32, true)
 			<< ", "
 			<< buf_checksum_algorithm_name(
 				SRV_CHECKSUM_ALGORITHM_INNODB)
@@ -974,13 +1134,19 @@ buf_page_print(
 				read_buf + FIL_PAGE_ARCH_LOG_NO_OR_SPACE_ID);
 
 	} else {
+		const uint32_t	crc32 = buf_calc_page_crc32(read_buf);
+
+		const uint32_t	crc32_legacy = buf_calc_page_crc32(read_buf,
+								   true);
+
 		ib::info() << "Uncompressed page, stored checksum in field1 "
 			<< mach_read_from_4(
 				read_buf + FIL_PAGE_SPACE_OR_CHKSUM)
 			<< ", calculated checksums for field1: "
 			<< buf_checksum_algorithm_name(
 				SRV_CHECKSUM_ALGORITHM_CRC32) << " "
-			<< buf_calc_page_crc32(read_buf) << ", "
+			<< crc32 << "/" << crc32_legacy
+			<< ", "
 			<< buf_checksum_algorithm_name(
 				SRV_CHECKSUM_ALGORITHM_INNODB) << " "
 			<< buf_calc_page_new_checksum(read_buf)
@@ -994,7 +1160,7 @@ buf_page_print(
 			<< ", calculated checksums for field2: "
 			<< buf_checksum_algorithm_name(
 				SRV_CHECKSUM_ALGORITHM_CRC32) << " "
-			<< buf_calc_page_crc32(read_buf)
+			<< crc32 << "/" << crc32_legacy
 			<< ", "
 			<< buf_checksum_algorithm_name(
 				SRV_CHECKSUM_ALGORITHM_INNODB) << " "
@@ -1043,9 +1209,10 @@ buf_page_print(
 #ifndef UNIV_HOTBACKUP
 		index = dict_index_find_on_id_low(index_id);
 		if (index) {
-			fputs("InnoDB: (", stderr);
-			dict_index_name_print(stderr, NULL, index);
-			fputs(")\n", stderr);
+			ib::info()
+				<< "Index " << index_id
+				<< " is " << index->name
+				<< " in table " << index->table->name;
 		}
 #endif /* !UNIV_HOTBACKUP */
 		break;
@@ -1136,14 +1303,14 @@ pfs_register_buffer_block(
 			? PSI_server->init_rwlock(buf_block_lock_key, rwlock)
 			: NULL;
 
-#   ifdef UNIV_SYNC_DEBUG
+#   ifdef UNIV_DEBUG
 		rwlock = &block->debug_latch;
 		ut_a(!rwlock->pfs_psi);
 		rwlock->pfs_psi = (PSI_server)
 			? PSI_server->init_rwlock(buf_block_debug_latch_key,
 						  rwlock)
 			: NULL;
-#   endif /* UNIV_SYNC_DEBUG */
+#   endif /* UNIV_DEBUG */
 
 #  endif /* UNIV_PFS_RWLOCK */
 		block++;
@@ -1169,32 +1336,30 @@ buf_block_init(
 	block->page.state = BUF_BLOCK_NOT_USED;
 	block->page.buf_fix_count = 0;
 	block->page.io_fix = BUF_IO_NONE;
+	block->page.flush_observer = NULL;
 
 	block->modify_clock = 0;
 
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-	block->page.file_page_was_freed = FALSE;
-#endif /* UNIV_DEBUG_FILE_ACCESSES || UNIV_DEBUG */
+	ut_d(block->page.file_page_was_freed = FALSE);
 
-	block->check_index_page_at_flush = FALSE;
 	block->index = NULL;
 	block->made_dirty_with_no_latch = false;
+	block->skip_flush_check = false;
 
-#ifdef UNIV_DEBUG
-	block->page.in_page_hash = FALSE;
-	block->page.in_zip_hash = FALSE;
-	block->page.in_flush_list = FALSE;
-	block->page.in_free_list = FALSE;
-	block->page.in_LRU_list = FALSE;
-	block->in_unzip_LRU_list = FALSE;
-	block->in_withdraw_list = FALSE;
-#endif /* UNIV_DEBUG */
+	ut_d(block->page.in_page_hash = FALSE);
+	ut_d(block->page.in_zip_hash = FALSE);
+	ut_d(block->page.in_flush_list = FALSE);
+	ut_d(block->page.in_free_list = FALSE);
+	ut_d(block->page.in_LRU_list = FALSE);
+	ut_d(block->in_unzip_LRU_list = FALSE);
+	ut_d(block->in_withdraw_list = FALSE);
+
 #if defined UNIV_AHI_DEBUG || defined UNIV_DEBUG
 	block->n_pointers = 0;
 #endif /* UNIV_AHI_DEBUG || UNIV_DEBUG */
 	page_zip_des_init(&block->page.zip);
 
-	mutex_create("buf_block_mutex", &block->mutex);
+	mutex_create(LATCH_ID_BUF_BLOCK_MUTEX, &block->mutex);
 
 #if defined PFS_SKIP_BUFFER_MUTEX_RWLOCK || defined PFS_GROUP_BUFFER_SYNC
 	/* If PFS_SKIP_BUFFER_MUTEX_RWLOCK is defined, skip registration
@@ -1206,23 +1371,21 @@ buf_block_init(
 
 	rw_lock_create(PFS_NOT_INSTRUMENTED, &block->lock, SYNC_LEVEL_VARYING);
 
-# ifdef UNIV_SYNC_DEBUG
-	rw_lock_create(
-		PFS_NOT_INSTRUMENTED,
-		&block->debug_latch, SYNC_NO_ORDER_CHECK);
-# endif /* UNIV_SYNC_DEBUG */
+	ut_d(rw_lock_create(
+			PFS_NOT_INSTRUMENTED,
+			&block->debug_latch, SYNC_NO_ORDER_CHECK));
 
 #else /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
 
 	rw_lock_create(buf_block_lock_key, &block->lock, SYNC_LEVEL_VARYING);
 
-# ifdef UNIV_SYNC_DEBUG
-
-	rw_lock_create(buf_block_debug_latch_key,
-		       &block->debug_latch, SYNC_NO_ORDER_CHECK);
-# endif /* UNIV_SYNC_DEBUG */
+	ut_d(rw_lock_create(
+			buf_block_debug_latch_key,
+			&block->debug_latch, SYNC_NO_ORDER_CHECK));
 
 #endif /* PFS_SKIP_BUFFER_MUTEX_RWLOCK || PFS_GROUP_BUFFER_SYNC */
+
+	block->lock.is_block_lock = 1;
 
 	ut_ad(rw_lock_validate(&(block->lock)));
 }
@@ -1354,7 +1517,6 @@ Finds a block in the buffer pool that points to a
 given compressed page. Used only to confirm that buffer pool does not contain a
 given pointer, thus protected by zip_free_mutex.
 @return buffer block pointing to the compressed page, or NULL */
-
 buf_block_t*
 buf_pool_contains_zip(
 /*==================*/
@@ -1460,7 +1622,6 @@ buf_pool_set_sizes(void)
 /********************************************************************//**
 Initialize a buffer pool instance.
 @return DB_SUCCESS if all goes well. */
-
 ulint
 buf_pool_init_instance(
 /*===================*/
@@ -1477,12 +1638,13 @@ buf_pool_init_instance(
 
 	/* 1. Initialize general fields
 	------------------------------- */
-	mutex_create("buf_pool_lru_list", &buf_pool->LRU_list_mutex);
-	mutex_create("buf_pool_free_list", &buf_pool->free_list_mutex);
-	mutex_create("buf_pool_zip_free", &buf_pool->zip_free_mutex);
-	mutex_create("buf_pool_zip_hash", &buf_pool->zip_hash_mutex);
-	mutex_create("buf_pool_flush_state", &buf_pool->flush_state_mutex);
-	mutex_create("buf_pool_zip", &buf_pool->zip_mutex);
+	mutex_create(LATCH_ID_BUF_POOL_LRU_LIST, &buf_pool->LRU_list_mutex);
+	mutex_create(LATCH_ID_BUF_POOL_FREE_LIST, &buf_pool->free_list_mutex);
+	mutex_create(LATCH_ID_BUF_POOL_ZIP_FREE, &buf_pool->zip_free_mutex);
+	mutex_create(LATCH_ID_BUF_POOL_ZIP_HASH, &buf_pool->zip_hash_mutex);
+	mutex_create(LATCH_ID_BUF_POOL_FLUSH_STATE,
+		     &buf_pool->flush_state_mutex);
+	mutex_create(LATCH_ID_BUF_POOL_ZIP, &buf_pool->zip_mutex);
 
 	new(&buf_pool->allocator)
 		ut_allocator<unsigned char>(mem_key_buf_buf_pool);
@@ -1525,9 +1687,9 @@ buf_pool_init_instance(
 					for (i = chunk->size; i--; block++) {
 						mutex_free(&block->mutex);
 						rw_lock_free(&block->lock);
-#ifdef UNIV_SYNC_DEBUG
-						rw_lock_free(&block->debug_latch);
-#endif /* UNIV_SYNC_DEBUG */
+
+						ut_d(rw_lock_free(
+							&block->debug_latch));
 					}
 
 					buf_pool->allocator.deallocate_large(
@@ -1559,7 +1721,8 @@ buf_pool_init_instance(
 		ut_a(srv_n_page_hash_locks <= MAX_PAGE_HASH_LOCKS);
 
 		buf_pool->page_hash = ib_create(
-			2 * buf_pool->curr_size, "hash_table_rw_lock",
+			2 * buf_pool->curr_size,
+			LATCH_ID_HASH_TABLE_RW_LOCK,
 			srv_n_page_hash_locks, MEM_HEAP_FOR_PAGE_HASH);
 
 		buf_pool->page_hash_old = NULL;
@@ -1571,7 +1734,7 @@ buf_pool_init_instance(
 	/* 2. Initialize flushing fields
 	-------------------------------- */
 
-	mutex_create("flush_list", &buf_pool->flush_list_mutex);
+	mutex_create(LATCH_ID_FLUSH_LIST, &buf_pool->flush_list_mutex);
 
 	for (i = BUF_FLUSH_LRU; i < BUF_FLUSH_N_TYPES; i++) {
 		buf_pool->no_flush[i] = os_event_create(0);
@@ -1658,9 +1821,8 @@ buf_pool_free_instance(
 		for (ulint i = chunk->size; i--; block++) {
 			mutex_free(&block->mutex);
 			rw_lock_free(&block->lock);
-#ifdef UNIV_SYNC_DEBUG
-			rw_lock_free(&block->debug_latch);
-# endif /* UNIV_SYNC_DEBUG */
+
+			ut_d(rw_lock_free(&block->debug_latch));
 		}
 
 		buf_pool->allocator.deallocate_large(
@@ -1682,7 +1844,6 @@ buf_pool_free_instance(
 /********************************************************************//**
 Creates the buffer pool.
 @return DB_SUCCESS if success, DB_ERROR if not enough memory or error */
-
 dberr_t
 buf_pool_init(
 /*==========*/
@@ -1705,6 +1866,12 @@ buf_pool_init(
 		n_instances * sizeof *buf_pool_ptr);
 
 	buf_chunk_map_reg = UT_NEW_NOKEY(buf_pool_chunk_map_t());
+
+	ut_d(buf_chunk_map_latch = static_cast<rw_lock_t*>(
+			ut_zalloc_nokey(sizeof(*buf_chunk_map_latch))));
+
+	ut_d(rw_lock_create(
+		buf_chunk_map_latch_key, buf_chunk_map_latch, SYNC_ANY_LATCH));
 
 	for (i = 0; i < n_instances; i++) {
 		buf_pool_t*	ptr	= &buf_pool_ptr[i];
@@ -1733,7 +1900,6 @@ buf_pool_init(
 /********************************************************************//**
 Frees the buffer pool at shutdown.  This must not be invoked before
 freeing all mutexes. */
-
 void
 buf_pool_free(
 /*==========*/
@@ -1742,6 +1908,10 @@ buf_pool_free(
 	for (ulint i = 0; i < n_instances; i++) {
 		buf_pool_free_instance(buf_pool_from_array(i));
 	}
+
+	ut_d(rw_lock_free(buf_chunk_map_latch));
+	ut_d(ut_free(buf_chunk_map_latch));
+	ut_d(buf_chunk_map_latch = NULL);
 
 	UT_DELETE(buf_chunk_map_reg);
 	buf_chunk_map_reg = buf_chunk_map_ref = NULL;
@@ -1858,8 +2028,6 @@ buf_page_realloc(
 		mutex_exit(&block->mutex);
 
 		/* set other flags of buf_block_t */
-		new_block->check_index_page_at_flush
-			= block->check_index_page_at_flush;
 
 		ut_ad(!block->index);
 		new_block->index	= NULL;
@@ -1918,7 +2086,6 @@ that there was a sufficient memory barrier to read curr_size and old_size.
 @param[in]	buf_pool	buffer pool instance
 @param[in]	block		pointer to control block
 @retval true	if will be withdrawn */
-
 bool
 buf_block_will_withdrawn(
 	buf_pool_t*		buf_pool,
@@ -1947,7 +2114,6 @@ that there was a sufficient memory barrier to read curr_size and old_size.
 @param[in]	buf_pool	buffer pool instance
 @param[in]	ptr		pointer to a frame
 @retval true	if will be withdrawn */
-
 bool
 buf_frame_will_withdrawn(
 	buf_pool_t*	buf_pool,
@@ -2185,6 +2351,8 @@ buf_pool_withdraw_blocks(
 
 	/* retry is not needed */
 	++buf_withdraw_clock;
+	os_wmb;
+
 	return(false);
 }
 
@@ -2271,7 +2439,6 @@ buf_pool_resize_hash(
 
 /** Resize the buffer pool based on srv_buf_pool_size from
 srv_buf_pool_old_size. */
-
 void
 buf_pool_resize()
 {
@@ -2326,15 +2493,15 @@ buf_pool_resize()
 
 	buf_resize_status("Disabling adaptive hash index.");
 
-	rw_lock_s_lock(&btr_search_latch_arr[0]);
+	rw_lock_s_lock(btr_search_latches[0]);
 	if (btr_search_enabled) {
-		rw_lock_s_unlock(&btr_search_latch_arr[0]);
+		rw_lock_s_unlock(btr_search_latches[0]);
 		btr_search_disabled = true;
 	} else {
-		rw_lock_s_unlock(&btr_search_latch_arr[0]);
+		rw_lock_s_unlock(btr_search_latches[0]);
 	}
 
-	btr_search_disable();
+	btr_search_disable(true);
 
 	if (btr_search_disabled) {
 		ib::info() << "disabled adaptive hash index.";
@@ -2511,10 +2678,9 @@ withdraw_retry:
 				     j--; block++) {
 					mutex_free(&block->mutex);
 					rw_lock_free(&block->lock);
-#ifdef UNIV_SYNC_DEBUG
-					rw_lock_free(
-						&block->debug_latch);
-#endif /* UNIV_SYNC_DEBUG */
+
+					ut_d(rw_lock_free(
+						&block->debug_latch));
 				}
 
 				buf_pool->allocator.deallocate_large(
@@ -2676,7 +2842,10 @@ withdraw_retry:
 		}
 	}
 
+	ut_d(rw_lock_x_lock(buf_chunk_map_latch));
 	UT_DELETE(chunk_map_old);
+	ut_d(rw_lock_x_unlock(buf_chunk_map_latch));
+
 	buf_pool_resizing = false;
 
 	/* Normalize other components, if the new size is too different */
@@ -2780,16 +2949,13 @@ DECLARE_THREAD(buf_resize_thread)(
 
 /********************************************************************//**
 Clears the adaptive hash index on all pages in the buffer pool. */
-
 void
 buf_pool_clear_hash_index(void)
 /*===========================*/
 {
 	ulint	p;
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(btr_search_own_all(RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 	ut_ad(!buf_pool_resizing);
 	ut_ad(!btr_search_enabled);
 
@@ -2806,8 +2972,8 @@ buf_pool_clear_hash_index(void)
 				dict_index_t*	index	= block->index;
 
 				/* We can set block->index = NULL
-				when we have an x-latch on the AHI search
-				latches; see the comment in buf0buf.h */
+				when we have an x-latch on search latch;
+				see the comment in buf0buf.h */
 
 				if (!index) {
 					/* Not hashed */
@@ -3036,9 +3202,7 @@ buf_pool_watch_set(
 
 	ut_ad(*hash_lock == buf_page_hash_lock_get(buf_pool, page_id));
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(rw_lock_own(*hash_lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 	bpage = buf_page_hash_get_low(buf_pool, page_id);
 
@@ -3079,6 +3243,9 @@ page_found:
 		goto page_found;
 	}
 
+	/* The maximum number of purge threads should never exceed
+	BUF_POOL_WATCH_SIZE. So there is no way for purge thread
+	instance to hold a watch when setting another watch. */
 	for (i = 0; i < BUF_POOL_WATCH_SIZE; i++) {
 		bpage = &buf_pool->watch[i];
 
@@ -3140,12 +3307,11 @@ buf_pool_watch_remove(
 	buf_pool_t*	buf_pool,
 	buf_page_t*	watch)
 {
-#ifdef UNIV_SYNC_DEBUG
-	/* We must own the appropriate hash_bucket mutex. */
-	rw_lock_t* hash_lock = buf_page_hash_lock_get(buf_pool,
-							   watch->id);
+#ifdef UNIV_DEBUG
+	/* We must also own the appropriate hash_bucket mutex. */
+	rw_lock_t* hash_lock = buf_page_hash_lock_get(buf_pool, watch->id);
 	ut_ad(rw_lock_own(hash_lock, RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
 	ut_ad(buf_page_get_state(watch) == BUF_BLOCK_ZIP_PAGE);
 
@@ -3214,7 +3380,6 @@ buf_pool_watch_occurred(
 Moves a page to the start of the buffer pool LRU list. This high-level
 function can be used to prevent an important page from slipping out of
 the buffer pool. */
-
 void
 buf_page_make_young(
 /*================*/
@@ -3291,7 +3456,7 @@ buf_page_make_young_if_needed(
 	}
 }
 
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
+#ifdef UNIV_DEBUG
 
 /** Sets file_page_was_freed TRUE if the page is found in the buffer pool.
 This function should be called when we free a file page and want the
@@ -3315,7 +3480,7 @@ buf_page_set_file_page_was_freed(
 		mutex_enter(block_mutex);
 		rw_lock_s_unlock(hash_lock);
 		/* bpage->file_page_was_freed can already hold
-		when this code is invoked from dict_drop_index_tree_step() */
+		when this code is invoked from dict_drop_index_tree() */
 		bpage->file_page_was_freed = TRUE;
 		mutex_exit(block_mutex);
 	}
@@ -3349,7 +3514,7 @@ buf_page_reset_file_page_was_freed(
 
 	return(bpage);
 }
-#endif /* UNIV_DEBUG_FILE_ACCESSES || UNIV_DEBUG */
+#endif /* UNIV_DEBUG */
 
 /** Attempts to discard the uncompressed frame of a compressed page.
 The caller should not be holding any mutexes when this function is called.
@@ -3501,9 +3666,8 @@ got_block:
 	must_read = buf_page_get_io_fix(bpage) == BUF_IO_READ;
 
 	rw_lock_s_unlock(hash_lock);
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-	ut_a(!bpage->file_page_was_freed);
-#endif /* defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG */
+
+	ut_ad(!bpage->file_page_was_freed);
 
 	buf_page_set_accessed(bpage);
 
@@ -3552,7 +3716,8 @@ got_block:
 
 #ifdef UNIV_IBUF_COUNT_DEBUG
 	ut_a(ibuf_count_get(page_id) == 0);
-#endif
+#endif /* UNIV_IBUF_COUNT_DEBUG */
+
 	return(bpage);
 }
 
@@ -3564,12 +3729,13 @@ buf_block_init_low(
 /*===============*/
 	buf_block_t*	block)	/*!< in: block to init */
 {
-	block->check_index_page_at_flush = FALSE;
 	block->index		= NULL;
 	block->made_dirty_with_no_latch = false;
+	block->skip_flush_check = false;
 
 	block->n_hash_helps	= 0;
 	block->n_fields		= 1;
+	block->n_bytes		= 0;
 	block->left_side	= TRUE;
 }
 #endif /* !UNIV_HOTBACKUP */
@@ -3577,7 +3743,6 @@ buf_block_init_low(
 /********************************************************************//**
 Decompress a block.
 @return TRUE if successful */
-
 ibool
 buf_zip_decompress(
 /*===============*/
@@ -3598,6 +3763,10 @@ buf_zip_decompress(
 			<< ", crc32: "
 			<< page_zip_calc_checksum(
 				frame, size, SRV_CHECKSUM_ALGORITHM_CRC32)
+			<< "/"
+			<< page_zip_calc_checksum(
+				frame, size, SRV_CHECKSUM_ALGORITHM_CRC32,
+				true)
 			<< " innodb: "
 			<< page_zip_calc_checksum(
 				frame, size, SRV_CHECKSUM_ALGORITHM_INNODB)
@@ -3644,7 +3813,6 @@ buf_zip_decompress(
 /*******************************************************************//**
 Gets the block to whose frame the pointer is pointing to.
 @return pointer to block, never NULL */
-
 buf_block_t*
 buf_block_align(
 /*============*/
@@ -3666,6 +3834,12 @@ buf_block_align(
 
 	ulint	counter = 0;
 retry:
+#ifdef UNIV_DEBUG
+	bool resize_disabled = (buf_disable_resize_buffer_pool_debug != FALSE);
+	if (!resize_disabled) {
+		rw_lock_s_lock(buf_chunk_map_latch);
+	}
+#endif /* UNIV_DEBUG */
 	buf_pool_chunk_map_t*	chunk_map = buf_chunk_map_ref;
 
 	if (ptr < reinterpret_cast<byte*>(srv_buf_pool_chunk_unit)) {
@@ -3676,6 +3850,11 @@ retry:
 	}
 
 	if (it == chunk_map->end()) {
+#ifdef UNIV_DEBUG
+		if (!resize_disabled) {
+			rw_lock_s_unlock(buf_chunk_map_latch);
+		}
+#endif /* UNIV_DEBUG */
 		/* The block should always be found. */
 		++counter;
 		ut_a(counter < 10);
@@ -3684,6 +3863,12 @@ retry:
 	}
 
 	buf_chunk_t*	chunk = it->second;
+#ifdef UNIV_DEBUG
+	if (!resize_disabled) {
+		rw_lock_s_unlock(buf_chunk_map_latch);
+	}
+#endif /* UNIV_DEBUG */
+
 	ulint		offs = ptr - chunk->blocks->frame;
 
 	offs >>= UNIV_PAGE_SIZE_SHIFT;
@@ -3765,7 +3950,6 @@ buf_pointer_is_block_field_instance(
 Find out if a pointer belongs to a buf_block_t. It can be a pointer to
 the buf_block_t itself or a member of it
 @return TRUE if ptr belongs to a buf_block_t struct */
-
 ibool
 buf_pointer_is_block_field(
 /*=======================*/
@@ -4038,10 +4222,10 @@ loop:
 		if (mode == BUF_GET_IF_IN_POOL
 		    || mode == BUF_PEEK_IF_IN_POOL
 		    || mode == BUF_GET_IF_IN_POOL_OR_WATCH) {
-#ifdef UNIV_SYNC_DEBUG
+
 			ut_ad(!rw_lock_own(hash_lock, RW_LOCK_X));
 			ut_ad(!rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
+
 			return(NULL);
 		}
 
@@ -4061,15 +4245,20 @@ loop:
 				<< " into the buffer pool after "
 				<< BUF_PAGE_READ_MAX_RETRIES << " attempts."
 				" The most probable cause of this error may"
-				" be that the table has been corrupted."
-				" You can try to fix this problem by using"
+				" be that the table has been corrupted. Or,"
+				" the table was compressed with with an"
+				" algorithm that is not supported by this"
+				" instance. If it is not a decompress failure,"
+				" you can try to fix this problem by using"
 				" innodb_force_recovery."
 				" Please see " REFMAN " for more"
 				" details. Aborting...";
 		}
 
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
-		ut_a(++buf_dbg_counter % 5771 || buf_validate());
+		ut_a(fsp_skip_sanity_check(page_id.space())
+		     || ++buf_dbg_counter % 5771
+		     || buf_validate());
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
 		goto loop;
 	} else {
@@ -4315,10 +4504,8 @@ got_block:
 	ut_ad(block == fix_block);
 	ut_ad(fix_block->page.buf_fix_count > 0);
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_X));
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
 
 	ut_ad(buf_block_get_state(fix_block) == BUF_BLOCK_FILE_PAGE);
 
@@ -4406,7 +4593,7 @@ got_block:
 
 	ut_ad(fix_block->page.buf_fix_count > 0);
 
-#ifdef UNIV_SYNC_DEBUG
+#ifdef UNIV_DEBUG
 	/* We have already buffer fixed the page, and we are committed to
 	returning this page to the caller. Register for debugging.
 	Avoid debug latching if page/block belongs to system temporary
@@ -4417,12 +4604,18 @@ got_block:
 			&fix_block->debug_latch, file, line);
 		ut_a(ret);
 	}
-#endif /* UNIV_SYNC_DEBUG */
+#endif /* UNIV_DEBUG */
 
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-	ut_a(mode == BUF_GET_POSSIBLY_FREED
-	     || !fix_block->page.file_page_was_freed);
-#endif
+	/* While tablespace is reinited the indexes are already freed but the
+	blocks related to it still resides in buffer pool. Trying to remove
+	such blocks from buffer pool would invoke removal of AHI entries
+	associated with these blocks. Logic to remove AHI entry will try to
+	load the block but block is already in free state. Handle the said case
+	with mode = BUF_PEEK_IF_IN_POOL that is invoked from
+	"btr_search_drop_page_hash_when_freed". */
+	ut_ad(mode == BUF_GET_POSSIBLY_FREED
+	      || mode == BUF_PEEK_IF_IN_POOL
+	      || !fix_block->page.file_page_was_freed);
 
 	/* Check if this is the first access to the page */
 	access_time = buf_page_is_accessed(&fix_block->page);
@@ -4441,7 +4634,9 @@ got_block:
 	}
 
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
-	ut_a(++buf_dbg_counter % 5771 || buf_validate());
+	ut_a(fsp_skip_sanity_check(page_id.space())
+	     || ++buf_dbg_counter % 5771
+	     || buf_validate());
 	ut_a(buf_block_get_state(fix_block) == BUF_BLOCK_FILE_PAGE);
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
 
@@ -4502,13 +4697,12 @@ got_block:
 #ifdef UNIV_IBUF_COUNT_DEBUG
 	ut_a(ibuf_count_get(fix_block->page.id) == 0);
 #endif
-#ifdef UNIV_SYNC_DEBUG
+
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_X));
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
 
 	if (UNIV_UNLIKELY(trx && trx->take_stats)) {
-		_increment_page_get_statistics(block, trx);
+		_increment_page_get_statistics(fix_block, trx);
 	}
 
 	return(fix_block);
@@ -4518,7 +4712,6 @@ got_block:
 This is the general function used to get optimistic access to a database
 page.
 @return TRUE if success */
-
 ibool
 buf_page_optimistic_get(
 /*====================*/
@@ -4603,16 +4796,16 @@ buf_page_optimistic_get(
 	mtr_memo_push(mtr, block, fix_type);
 
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
-	ut_a(++buf_dbg_counter % 5771 || buf_validate());
+	ut_a(fsp_skip_sanity_check(block->page.id.space())
+	     || ++buf_dbg_counter % 5771
+	     || buf_validate());
 	ut_a(block->page.buf_fix_count > 0);
 	ut_a(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
 
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-	buf_page_mutex_enter(block);
-	ut_a(!block->page.file_page_was_freed);
-	buf_page_mutex_exit(block);
-#endif /* defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG */
+	ut_d(buf_page_mutex_enter(block));
+	ut_ad(!block->page.file_page_was_freed);
+	ut_d(buf_page_mutex_exit(block));
 
 	if (UNIV_UNLIKELY(innobase_get_slow_log())) {
 		trx = innobase_get_trx();
@@ -4627,7 +4820,8 @@ buf_page_optimistic_get(
 
 #ifdef UNIV_IBUF_COUNT_DEBUG
 	ut_a(ibuf_count_get(block->page.id) == 0);
-#endif
+#endif /* UNIV_IBUF_COUNT_DEBUG */
+
 	buf_pool = buf_pool_from_block(block);
 	buf_pool->stat.n_page_gets++;
 
@@ -4642,7 +4836,6 @@ This is used to get access to a known database page, when no waiting can be
 done. For example, if a search in an adaptive hash index leads us to this
 frame.
 @return TRUE if success */
-
 ibool
 buf_page_get_known_nowait(
 /*======================*/
@@ -4720,7 +4913,8 @@ buf_page_get_known_nowait(
 	ut_a(block->page.buf_fix_count > 0);
 	ut_a(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
+
+#ifdef UNIV_DEBUG
 	if (mode != BUF_KEEP_OLD) {
 		/* If mode == BUF_KEEP_OLD, we are executing an I/O
 		completion routine.  Avoid a bogus assertion failure
@@ -4733,7 +4927,7 @@ buf_page_get_known_nowait(
 		ut_a(!block->page.file_page_was_freed);
 		buf_page_mutex_exit(block);
 	}
-#endif
+#endif /* UNIV_DEBUG */
 
 #ifdef UNIV_IBUF_COUNT_DEBUG
 	ut_a((mode == BUF_KEEP_OLD) || ibuf_count_get(block->page.id) == 0);
@@ -4817,23 +5011,26 @@ buf_page_try_get_func(
 	}
 
 	mtr_memo_push(mtr, block, fix_type);
+
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
-	ut_a(++buf_dbg_counter % 5771 || buf_validate());
+	ut_a(fsp_skip_sanity_check(block->page.id.space())
+	     || ++buf_dbg_counter % 5771
+	     || buf_validate());
 	ut_a(block->page.buf_fix_count > 0);
 	ut_a(buf_block_get_state(block) == BUF_BLOCK_FILE_PAGE);
 #endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-	buf_page_mutex_enter(block);
-	ut_a(!block->page.file_page_was_freed);
-	buf_page_mutex_exit(block);
-#endif /* UNIV_DEBUG_FILE_ACCESSES || UNIV_DEBUG */
+
+	ut_d(buf_page_mutex_enter(block));
+	ut_d(ut_a(!block->page.file_page_was_freed));
+	ut_d(buf_page_mutex_exit(block));
+
 	buf_block_dbg_add_level(block, SYNC_NO_ORDER_CHECK);
 
 	buf_pool->stat.n_page_gets++;
 
 #ifdef UNIV_IBUF_COUNT_DEBUG
 	ut_a(ibuf_count_get(block->page.id) == 0);
-#endif
+#endif /* UNIV_IBUF_COUNT_DEBUG */
 
 	return(block);
 }
@@ -4855,9 +5052,8 @@ buf_page_init_low(
 	bpage->oldest_modification = 0;
 	HASH_INVALIDATE(bpage, hash);
 	bpage->is_corrupt = false;
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-	bpage->file_page_was_freed = FALSE;
-#endif /* UNIV_DEBUG_FILE_ACCESSES || UNIV_DEBUG */
+
+	ut_d(bpage->file_page_was_freed = FALSE);
 }
 
 /** Inits a page to the buffer buf_pool. The block pointer must be private to
@@ -4880,16 +5076,14 @@ buf_page_init(
 	ut_ad(!mutex_own(buf_page_get_mutex(&block->page)));
 	ut_a(buf_block_get_state(block) != BUF_BLOCK_FILE_PAGE);
 
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(rw_lock_own(buf_page_hash_lock_get(buf_pool, page_id),
 			  RW_LOCK_X));
-#endif /* UNIV_SYNC_DEBUG */
 
 	/* Set the state of the block */
 	buf_block_set_file_page(block, page_id);
 
 #ifdef UNIV_DEBUG_VALGRIND
-	if (page_id.space() == 0) {
+	if (is_system_tablespace(page_id.space())) {
 		/* Silence valid Valgrind warnings about uninitialized
 		data being written to data files.  There are some unused
 		bytes on some pages that InnoDB does not initialize. */
@@ -4926,13 +5120,11 @@ buf_page_init(
 			<< " already found in the hash table: "
 			<< hash_page << ", " << block;
 
-#if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
-		buf_print();
-		buf_LRU_print();
-		buf_validate();
-		buf_LRU_validate();
-#endif /* UNIV_DEBUG || UNIV_BUF_DEBUG */
-		ut_error;
+		ut_d(buf_print());
+		ut_d(buf_LRU_print());
+		ut_d(buf_validate());
+		ut_d(buf_LRU_validate());
+		ut_ad(0);
 	}
 
 	ut_ad(!block->page.in_zip_hash);
@@ -4962,8 +5154,6 @@ and the lock released later.
 @param[in]	mode			BUF_READ_IBUF_PAGES_ONLY, ...
 @param[in]	page_id			page id
 @param[in]	unzip			TRUE=request uncompressed page
-@param[in]	tablespace_version	prevents reading from a wrong version
-of the tablespace in case we have done DISCARD + IMPORT
 @return pointer to the block or NULL */
 buf_page_t*
 buf_page_init_for_read(
@@ -4971,8 +5161,7 @@ buf_page_init_for_read(
 	ulint			mode,
 	const page_id_t&	page_id,
 	const page_size_t&	page_size,
-	ibool			unzip,
-	int64_t			tablespace_version)
+	ibool			unzip)
 {
 	buf_block_t*	block;
 	buf_page_t*	bpage	= NULL;
@@ -5027,7 +5216,6 @@ buf_page_init_for_read(
 	if (watch_page && !buf_pool_watch_is_sentinel(buf_pool, watch_page)) {
 		/* The page is already in the buffer pool. */
 		watch_page = NULL;
-err_exit:
 		mutex_exit(&buf_pool->LRU_list_mutex);
 		rw_lock_x_unlock(hash_lock);
 
@@ -5042,15 +5230,6 @@ err_exit:
 
 		bpage = NULL;
 		goto func_exit;
-	}
-
-	if (fil_tablespace_deleted_or_being_deleted_in_mem(
-		    page_id.space(), tablespace_version)) {
-		/* The page belongs to a space which has been
-		deleted or is being deleted. */
-		*err = DB_TABLESPACE_DELETED;
-
-		goto err_exit;
 	}
 
 	if (block) {
@@ -5120,14 +5299,13 @@ err_exit:
 
 		bpage->state = BUF_BLOCK_ZIP_PAGE;
 		bpage->id.copy_from(page_id);
+		bpage->flush_observer = NULL;
 
-#ifdef UNIV_DEBUG
-		bpage->in_page_hash = FALSE;
-		bpage->in_zip_hash = FALSE;
-		bpage->in_flush_list = FALSE;
-		bpage->in_free_list = FALSE;
-		bpage->in_LRU_list = FALSE;
-#endif /* UNIV_DEBUG */
+		ut_d(bpage->in_page_hash = FALSE);
+		ut_d(bpage->in_zip_hash = FALSE);
+		ut_d(bpage->in_flush_list = FALSE);
+		ut_d(bpage->in_free_list = FALSE);
+		ut_d(bpage->in_LRU_list = FALSE);
 
 		ut_d(bpage->in_page_hash = TRUE);
 
@@ -5173,13 +5351,10 @@ func_exit:
 		ibuf_mtr_commit(&mtr);
 	}
 
-
-#ifdef UNIV_SYNC_DEBUG
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_X));
 	ut_ad(!rw_lock_own(hash_lock, RW_LOCK_S));
-#endif /* UNIV_SYNC_DEBUG */
-
 	ut_ad(!bpage || buf_page_in_file(bpage));
+
 	return(bpage);
 }
 
@@ -5218,12 +5393,12 @@ buf_page_create(
 	if (block
 	    && buf_page_in_file(&block->page)
 	    && !buf_pool_watch_is_sentinel(buf_pool, &block->page)) {
+
 #ifdef UNIV_IBUF_COUNT_DEBUG
 		ut_a(ibuf_count_get(page_id) == 0);
-#endif
-#if defined UNIV_DEBUG_FILE_ACCESSES || defined UNIV_DEBUG
-		block->page.file_page_was_freed = FALSE;
-#endif /* UNIV_DEBUG_FILE_ACCESSES || UNIV_DEBUG */
+#endif /* UNIV_IBUF_COUNT_DEBUG */
+
+		ut_d(block->page.file_page_was_freed = FALSE);
 
 		/* Page can be found in buf_pool */
 		mutex_exit(&buf_pool->LRU_list_mutex);
@@ -5296,9 +5471,16 @@ buf_page_create(
 	memset(frame + FIL_PAGE_PREV, 0xff, 4);
 	memset(frame + FIL_PAGE_NEXT, 0xff, 4);
 	mach_write_to_2(frame + FIL_PAGE_TYPE, FIL_PAGE_TYPE_ALLOCATED);
-	/* FIL_PAGE_FILE_FLUSH_LSN is only used on the following pages:
+
+	/* These 8 bytes are also repurposed for PageIO compression and must
+	be reset when the frame is assigned to a new page id. See fil0fil.h.
+
+	FIL_PAGE_FILE_FLUSH_LSN is used on the following pages:
 	(1) The first page of the InnoDB system tablespace (page 0:0)
-	(2) FIL_RTREE_SPLIT_SEQ_NUM on R-tree pages */
+	(2) FIL_RTREE_SPLIT_SEQ_NUM on R-tree pages .
+
+	Therefore we don't transparently compress such pages. */
+
 	memset(frame + FIL_PAGE_FILE_FLUSH_LSN, 0, 8);
 
 #if defined UNIV_DEBUG || defined UNIV_BUF_DEBUG
@@ -5366,49 +5548,49 @@ buf_page_monitor(
 		}
 		break;
 
-        case FIL_PAGE_UNDO_LOG:
+	case FIL_PAGE_UNDO_LOG:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_UNDO_LOG_PAGE);
 		break;
 
-        case FIL_PAGE_INODE:
+	case FIL_PAGE_INODE:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_INODE_PAGE);
 		break;
 
-        case FIL_PAGE_IBUF_FREE_LIST:
+	case FIL_PAGE_IBUF_FREE_LIST:
 		counter = MONITOR_RW_COUNTER(io_type,
 					     MONITOR_IBUF_FREELIST_PAGE);
 		break;
 
-        case FIL_PAGE_IBUF_BITMAP:
+	case FIL_PAGE_IBUF_BITMAP:
 		counter = MONITOR_RW_COUNTER(io_type,
 					     MONITOR_IBUF_BITMAP_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_SYS:
+	case FIL_PAGE_TYPE_SYS:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_SYSTEM_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_TRX_SYS:
+	case FIL_PAGE_TYPE_TRX_SYS:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_TRX_SYSTEM_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_FSP_HDR:
+	case FIL_PAGE_TYPE_FSP_HDR:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_FSP_HDR_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_XDES:
+	case FIL_PAGE_TYPE_XDES:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_XDES_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_BLOB:
+	case FIL_PAGE_TYPE_BLOB:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_BLOB_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_ZBLOB:
+	case FIL_PAGE_TYPE_ZBLOB:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_ZBLOB_PAGE);
 		break;
 
-        case FIL_PAGE_TYPE_ZBLOB2:
+	case FIL_PAGE_TYPE_ZBLOB2:
 		counter = MONITOR_RW_COUNTER(io_type, MONITOR_ZBLOB2_PAGE);
 		break;
 
@@ -5472,7 +5654,6 @@ buf_mark_space_corrupt(
 Completes an asynchronous read or write request of a file page to or from
 the buffer pool.
 @return true if successful */
-
 bool
 buf_page_io_complete(
 /*=================*/
@@ -5502,16 +5683,19 @@ buf_page_io_complete(
 		ulint	read_page_no;
 		ulint	read_space_id;
 		byte*	frame;
+		bool	compressed_page;
 
 		if (bpage->size.is_compressed()) {
 			frame = bpage->zip.data;
 			os_atomic_increment_ulint(&buf_pool->n_pend_unzip, 1);
+
 			if (uncompressed
 			    && !buf_zip_decompress((buf_block_t*) bpage,
 						   FALSE)) {
 
 				os_atomic_decrement_ulint(
 					&buf_pool->n_pend_unzip, 1);
+				compressed_page = false;
 				goto corrupt;
 			}
 			os_atomic_decrement_ulint(&buf_pool->n_pend_unzip, 1);
@@ -5533,7 +5717,7 @@ buf_page_io_complete(
 			ib::error() << "Reading page " << bpage->id
 				<< ", which is in the doublewrite buffer!";
 
-		} else if (!read_space_id && !read_page_no) {
+		} else if (read_space_id == 0 && read_page_no == 0) {
 			/* This is likely an uninitialized page. */
 		} else if ((bpage->id.space() != 0
 			    && bpage->id.space() != read_space_id)
@@ -5551,11 +5735,31 @@ buf_page_io_complete(
 
 		if (UNIV_LIKELY(!bpage->is_corrupt ||
 				!srv_pass_corrupt_table)) {
+
+		compressed_page = Compression::is_compressed_page(frame);
+
+		/* If the decompress failed then the most likely case is
+		that we are reading in a page for which this instance doesn't
+		support the compression algorithm. */
+		if (compressed_page) {
+
+			Compression::meta_t	meta;
+
+			Compression::deserialize_header(frame, &meta);
+
+			ib::error()
+				<< "Page " << bpage->id << " "
+				<< "compressed with "
+				<< Compression::to_string(meta) << " "
+				<< "that is not supported by this instance";
+		}
+
 		/* From version 3.23.38 up we store the page checksum
 		to the 4 first bytes of the page end lsn field */
-		if (buf_page_is_corrupted(true, frame, bpage->size,
-					  fsp_is_checksum_disabled(
-						bpage->id.space()))) {
+		if (compressed_page
+		    || buf_page_is_corrupted(
+			    true, frame, bpage->size,
+			    fsp_is_checksum_disabled(bpage->id.space()))) {
 
 			/* Not a real corruption if it was triggered by
 			error injection */
@@ -5572,26 +5776,34 @@ buf_page_io_complete(
 				goto page_not_corrupt;
 				;);
 corrupt:
-			ib::error() << "Database page corruption on disk"
-				" or a failed file read of page " << bpage->id
-				<< ". You may have to recover from a backup.";
+			/* Compressed pages are basically gibberish avoid
+			printing the contents. */
+			if (!compressed_page) {
 
-			buf_page_print(frame, bpage->size,
-				       BUF_PAGE_PRINT_NO_CRASH);
+				ib::error()
+					<< "Database page corruption on disk"
+					" or a failed file read of page "
+					<< bpage->id
+					<< ". You may have to recover from "
+					<< "a backup.";
 
-			ib::error() << "Database page corruption on disk"
-				" or a failed file read of page " << bpage->id
-				<< ". You may have to recover from a backup.";
+				buf_page_print(
+					frame, bpage->size,
+					BUF_PAGE_PRINT_NO_CRASH);
 
-			ib::info() << "It is also possible that your operating"
-				" system has corrupted its own file cache and"
-				" rebooting your computer removes the error."
-				" If the corrupt page is an index page."
-				" You can also try to fix the corruption"
-				" by dumping, dropping, and reimporting"
-				" the corrupt table. You can use CHECK"
-				" TABLE to scan your table for corruption. "
-				<< FORCE_RECOVERY_MSG;
+				ib::info()
+					<< "It is also possible that your"
+				        " operating system has corrupted"
+					" its own file cache and rebooting"
+					" your computer removes the error."
+					" If the corrupt page is an index page."
+					" You can also try to fix the"
+					" corruption by dumping, dropping,"
+					" and reimporting the corrupt table."
+					" You can use CHECK TABLE to scan"
+					" your table for corruption. "
+					<< FORCE_RECOVERY_MSG;
+			}
 
 			if (srv_pass_corrupt_table && bpage->id.space() != 0
 			    && bpage->id.space() < SRV_LOG_SPACE_FIRST_ID) {
@@ -5612,15 +5824,23 @@ corrupt:
 				bpage->is_corrupt = true;
 			} else
 			if (srv_force_recovery < SRV_FORCE_IGNORE_CORRUPT) {
+
 				/* If page space id is larger than TRX_SYS_SPACE
 				(0), we will attempt to mark the corresponding
 				table as corrupted instead of crashing server */
+
 				if (bpage->id.space() > TRX_SYS_SPACE
 				    && buf_mark_space_corrupt(bpage)) {
+
 					return(false);
 				} else {
-					ib::fatal() << "Aborting because of a"
-						" corrupt database page.";
+					ib::fatal()
+						<< "Aborting because of a"
+						" corrupt database page in"
+						" the system tablespace. Or, "
+						" there was a failure in"
+						" tagging the tablespace "
+						" as corrupt.";
 				}
 			}
 		}
@@ -5638,9 +5858,13 @@ corrupt:
 		/* If space is being truncated then avoid ibuf operation.
 		During re-init we have already freed ibuf entries. */
 		if (uncompressed
+		    && !Compression::is_compressed_page(frame)
 		    && !recv_no_ibuf_operations
 		    && !Tablespace::is_undo_tablespace(bpage->id.space())
-		    && !srv_is_tablespace_truncated(bpage->id.space())) {
+		    && bpage->id.space() != srv_tmp_space.space_id()
+		    && !srv_is_tablespace_truncated(bpage->id.space())
+		    && fil_page_get_type(frame) == FIL_PAGE_INDEX
+		    && page_is_leaf(frame)) {
 
 			buf_block_t*	block;
 			ibool		update_ibuf_bitmap;
@@ -5775,7 +5999,6 @@ retry_mutex:
 		ut_error;
 	}
 
-
 	DBUG_PRINT("ib_buf", ("%s page " UINT32PF ":" UINT32PF,
 			      io_type == BUF_IO_READ ? "read" : "wrote",
 			      bpage->id.space(), bpage->id.page_no()));
@@ -5818,7 +6041,6 @@ buf_all_freed_instance(
 
 /**********************************************************************//**
 Refreshes the statistics used to print per-second averages. */
-static
 void
 buf_refresh_io_stats(
 /*=================*/
@@ -5890,7 +6112,6 @@ buf_pool_invalidate_instance(
 Invalidates the file pages in the buffer pool when an archive recovery is
 completed. All the file pages buffered must be in a replaceable state when
 this function is called: not latched and not modified. */
-
 void
 buf_pool_invalidate(void)
 /*=====================*/
@@ -6127,7 +6348,6 @@ buf_pool_validate_instance(
 /*********************************************************************//**
 Validates the buffer buf_pool data structure.
 @return TRUE */
-
 ibool
 buf_validate(void)
 /*==============*/
@@ -6236,10 +6456,8 @@ buf_print_instance(
 		} else {
 			ib::info() << "Block count for index " << index_ids[i]
 				<< " in buffer is about " << counts[i]
-				<< ", index "
-				<< ut_get_name(NULL, FALSE, index->name)
-				<< " of table "
-				<< ut_get_name(NULL, TRUE, index->table_name);
+				<< ", index " << index->name
+				<< " of table " << index->table->name;
 		}
 	}
 
@@ -6251,7 +6469,6 @@ buf_print_instance(
 
 /*********************************************************************//**
 Prints info of the buffer buf_pool data structure. */
-
 void
 buf_print(void)
 /*===========*/
@@ -6363,7 +6580,6 @@ buf_get_latched_pages_number_instance(
 /*********************************************************************//**
 Returns the number of latched pages in all the buffer pools.
 @return number of latched pages */
-
 ulint
 buf_get_latched_pages_number(void)
 /*==============================*/
@@ -6388,7 +6604,6 @@ buf_get_latched_pages_number(void)
 /*********************************************************************//**
 Returns the number of pending buf pool read ios.
 @return number of pending read I/O operations */
-
 ulint
 buf_get_n_pending_read_ios(void)
 /*============================*/
@@ -6407,7 +6622,6 @@ buf_get_n_pending_read_ios(void)
 Returns the ratio in percents of modified pages in the buffer pool /
 database pages in the buffer pool.
 @return modified page percentage ratio */
-
 double
 buf_get_modified_ratio_pct(void)
 /*============================*/
@@ -6487,7 +6701,6 @@ buf_stats_aggregate_pool_info(
 Collect buffer pool stats information for a buffer pool. Also
 record aggregated stats if there are more than one buffer pool
 in the server */
-
 void
 buf_stats_get_pool_info(
 /*====================*/
@@ -6496,7 +6709,7 @@ buf_stats_get_pool_info(
 	buf_pool_info_t*	all_pool_info)	/*!< in/out: buffer pool info
 						to fill */
 {
-	buf_pool_info_t*        pool_info;
+	buf_pool_info_t*	pool_info;
 	time_t			current_time;
 	double			time_elapsed;
 
@@ -6697,7 +6910,6 @@ buf_print_io_instance(
 
 /*********************************************************************//**
 Prints info of the buffer i/o. */
-
 void
 buf_print_io(
 /*=========*/
@@ -6763,7 +6975,6 @@ buf_print_io(
 
 /**********************************************************************//**
 Refreshes the statistics used to print per-second averages. */
-
 void
 buf_refresh_io_stats_all(void)
 /*==========================*/
@@ -6780,7 +6991,6 @@ buf_refresh_io_stats_all(void)
 /**********************************************************************//**
 Check if all pages in all buffer pools are in a replacable state.
 @return FALSE if not */
-
 ibool
 buf_all_freed(void)
 /*===============*/
@@ -6802,7 +7012,6 @@ buf_all_freed(void)
 Checks that there currently are no pending i/o-operations for the buffer
 pool.
 @return number of pending i/o */
-
 ulint
 buf_pool_check_no_pending_io(void)
 /*==============================*/
@@ -6834,7 +7043,6 @@ Code currently not used
 /*********************************************************************//**
 Gets the current length of the free list of buffer blocks.
 @return length of the free list */
-
 ulint
 buf_get_free_list_len(void)
 /*=======================*/
@@ -6901,8 +7109,8 @@ operator<<(
 @return the output stream */
 std::ostream&
 operator<<(
-        std::ostream&		out,
-        const buf_pool_t&	buf_pool)
+	std::ostream&		out,
+	const buf_pool_t&	buf_pool)
 {
 	/* These locking requirements might be relaxed if desired */
 	ut_ad(mutex_own(&buf_pool.LRU_list_mutex));

@@ -17,7 +17,6 @@
 #include "buffer.h"
 #include "audit_log.h"
 
-#include <my_pthread.h>
 #include <my_sys.h>
 
 struct audit_log_buffer {

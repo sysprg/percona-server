@@ -1,4 +1,4 @@
-/* Copyright (c) 2007, 2014, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2007, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -13,9 +13,9 @@
    along with this program; if not, write to the Free Software Foundation,
    51 Franklin Street, Suite 500, Boston, MA 02110-1335 USA */
 
-#include "sql_priv.h"
 #include "sql_audit.h"
 #include "log.h"
+#include "sql_plugin.h"                         // my_plugin_foreach
 
 extern int initialize_audit_plugin(st_plugin_int *plugin);
 extern int finalize_audit_plugin(st_plugin_int *plugin);
@@ -112,17 +112,33 @@ static void connection_class_handler(THD *thd, uint event_subclass, va_list ap)
   event.ip_length= va_arg(ap, unsigned int);
   event.database= va_arg(ap, const char *);
   event.database_length= va_arg(ap, unsigned int);
+  event.connection_type = va_arg(ap, int);
   event_class_dispatch(thd, MYSQL_AUDIT_CONNECTION_CLASS, &event);
 }
+
+static void parse_class_handler(THD *thd, uint event_subclass, va_list ap)
+{
+  mysql_event_parse event;
+  event.event_subclass= event_subclass;
+  event.flags= va_arg(ap, int *);
+  event.query= va_arg(ap, const char *);
+  event.query_length= va_arg(ap, size_t);
+  event.rewritten_query= va_arg(ap, char **);
+  event.rewritten_query_length= va_arg(ap, size_t *);
+  event_class_dispatch(thd, MYSQL_AUDIT_PARSE_CLASS, &event);
+}
+
 
 
 static audit_handler_t audit_handlers[] =
 {
-  general_class_handler, connection_class_handler
+  general_class_handler, connection_class_handler, parse_class_handler
 };
 
+#ifndef DBUG_OFF
 static const uint audit_handlers_count=
   (sizeof(audit_handlers) / sizeof(audit_handler_t));
+#endif
 
 
 /**
@@ -139,7 +155,7 @@ static my_bool acquire_plugins(THD *thd, plugin_ref plugin, void *arg)
 {
   uint event_class= *(uint*) arg;
   unsigned long event_class_mask[MYSQL_AUDIT_CLASS_MASK_SIZE];
-  st_mysql_audit *data= plugin_data(plugin, struct st_mysql_audit *);
+  st_mysql_audit *data= plugin_data<st_mysql_audit*>(plugin);
 
   set_audit_mask(event_class_mask, event_class);
 
@@ -153,7 +169,7 @@ static my_bool acquire_plugins(THD *thd, plugin_ref plugin, void *arg)
     one or more event classes already in use by the calling thread
     are an event class of which the audit plugin has interest.
   */
-  if (!check_audit_mask(data->class_mask, thd->audit_class_mask))
+  if (!check_audit_mask(data->class_mask, &thd->audit_class_mask[0]))
     return 0;
   
   /* lock the plugin and add it to the list */
@@ -179,10 +195,10 @@ void mysql_audit_acquire_plugins(THD *thd, uint event_class)
   DBUG_ENTER("mysql_audit_acquire_plugins");
   set_audit_mask(event_class_mask, event_class);
   if (thd && !check_audit_mask(mysql_global_audit_mask, event_class_mask) &&
-      check_audit_mask(thd->audit_class_mask, event_class_mask))
+      check_audit_mask(&thd->audit_class_mask[0], event_class_mask))
   {
     plugin_foreach(thd, acquire_plugins, MYSQL_AUDIT_PLUGIN, &event_class);
-    add_audit_mask(thd->audit_class_mask, event_class_mask);
+    add_audit_mask(&thd->audit_class_mask[0], event_class_mask);
   }
   DBUG_VOID_RETURN;
 }
@@ -228,7 +244,7 @@ void mysql_audit_release(THD *thd)
   plugins_last= thd->audit_class_plugins.end();
   for (; plugins != plugins_last; plugins++)
   {
-    st_mysql_audit *data= plugin_data(*plugins, struct st_mysql_audit *);
+    st_mysql_audit *data= plugin_data<st_mysql_audit*>(*plugins);
 	
     /* Check to see if the plugin has a release method */
     if (!(data->release_thd))
@@ -244,7 +260,8 @@ void mysql_audit_release(THD *thd)
   
   /* Reset the state of thread values */
   thd->audit_class_plugins.clear();
-  memset(thd->audit_class_mask, 0, sizeof(thd->audit_class_mask));
+  thd->audit_class_mask.clear();
+  thd->audit_class_mask.resize(MYSQL_AUDIT_CLASS_MASK_SIZE);
 }
 
 
@@ -257,7 +274,8 @@ void mysql_audit_release(THD *thd)
 
 void mysql_audit_init_thd(THD *thd)
 {
-  memset(thd->audit_class_mask, 0, sizeof(thd->audit_class_mask));
+  thd->audit_class_mask.clear();
+  thd->audit_class_mask.resize(MYSQL_AUDIT_CLASS_MASK_SIZE);
 }
 
 
@@ -333,8 +351,7 @@ int initialize_audit_plugin(st_plugin_int *plugin)
 {
   st_mysql_audit *data= (st_mysql_audit*) plugin->plugin->info;
   
-  if (!data->class_mask || !data->event_notify ||
-      !data->class_mask[0])
+  if (!data->event_notify || !data->class_mask[0])
   {
     sql_print_error("Plugin '%s' has invalid data.",
                     plugin->name.str);
@@ -371,8 +388,8 @@ int initialize_audit_plugin(st_plugin_int *plugin)
 */
 static my_bool calc_class_mask(THD *thd, plugin_ref plugin, void *arg)
 {
-  st_mysql_audit *data= plugin_data(plugin, struct st_mysql_audit *);
-  if ((data= plugin_data(plugin, struct st_mysql_audit *)))
+  st_mysql_audit *data= plugin_data<st_mysql_audit*>(plugin);
+  if (data)
     add_audit_mask((unsigned long *) arg, data->class_mask);
   return 0;
 }
@@ -433,7 +450,7 @@ static my_bool plugins_dispatch(THD *thd, plugin_ref plugin, void *arg)
   const struct st_mysql_event_generic *event_generic=
     (const struct st_mysql_event_generic *) arg;
   unsigned long event_class_mask[MYSQL_AUDIT_CLASS_MASK_SIZE];
-  st_mysql_audit *data= plugin_data(plugin, struct st_mysql_audit *);
+  st_mysql_audit *data= plugin_data<st_mysql_audit*>(plugin);
 
   set_audit_mask(event_class_mask, event_generic->event_class);
 
@@ -481,6 +498,22 @@ static void event_class_dispatch(THD *thd, unsigned int event_class,
       plugins_dispatch(thd, *plugins, &event_generic);
   }
 }
+
+/**  There's at least one active audit plugin tracking the general events */
+bool is_any_audit_plugin_active(THD *thd __attribute__((unused)))
+{
+  return (mysql_global_audit_mask[0] & MYSQL_AUDIT_GENERAL_CLASSMASK);
+}
+
+/**  There's at least one active audit plugin tracking a specified class */
+bool is_audit_plugin_class_active(THD *thd __attribute__((unused)),
+                                  unsigned int event_class)
+{
+  unsigned long event_class_mask[MYSQL_AUDIT_CLASS_MASK_SIZE];
+  set_audit_mask(event_class_mask, event_class);
+  return !check_audit_mask(mysql_global_audit_mask, event_class_mask);
+}
+
 
 
 #else /* EMBEDDED_LIBRARY */
