@@ -1669,6 +1669,7 @@ innodb_session_t*&
 thd_to_innodb_session(
 	THD*	thd)
 {
+	DBUG_ASSERT(innodb_hton_ptr->slot != HA_SLOT_UNDEF);
 	innodb_session_t*& innodb_session =
 		*(innodb_session_t**) thd_ha_data(thd, innodb_hton_ptr);
 
@@ -2600,6 +2601,8 @@ innobase_get_trx()
 {
 	THD *thd=current_thd;
 	if (likely(thd != 0)) {
+		if (unlikely(get_server_state() == SERVER_BOOTING))
+			return(NULL);
 		trx_t*& trx = thd_to_trx(thd);
 		return(trx);
 	} else {

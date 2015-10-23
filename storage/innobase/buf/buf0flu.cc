@@ -1196,7 +1196,8 @@ buf_flush_page(
 
 		mutex_exit(block_mutex);
 
-		mutex_exit(&buf_pool->LRU_list_mutex);
+		if (flush_type == BUF_FLUSH_SINGLE_PAGE)
+			mutex_exit(&buf_pool->LRU_list_mutex);
 
 		if (flush_type == BUF_FLUSH_LIST
 		    && is_uncompressed
