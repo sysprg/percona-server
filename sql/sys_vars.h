@@ -38,7 +38,7 @@
 #include "tztime.h"               // Time_zone
 #include "binlog.h"               // mysql_bin_log
 #include "rpl_rli.h"              // sql_slave_skip_counter
-#include "rpl_msr.h"              // msr_map
+#include "rpl_msr.h"              // channel_map
 #include "rpl_group_replication.h"// is_group_replication_running
 
 
@@ -2486,10 +2486,14 @@ public:
   {
     DBUG_ENTER("Sys_var_gtid_executed::session_value_ptr");
 
-    push_warning_printf(running_thd, Sql_condition::SL_WARNING,
-                        ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT,
-                        ER(ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT),
-                        "@@SESSION.GTID_EXECUTED");
+    if (!running_thd->gtid_executed_warning_issued)
+    {
+      push_warning_printf(running_thd, Sql_condition::SL_WARNING,
+          ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT,
+          ER(ER_WARN_DEPRECATED_SYNTAX_NO_REPLACEMENT),
+          "@@SESSION.GTID_EXECUTED");
+      running_thd->gtid_executed_warning_issued= true;
+    }
     if (opt_bin_log &&
        (target_thd == running_thd)) /* Supported for current thread only. */
     {
@@ -2725,7 +2729,7 @@ public:
       - gtid_mode is not changed while some other thread is rotating
         the binlog.
 
-      Hold lock_msr_map so that:
+      Hold channel_map lock so that:
       - gtid_mode is not changed during the execution of some
         replication command; particularly CHANGE MASTER. CHANGE MASTER
         checks if GTID_MODE is compatible with AUTO_POSITION, and
@@ -2741,7 +2745,7 @@ public:
       to take the other locks.
     */
     gtid_mode_lock->wrlock();
-    mysql_mutex_lock(&LOCK_msr_map);
+    channel_map.wrlock();
     mysql_mutex_lock(mysql_bin_log.get_log_lock());
     global_sid_lock->wrlock();
     int lock_count= 4;
@@ -2776,7 +2780,7 @@ public:
     // Cannot set OFF when some channel uses AUTO_POSITION.
     if (new_gtid_mode == GTID_MODE_OFF)
     {
-      for (mi_map::iterator it= msr_map.begin(); it!= msr_map.end(); it++)
+      for (mi_map::iterator it= channel_map.begin(); it!= channel_map.end(); it++)
       {
         Master_info *mi= it->second;
         DBUG_PRINT("info", ("auto_position for channel '%s' is %d",
@@ -2909,7 +2913,7 @@ err:
     if (lock_count == 4)
       global_sid_lock->unlock();
     mysql_mutex_unlock(mysql_bin_log.get_log_lock());
-    mysql_mutex_unlock(&LOCK_msr_map);
+    channel_map.unlock();
     gtid_mode_lock->unlock();
     DBUG_RETURN(ret);
   }

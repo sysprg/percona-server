@@ -904,8 +904,7 @@ log_online_is_valid_log_seg(
 /*========================*/
 	const byte* log_block)	/*!< in: read log data */
 {
-	bool checksum_is_ok
-		= log_block_checksum_is_ok_or_old_format(log_block);
+	bool checksum_is_ok = log_block_checksum_is_ok(log_block);
 
 	if (!checksum_is_ok) {
 

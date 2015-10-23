@@ -97,7 +97,7 @@ const char **ha_heap::bas_ext() const
 int ha_heap::open(const char *name, int mode, uint test_if_locked)
 {
   internal_table= MY_TEST(test_if_locked & HA_OPEN_INTERNAL_TABLE);
-  if (internal_table || (!(file= heap_open(name, mode)) && my_errno == ENOENT))
+  if (internal_table || (!(file= heap_open(name, mode)) && my_errno() == ENOENT))
   {
     HP_CREATE_INFO create_info;
     my_bool created_new_share;
@@ -678,7 +678,7 @@ heap_prepare_hp_create_info(TABLE *table_arg, bool internal_table,
                                              column_count *
                                              sizeof(HP_COLUMNDEF),
                                              MYF(MY_WME))))
-    return my_errno;
+    return my_errno();
 
   for (column_idx= 0; column_idx < column_count; column_idx++)
   {
@@ -724,7 +724,7 @@ heap_prepare_hp_create_info(TABLE *table_arg, bool internal_table,
 				       MYF(MY_WME))))
   {
     my_free((uchar *) columndef);
-    return my_errno;
+    return my_errno();
   }
   seg= reinterpret_cast<HA_KEYSEG*>(keydef + keys);
   for (key= 0; key < keys; key++)
@@ -741,7 +741,7 @@ heap_prepare_hp_create_info(TABLE *table_arg, bool internal_table,
     case HA_KEY_ALG_UNDEF:
     case HA_KEY_ALG_HASH:
       keydef[key].algorithm= HA_KEY_ALG_HASH;
-      mem_per_row_keys+= sizeof(char*) * 2; // = sizeof(HASH_INFO)
+      mem_per_row_keys+= sizeof(HASH_INFO);
       break;
     case HA_KEY_ALG_BTREE:
       keydef[key].algorithm= HA_KEY_ALG_BTREE;

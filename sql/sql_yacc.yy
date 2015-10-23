@@ -73,6 +73,7 @@ Note: YYTHD is passed as an argument to yyparse(), and subsequently to yylex().
 #include "lex_token.h"
 #include "item_cmpfunc.h"
 #include "item_geofunc.h"
+#include "item_json_func.h"
 #include "sql_plugin.h"                      // plugin_is_ready
 #include "parse_tree_hints.h"
 
@@ -734,6 +735,7 @@ bool my_yyoverflow(short **a, YYSTYPE **b, YYLTYPE **c, ulong *yystacksize);
 %token  ISSUER_SYM
 %token  ITERATE_SYM
 %token  JOIN_SYM                      /* SQL-2003-R */
+%token  JSON_SEPARATOR_SYM            /* MYSQL */
 %token  JSON_SYM                      /* MYSQL */
 %token  KEYS
 %token  KEY_BLOCK_SIZE
@@ -1541,6 +1543,7 @@ END_OF_INPUT
         update_stmt
         insert_stmt
         replace_stmt
+        shutdown_stmt
 
 %type <table_ident> table_ident_opt_wild
 
@@ -1695,6 +1698,7 @@ statement:
         | set                   { CONTEXTUALIZE($1); }
         | signal_stmt
         | show
+        | shutdown_stmt         { MAKE_CMD($1); }
         | slave
         | start
         | truncate
@@ -2632,6 +2636,7 @@ clear_password_expire_options:
          /* Nothing */
          {
            LEX *lex=Lex;
+           lex->alter_password.update_password_expired_fields= false;
            lex->alter_password.update_password_expired_column= false;
            lex->alter_password.use_default_password_lifetime= true;
            lex->alter_password.expire_after_days= 0;
@@ -6369,14 +6374,14 @@ gcol_attribute:
           UNIQUE_SYM
           {
             LEX *lex=Lex;
-            lex->type|= UNIQUE_FLAG; 
-            lex->alter_info.flags|= Alter_inplace_info::ADD_INDEX;
+            lex->type|= UNIQUE_FLAG;
+            lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX;
           }
         | UNIQUE_SYM KEY_SYM
           {
             LEX *lex=Lex;
-            lex->type|= UNIQUE_KEY_FLAG; 
-            lex->alter_info.flags|= Alter_inplace_info::ADD_INDEX; 
+            lex->type|= UNIQUE_KEY_FLAG;
+            lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX;
           }
         | COMMENT_SYM TEXT_STRING_sys { Lex->comment= $2; }
         | not NULL_SYM { Lex->type|= NOT_NULL_FLAG; }
@@ -7744,6 +7749,7 @@ opt_account_lock_password_expire_option:
         | password_expire
           {
             LEX *lex=Lex;
+            lex->alter_password.update_password_expired_fields= true;
             lex->alter_password.update_password_expired_column= true;
           }
         | password_expire INTERVAL_SYM real_ulong_num DAY_SYM
@@ -7756,15 +7762,20 @@ opt_account_lock_password_expire_option:
               my_error(ER_WRONG_VALUE, MYF(0), "DAY", buf);
               MYSQL_YYABORT;
             }
+            lex->alter_password.update_password_expired_fields= true;
             lex->alter_password.expire_after_days= $3;
             lex->alter_password.use_default_password_lifetime= false;
           }
         | password_expire NEVER_SYM
           {
             LEX *lex=Lex;
+            lex->alter_password.update_password_expired_fields= true;
             lex->alter_password.use_default_password_lifetime= false;
           }
         | password_expire DEFAULT
+          {
+            Lex->alter_password.update_password_expired_fields= true;
+          }
         ;
 
 password_expire:
@@ -8015,10 +8026,18 @@ alter_commands:
 
 opt_validation:
           /* empty */
-        | WITH VALIDATION_SYM
+        | alter_opt_validation
+        ;
+
+alter_opt_validation:
+        WITH VALIDATION_SYM
+          {
+            Lex->alter_info.with_validation= Alter_info::ALTER_WITH_VALIDATION;
+          }
         | WITHOUT_SYM VALIDATION_SYM
           {
-            Lex->alter_info.with_validation= false;
+            Lex->alter_info.with_validation=
+              Alter_info::ALTER_WITHOUT_VALIDATION;
           }
 	    ;
 
@@ -8141,13 +8160,6 @@ alter_list_item:
           add_column column_def opt_place
           {
             Lex->create_last_non_select_table= Lex->last_table();
-            if (Lex->gcol_info)
-            {
-              if (Lex->gcol_info->get_field_stored())
-                Lex->alter_info.flags|= Alter_info::ALTER_STORED_GCOLUMN;
-              else
-                Lex->alter_info.flags|= Alter_info::ALTER_VIRTUAL_GCOLUMN;
-            }
           }
         | ADD key_def
           {
@@ -8155,14 +8167,6 @@ alter_list_item:
             Lex->alter_info.flags|= Alter_info::ALTER_ADD_INDEX;
           }
         | add_column '(' create_field_list ')'
-          {
-            Lex->alter_info.flags|= Alter_info::ALTER_ADD_COLUMN |
-                                    Alter_info::ALTER_ADD_INDEX;
-            if (Lex->gcol_info && Lex->gcol_info->get_field_stored())
-              Lex->alter_info.flags|= Alter_info::ALTER_STORED_GCOLUMN;
-            else if (Lex->gcol_info)
-              Lex->alter_info.flags|= Alter_info::ALTER_VIRTUAL_GCOLUMN;
-          }
         | CHANGE opt_column field_ident
           {
             LEX *lex=Lex;
@@ -8172,13 +8176,6 @@ alter_list_item:
           field_spec opt_place
           {
             Lex->create_last_non_select_table= Lex->last_table();
-            if (Lex->gcol_info)
-            {
-              if (Lex->gcol_info->get_field_stored())
-                Lex->alter_info.flags|= Alter_info::ALTER_STORED_GCOLUMN;
-              else
-                Lex->alter_info.flags|= Alter_info::ALTER_VIRTUAL_GCOLUMN;
-            }
           }
         | MODIFY_SYM opt_column field_ident
           {
@@ -8202,13 +8199,6 @@ alter_list_item:
                                   lex->uint_geom_type,
                                   lex->gcol_info))
               MYSQL_YYABORT;
-            if (Lex->gcol_info)
-            {
-              if (Lex->gcol_info->get_field_stored())
-                Lex->alter_info.flags|= Alter_info::ALTER_STORED_GCOLUMN;
-              else
-                Lex->alter_info.flags|= Alter_info::ALTER_VIRTUAL_GCOLUMN;
-            }  
           }
           opt_place
           {
@@ -8362,6 +8352,11 @@ alter_list_item:
           }
         | alter_algorithm_option
         | alter_lock_option
+        | UPGRADE_SYM PARTITIONING_SYM
+          {
+            Lex->alter_info.flags|= Alter_info::ALTER_UPGRADE_PARTITIONING;
+          }
+        | alter_opt_validation
         ;
 
 opt_index_lock_algorithm:
@@ -9589,6 +9584,13 @@ simple_expr:
           /* we cannot put interval before - */
           {
             $$= NEW_PTN Item_date_add_interval(@$, $5, $2, $3, 0);
+          }
+        | simple_ident JSON_SEPARATOR_SYM TEXT_STRING_literal
+          {
+            Item_string *path=
+              NEW_PTN Item_string(@$, $3.str, $3.length,
+                                  YYTHD->variables.collation_connection);
+            $$= NEW_PTN Item_func_json_extract(YYTHD, @$, $1, path);
           }
         ;
 
@@ -13383,6 +13385,7 @@ keyword:
         | SAVEPOINT_SYM         {}
         | SECURITY_SYM          {}
         | SERVER_SYM            {}
+        | SHUTDOWN              {}
         | SIGNED_SYM            {}
         | SOCKET_SYM            {}
         | SLAVE                 {}
@@ -13660,7 +13663,6 @@ keyword_sp:
         | SESSION_SYM              {}
         | SIMPLE_SYM               {}
         | SHARE_SYM                {}
-        | SHUTDOWN                 {}
         | SLOW                     {}
         | SNAPSHOT_SYM             {}
         | SOUNDS_SYM               {}
@@ -14111,6 +14113,15 @@ unlock_variant:
         | table_or_tables
           {
             Lex->sql_command= SQLCOM_UNLOCK_TABLES;
+          }
+        ;
+
+
+shutdown_stmt:
+          SHUTDOWN
+          {
+            Lex->sql_command= SQLCOM_SHUTDOWN;
+            $$= NEW_PTN PT_shutdown();
           }
         ;
 

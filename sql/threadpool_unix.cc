@@ -892,7 +892,7 @@ static int create_worker(thread_group_t *thread_group)
   }
   else
   {
-    my_errno= errno;
+    set_my_errno(errno);
   }
 
 end:

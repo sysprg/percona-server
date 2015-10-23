@@ -153,91 +153,6 @@ log_archived_get_offset(
 	return;
 }
 
-static
-void
-log_group_archive_file_header_write(
-/*================================*/
-	log_group_t*	group,		/*!< in: log group */
-	ulint		nth_file,	/*!< in: header to the nth file in the
-					archive log file space */
-	lsn_t		file_no,	/*!< in: archived file number */
-	ib_uint64_t	start_lsn)	/*!< in: log file data starts at this
-					lsn */
-{
-	byte*	buf;
-	ulint	dest_offset;
-
-	ut_ad(log_mutex_own());
-
-	ut_a(nth_file < group->n_files);
-
-	buf = *(group->archive_file_header_bufs + nth_file);
-
-	mach_write_to_4(buf + LOG_GROUP_ID, group->id);
-	mach_write_to_8(buf + LOG_FILE_START_LSN, start_lsn);
-	mach_write_to_4(buf + LOG_FILE_NO, file_no);
-
-	mach_write_to_4(buf + LOG_FILE_ARCH_COMPLETED,
-			static_cast<ulint>(FALSE));
-
-	dest_offset = nth_file * group->file_size;
-
-	log_sys->n_log_ios++;
-
-	MONITOR_INC(MONITOR_LOG_IO);
-
-	const ulint	page_no
-		= (ulint) (dest_offset / univ_page_size.physical());
-
-	fil_io(IORequestLogWrite, true,
-	       page_id_t(group->archive_space_id, page_no),
-	       univ_page_size,
-	       (ulint) (dest_offset % univ_page_size.physical()),
-	       2 * OS_FILE_LOG_BLOCK_SIZE,
-	       buf, &log_archive_io);
-}
-
-/******************************************************//**
-Writes a log file header to a completed archived log file. */
-static
-void
-log_group_archive_completed_header_write(
-/*=====================================*/
-	log_group_t*	group,		/*!< in: log group */
-	ulint		nth_file,	/*!< in: header to the nth file in the
-					archive log file space */
-	ib_uint64_t	end_lsn)	/*!< in: end lsn of the file */
-{
-	byte*	buf;
-	ulint	dest_offset;
-
-	ut_ad(log_mutex_own());
-	ut_a(nth_file < group->n_files);
-
-	buf = *(group->archive_file_header_bufs + nth_file);
-
-	mach_write_to_4(buf + LOG_FILE_ARCH_COMPLETED,
-			static_cast<ulint>(TRUE));
-	mach_write_to_8(buf + LOG_FILE_END_LSN, end_lsn);
-
-	dest_offset = nth_file * group->file_size + LOG_FILE_ARCH_COMPLETED;
-
-	log_sys->n_log_ios++;
-
-	MONITOR_INC(MONITOR_LOG_IO);
-
-	const ulint	page_no
-		= (ulint) (dest_offset / univ_page_size.physical());
-
-	fil_io(IORequestLogWrite, true,
-	       page_id_t(group->archive_space_id, page_no),
-	       univ_page_size,
-	       (ulint) (dest_offset % univ_page_size.physical()),
-	       OS_FILE_LOG_BLOCK_SIZE,
-	       buf + LOG_FILE_ARCH_COMPLETED,
-	       &log_archive_io);
-}
-
 /******************************************************//**
 Does the archive writes for a single log group. */
 static
@@ -332,11 +247,6 @@ loop:
 				     archive_space, false, false));
 
 		if (next_offset % group->file_size == 0) {
-			log_group_archive_file_header_write(
-				group, n_files,
-				group->archived_file_no +
-				n_files * (group->file_size - LOG_FILE_HDR_SIZE),
-				start_lsn);
 
 			next_offset += LOG_FILE_HDR_SIZE;
 		}
@@ -459,11 +369,6 @@ log_archive_write_complete_groups(void)
 	for (i = 0; i < trunc_files; i++) {
 
 		end_lsn += group->file_size - LOG_FILE_HDR_SIZE;
-
-		/* Write a notice to the headers of archived log
-		files that the file write has been completed */
-
-		log_group_archive_completed_header_write(group, i, end_lsn);
 	}
 
 	fil_space_truncate_start(group->archive_space_id,
@@ -711,12 +616,6 @@ log_archive_close_groups(
 		* fil_space_get_size(group->archive_space_id);
 	if (trunc_len > 0) {
 		ut_a(trunc_len == group->file_size);
-
-		/* Write a notice to the headers of archived log
-		files that the file write has been completed */
-
-		log_group_archive_completed_header_write(
-			group, 0, log_sys->archived_lsn);
 
 		fil_space_truncate_start(group->archive_space_id,
 					 trunc_len);

@@ -122,9 +122,9 @@ static int query_response_time_info_deinit(void *arg __attribute__((unused)))
 static struct st_mysql_information_schema query_response_time_info_descriptor=
 { MYSQL_INFORMATION_SCHEMA_INTERFACE_VERSION };
 
-static void query_response_time_audit_notify(MYSQL_THD thd,
-                                             unsigned int event_class,
-                                             const void *event)
+static int query_response_time_audit_notify(MYSQL_THD thd,
+                                            mysql_event_class_t event_class,
+                                            const void *event)
 {
   const struct mysql_event_general *event_general=
     (const struct mysql_event_general *) event;
@@ -173,13 +173,14 @@ static void query_response_time_audit_notify(MYSQL_THD thd,
                                   thd->utime_after_query -
                                   thd->utime_after_lock);
   }
+  return 0;
 }
 
 
 static struct st_mysql_audit query_response_time_audit_descriptor=
 {
   MYSQL_AUDIT_INTERFACE_VERSION, NULL, query_response_time_audit_notify,
-  { (unsigned long) MYSQL_AUDIT_GENERAL_CLASSMASK }
+  { MYSQL_AUDIT_GENERAL_CLASS }
 };
 
 

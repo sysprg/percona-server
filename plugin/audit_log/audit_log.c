@@ -423,11 +423,11 @@ size_t audit_log_general_record(char *buf, size_t buflen,
                      event->general_sql_command.str,
                      event->general_thread_id,
                      status,
-                     escape_string(event->general_query,
-                                   event->general_query_length,
+                     escape_string(event->general_query.str,
+                                   event->general_query.length,
                                    query, sizeof(query), NULL),
-                     escape_string(event->general_user,
-                                   event->general_user_length,
+                     escape_string(event->general_user.str,
+                                   event->general_user.length,
                                    endptr, endtmp - endptr, &endptr),
                      escape_string(event->general_host.str,
                                    event->general_host.length,
@@ -502,28 +502,28 @@ size_t audit_log_connection_record(char *buf, size_t buflen,
                      name,
                      make_record_id(id_str, sizeof(id_str)),
                      make_timestamp(timestamp, sizeof(timestamp), t),
-                     event->thread_id,
+                     event->connection_id,
                      event->status,
-                     escape_string(event->user,
-                                   event->user_length,
+                     escape_string(event->user.str,
+                                   event->user.length,
                                    endptr, endtmp - endptr, &endptr),
-                     escape_string(event->priv_user,
-                                   event->priv_user_length,
+                     escape_string(event->priv_user.str,
+                                   event->priv_user.length,
                                    endptr, endtmp - endptr, &endptr),
-                     escape_string(event->external_user,
-                                   event->external_user_length,
+                     escape_string(event->external_user.str,
+                                   event->external_user.length,
                                    endptr, endtmp - endptr, &endptr),
-                     escape_string(event->proxy_user,
-                                   event->proxy_user_length,
+                     escape_string(event->proxy_user.str,
+                                   event->proxy_user.length,
                                    endptr, endtmp - endptr, &endptr),
-                     escape_string(event->host,
-                                   event->host_length,
+                     escape_string(event->host.str,
+                                   event->host.length,
                                    endptr, endtmp - endptr, &endptr),
-                     escape_string(event->ip,
-                                   event->ip_length,
+                     escape_string(event->ip.str,
+                                   event->ip.length,
                                    endptr, endtmp - endptr, &endptr),
-                     escape_string(event->database,
-                                   event->database_length,
+                     escape_string(event->database.str,
+                                   event->database.length,
                                    endptr, endtmp - endptr, &endptr));
 }
 
@@ -678,10 +678,10 @@ int is_event_class_allowed_by_policy(unsigned int class,
 {
   static unsigned int class_mask[]=
   {
-    MYSQL_AUDIT_GENERAL_CLASSMASK | MYSQL_AUDIT_CONNECTION_CLASSMASK, /* ALL */
-    0,                                                             /* NONE */
-    MYSQL_AUDIT_CONNECTION_CLASSMASK,                              /* LOGINS */
-    MYSQL_AUDIT_GENERAL_CLASSMASK,                                 /* QUERIES */
+    MYSQL_AUDIT_GENERAL_CLASS | MYSQL_AUDIT_CONNECTION_CLASS, /* ALL */
+    0,                                                        /* NONE */
+    MYSQL_AUDIT_CONNECTION_CLASS,                             /* LOGINS */
+    MYSQL_AUDIT_GENERAL_CLASS,                                /* QUERIES */
   };
 
   return (class_mask[policy] & (1 << class)) != 0;
@@ -689,15 +689,15 @@ int is_event_class_allowed_by_policy(unsigned int class,
 
 
 static
-void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
-                      unsigned int event_class,
-                      const void *event)
+int audit_log_notify(MYSQL_THD thd __attribute__((unused)),
+                     mysql_event_class_t event_class,
+                     const void *event)
 {
   char buf[1024];
   size_t len;
 
   if (!is_event_class_allowed_by_policy(event_class, audit_log_policy))
-    return;
+    return 0;
 
   if (event_class == MYSQL_AUDIT_GENERAL_CLASS)
   {
@@ -706,15 +706,20 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
     switch (event_general->event_subclass)
     {
     case MYSQL_AUDIT_GENERAL_STATUS:
-      if (event_general->general_command_length == 4 &&
-          strncmp(event_general->general_command, "Quit", 4) == 0)
+      if (event_general->general_command.length == 4 &&
+          strncmp(event_general->general_command.str, "Quit", 4) == 0)
         break;
       len= audit_log_general_record(buf, sizeof(buf),
-                                    event_general->general_command,
+                                    event_general->general_command.str,
                                     event_general->general_time,
                                     event_general->general_error_code,
                                     event_general);
       audit_log_write(buf, len);
+      break;
+    case MYSQL_AUDIT_GENERAL_LOG:
+    case MYSQL_AUDIT_GENERAL_ERROR:
+    case MYSQL_AUDIT_GENERAL_RESULT:
+      /* TODO laurynas handle these? */
       break;
     }
   }
@@ -744,6 +749,7 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
       break;
     }
   }
+  return 0;
 }
 
 
@@ -932,11 +938,11 @@ static struct st_mysql_sys_var* audit_log_system_variables[] =
 */
 static struct st_mysql_audit audit_log_descriptor=
 {
-  MYSQL_AUDIT_INTERFACE_VERSION,                    /* interface version    */
-  NULL,                                             /* release_thd function */
-  audit_log_notify,                                 /* notify function      */
-  { MYSQL_AUDIT_GENERAL_CLASSMASK |
-    MYSQL_AUDIT_CONNECTION_CLASSMASK }              /* class mask           */
+  MYSQL_AUDIT_INTERFACE_VERSION,                /* interface version    */
+  NULL,                                         /* release_thd function */
+  audit_log_notify,                             /* notify function      */
+  { MYSQL_AUDIT_GENERAL_CLASS |
+    MYSQL_AUDIT_CONNECTION_CLASS }              /* class mask           */
 };
 
 /*

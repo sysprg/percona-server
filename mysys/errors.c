@@ -53,8 +53,8 @@ const char *globerrs[GLOBERRS]=
   "Can't change ownership of the file '%s' (Errcode: %d - %s)",
   "Can't change permissions of the file '%s' (Errcode: %d - %s)",
   "Can't seek in file '%s' (Errcode: %d - %s)",
+  "Memory capacity exceeded (capacity %llu bytes)"
   "Can't create socket '%s' (Errcode: %d)",
-  "Can't connect to '%s' (Errcode: %d)",
   "File name '%s' is too long (max: %d)"
 };
 
@@ -74,7 +74,7 @@ void wait_for_free_space(const char *filename, int errors)
     char errbuf[MYSYS_STRERROR_SIZE];
     my_message_local(ERROR_LEVEL, EE(EE_DISK_FULL),
                      filename,my_errno,
-                     my_strerror(errbuf, sizeof(errbuf), my_errno));
+                     my_strerror(errbuf, sizeof(errbuf), my_errno()));
     my_message_local(ERROR_LEVEL,
                      "Retry in %d secs. Message reprinted in %d secs",
                      MY_WAIT_FOR_USER_TO_FIX_PANIC,

@@ -17,7 +17,7 @@
 #define SQL_CONNECT_INCLUDED
 
 #include "my_global.h"   // uint
-#include "my_thread.h"  // my_thread_id
+#include "my_thread_local.h"  // my_thread_id
 #include "my_base.h"    // ha_rows
 #include "mysql_com.h"  // USERNAME_LENGTH
 
@@ -134,8 +134,8 @@ void decrease_user_connections(USER_CONN *uc);
 void release_user_connection(THD *thd);
 bool thd_init_client_charset(THD *thd, uint cs_number);
 bool thd_prepare_connection(THD *thd, bool extra_port_connection);
-void close_connection(THD *thd, uint sql_errno= 0);
-bool thd_is_connection_alive(THD *thd);
+void close_connection(THD *thd, uint sql_errno= 0, bool server_shutdown= false);
+bool thd_connection_alive(THD *thd);
 void end_connection(THD *thd);
 int get_or_create_user_conn(THD *thd, const char *user,
                             const char *host, const USER_RESOURCES *mqh);

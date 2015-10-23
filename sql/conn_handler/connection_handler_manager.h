@@ -64,15 +64,6 @@ class Connection_handler_manager
   ulong m_aborted_connects;
   ulong m_connection_errors_max_connection; // Protected by LOCK_connection_count
 
-  /**
-    Increment connection count if max_connections is not exceeded.
-
-    @param    extra_port_connection true if it is the extra connection count
-    which needs to be checked and bumped
-
-    @retval   true if max_connections is not exceeded else false.
-  */
-  bool check_and_incr_conn_count(bool extra_port_connection);
 
   /**
     Constructor to instantiate an instance of this class.
@@ -173,6 +164,18 @@ public:
     @return true if a new connection can be accepted, false otherwise.
   */
   bool valid_connection_count(bool extra_port_connection);
+
+  /**
+    Increment connection count if max_connections is not exceeded.
+
+    @param    extra_port_connection true if it is the extra connection count
+    which needs to be checked and bumped
+
+    @retval
+      true   max_connections NOT exceeded
+      false  max_connections reached
+  */
+  bool check_and_incr_conn_count(bool extra_port_connection);
 
   /**
     Reset the max_used_connections counter to the number of current

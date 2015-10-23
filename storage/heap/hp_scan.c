@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2012, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -43,7 +43,8 @@ int heap_scan(HP_INFO *info, uchar *record)
   if (pos >= share->recordspace.chunk_count)
   {
     info->update= 0;
-    DBUG_RETURN(my_errno= HA_ERR_END_OF_FILE);
+    set_my_errno(HA_ERR_END_OF_FILE);
+    DBUG_RETURN(HA_ERR_END_OF_FILE);
   }
 
   hp_find_record(info, pos);
@@ -53,12 +54,13 @@ int heap_scan(HP_INFO *info, uchar *record)
   {
     DBUG_PRINT("warning",("Found deleted record or secondary chunk"));
     info->update= HA_STATE_PREV_FOUND | HA_STATE_NEXT_FOUND;
-    DBUG_RETURN(my_errno=HA_ERR_RECORD_DELETED);
+    set_my_errno(HA_ERR_RECORD_DELETED);
+    DBUG_RETURN(HA_ERR_RECORD_DELETED);
   }
   info->update= HA_STATE_PREV_FOUND | HA_STATE_NEXT_FOUND | HA_STATE_AKTIV;
   if (hp_extract_record(info, record, info->current_ptr))
   {
-    DBUG_RETURN(my_errno);
+    DBUG_RETURN(my_errno());
   }
   info->current_hash_ptr=0;			/* Can't use read_next */
   DBUG_RETURN(0);

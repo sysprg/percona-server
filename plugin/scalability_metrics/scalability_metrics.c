@@ -346,7 +346,7 @@ int sm_totaltime(MYSQL_THD thd __attribute__((unused)),
 }
 
 
-static void sm_notify(MYSQL_THD thd, unsigned int event_class,
+static int sm_notify(MYSQL_THD thd, mysql_event_class_t event_class,
                       const void *event)
 {
 
@@ -357,30 +357,30 @@ static void sm_notify(MYSQL_THD thd, unsigned int event_class,
 
     if (sm_ctl != CTL_ON)
     {
-      return;
+      return 0;
     }
 
-    if (event_general->general_command &&
+    if (event_general->general_command.str &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_LOG &&
-        strcmp(event_general->general_command, "Query") == 0)
+        strcmp(event_general->general_command.str, "Query") == 0)
     {
-      sm_query_started(thd, event_general->general_query);
+      sm_query_started(thd, event_general->general_query.str);
     }
-    else if (event_general->general_command &&
+    else if (event_general->general_command.str &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_LOG &&
-        strcmp(event_general->general_command, "Execute") == 0)
+        strcmp(event_general->general_command.str, "Execute") == 0)
     {
-      sm_query_started(thd, event_general->general_query);
+      sm_query_started(thd, event_general->general_query.str);
     }
-    else if (event_general->general_query &&
+    else if (event_general->general_query.str &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_RESULT)
     {
-      sm_query_finished(thd, event_general->general_query);
+      sm_query_finished(thd, event_general->general_query.str);
     }
-    else if (event_general->general_query &&
+    else if (event_general->general_query.str &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_ERROR)
     {
-      sm_query_failed(thd, event_general->general_query,
+      sm_query_failed(thd, event_general->general_query.str,
                                 event_general->general_error_code);
     }
 
@@ -401,6 +401,7 @@ static void sm_notify(MYSQL_THD thd, unsigned int event_class,
       break;
     }
   }
+  return 0;
 }
 
 /*
@@ -418,11 +419,11 @@ static struct st_mysql_sys_var* scalability_metrics_system_variables[] =
 */
 static struct st_mysql_audit scalability_metrics_descriptor=
 {
-  MYSQL_AUDIT_INTERFACE_VERSION,                    /* interface version    */
-  NULL,                                             /* release_thd function */
-  sm_notify,                                        /* notify function      */
-  { MYSQL_AUDIT_GENERAL_CLASSMASK |
-    MYSQL_AUDIT_CONNECTION_CLASSMASK }              /* class mask           */
+  MYSQL_AUDIT_INTERFACE_VERSION,                /* interface version    */
+  NULL,                                         /* release_thd function */
+  sm_notify,                                    /* notify function      */
+  { MYSQL_AUDIT_GENERAL_CLASS,
+    MYSQL_AUDIT_CONNECTION_CLASS }              /* class mask           */
 };
 
 /*

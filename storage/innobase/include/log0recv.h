@@ -37,17 +37,14 @@ Created 9/20/1997 Heikki Tuuri
 
 #include <list>
 
-/******************************************************//**
-Checks the 4-byte checksum to the trailer checksum field of a log
-block.  We also accept a log block in the old format before
-InnoDB-3.23.52 where the checksum field contains the log block number.
-@return TRUE if ok, or if the log block may be in the format of InnoDB
-version predating 3.23.52 */
-
-ibool
-log_block_checksum_is_ok_or_old_format(
-/*===================================*/
-	const byte*	block);	/*!< in: pointer to a log block */
+/** Check the 4-byte checksum to the trailer checksum field of a log
+block.
+@param[in]	log block
+@return whether the checksum matches */
+bool
+log_block_checksum_is_ok(
+	const byte*	block)	/*!< in: pointer to a log block */
+	__attribute__((warn_unused_result));
 
 /*******************************************************//**
 Calculates the new value for lsn when more data is added to the log. */

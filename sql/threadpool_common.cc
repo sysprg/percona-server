@@ -70,14 +70,18 @@ extern bool do_command(THD*);
 struct Worker_thread_context
 {
   PSI_thread *psi_thread;
-  st_my_thread_var* mysys_var;
+#ifndef DBUG_OFF
+  my_thread_id thread_id; //  TODO laurynas my_thread_var_dbug?
+#endif
 
   void save()
   {
 #ifdef HAVE_PSI_THREAD_INTERFACE
     psi_thread= PSI_THREAD_CALL(get_thread)();
 #endif
-    mysys_var= mysys_thread_var();
+#ifndef DBUG_OFF
+    thread_id= my_thread_var_id();
+#endif
   }
 
   void restore()
@@ -85,7 +89,9 @@ struct Worker_thread_context
 #ifdef HAVE_PSI_THREAD_INTERFACE
     PSI_THREAD_CALL(set_thread)(psi_thread);
 #endif
-    set_mysys_thread_var(mysys_var);
+#ifndef DBUG_OFF
+    set_my_thread_var_id(thread_id);
+#endif
     pthread_setspecific(THR_THD, 0);
     pthread_setspecific(THR_MALLOC, 0);
   }
@@ -97,7 +103,9 @@ struct Worker_thread_context
 */
 static bool thread_attach(THD* thd)
 {
-  set_mysys_thread_var(thd->mysys_var);
+#ifndef DBUG_OFF
+  set_my_thread_var_id(thd->thread_id()); // TODO laurynas dbug
+#endif
   thd->thread_stack=(char*)&thd;
   thd->store_globals();
 #ifdef HAVE_PSI_THREAD_INTERFACE
@@ -187,19 +195,7 @@ int threadpool_add_connection(THD* thd)
   Worker_thread_context worker_context;
   worker_context.save();
 
-  /*
-    Create a new connection context: mysys_thread_var and PSI thread
-    Store them in THD.
-  */
-
-  set_mysys_thread_var(NULL);
   my_thread_init();
-  thd->mysys_var= mysys_thread_var();
-  if (!thd->mysys_var)
-  {
-    /* Out of memory? */
-    goto end;
-  }
 
   /* Create new PSI thread for use with the THD. */
 #ifdef HAVE_PSI_THREAD_INTERFACE
@@ -228,7 +224,7 @@ int threadpool_add_connection(THD* thd)
     Check if THD is ok, as prepare_new_connection_state()
     can fail, for example if init command failed.
   */
-  if (thd_is_connection_alive(thd))
+  if (thd_connection_alive(thd))
   {
     retval= 0;
     thd_set_net_read_write(thd, 1);
@@ -318,7 +314,7 @@ int threadpool_process_request(THD *thd)
     if ((retval= do_command(thd)) != 0)
       goto end;
 
-    if (!thd_is_connection_alive(thd))
+    if (!thd_connection_alive(thd))
     {
       retval= 1;
       goto end;

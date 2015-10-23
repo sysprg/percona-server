@@ -21,7 +21,7 @@ update performance_schema.setup_instruments
 set enabled='YES', timed='NO';
 **** On Master ****
 select * from performance_schema.setup_instruments
-where timed='NO';
+where timed='NO' and name not like "memory/%";
 NAME	ENABLED	TIMED
 select "This better be in the master" as in_master_digest;
 in_master_digest
@@ -56,7 +56,11 @@ select digest, digest_text, count_star
 from performance_schema.events_statements_summary_by_digest
 where digest_text like "%in_%_digest%";
 digest	digest_text	count_star
+<<<<<<< HEAD
 ?	SELECT ? AS `in_master_digest` 	1
+=======
+8ba54d63b59bcf9dbe99708ba529bfa1	SELECT ? AS `in_master_digest` 	1
+>>>>>>> mysql-5.7.9
 insert into test.marker values (2);
 **** On Slave ****
 select * from test.marker;

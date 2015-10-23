@@ -81,12 +81,14 @@ reduce the size of the log.
 
 */
 
-/* Global log system variable */
+/** Redo log system */
 log_t*	log_sys	= NULL;
 
+/** Whether to generate and require checksums on the redo log pages */
+my_bool	innodb_log_checksums;
+
 /** Pointer to the log checksum calculation function */
-log_checksum_func_t log_checksum_algorithm_ptr =
-	log_block_calc_checksum_innodb;
+log_checksum_func_t log_checksum_algorithm_ptr;
 
 /* These control how often we print warnings if the last checkpoint is too
 old */
@@ -634,15 +636,14 @@ log_group_calc_real_offset(
 	       * (1 + offset / (group->file_size - LOG_FILE_HDR_SIZE)));
 }
 
-/******************************************************//**
-Calculates the offset of an lsn within a log group.
+/** Calculate the offset of an lsn within a log group.
+@param[in]	lsn	log sequence number
+@param[in]	group	log group
 @return offset within the log group */
-static
 lsn_t
 log_group_calc_lsn_offset(
-/*======================*/
-	lsn_t			lsn,	/*!< in: lsn */
-	const log_group_t*	group)	/*!< in: log group */
+	lsn_t			lsn,
+	const log_group_t*	group)
 {
 	lsn_t	gr_lsn;
 	lsn_t	gr_lsn_size_offset;
@@ -963,6 +964,7 @@ log_group_init(
 
 	group->id = id;
 	group->n_files = n_files;
+	group->format = LOG_HEADER_FORMAT_CURRENT;
 	group->file_size = file_size;
 	group->space_id = space_id;
 	group->state = LOG_GROUP_OK;
@@ -1117,15 +1119,19 @@ log_group_file_header_flush(
 
 	ut_ad(log_mutex_own());
 	ut_ad(!recv_no_log_write);
+	ut_ad(group->id == 0);
 	ut_a(nth_file < group->n_files);
 
 	buf = *(group->file_header_bufs + nth_file);
 
-	mach_write_to_4(buf + LOG_GROUP_ID, group->id);
-	mach_write_to_8(buf + LOG_FILE_START_LSN, start_lsn);
-
-	/* Wipe over possible label of mysqlbackup --restore */
-	memset(buf + LOG_FILE_WAS_CREATED_BY_HOT_BACKUP, 0x20, 4);
+	memset(buf, 0, OS_FILE_LOG_BLOCK_SIZE);
+	mach_write_to_4(buf + LOG_HEADER_FORMAT, LOG_HEADER_FORMAT_CURRENT);
+	mach_write_to_8(buf + LOG_HEADER_START_LSN, start_lsn);
+	strcpy(reinterpret_cast<char*>(buf) + LOG_HEADER_CREATOR,
+	       LOG_HEADER_CREATOR_CURRENT);
+	ut_ad(LOG_HEADER_CREATOR_END - LOG_HEADER_CREATOR
+	      >= sizeof LOG_HEADER_CREATOR_CURRENT);
+	log_block_set_checksum(buf, log_block_calc_checksum_crc32(buf));
 
 	dest_offset = nth_file * group->file_size;
 
@@ -1691,6 +1697,7 @@ log_io_complete_checkpoint(void)
 	}
 }
 
+#if 0 // TODO laurynas: log archiving broken by WL#8845
 /*******************************************************************//**
 Writes info to a checkpoint about a log group. */
 static
@@ -1701,8 +1708,6 @@ log_checkpoint_set_nth_group_info(
 	ulint	n,	/*!< in: nth slot */
 	lsn_t	file_no)/*!< in: archived file number */
 {
-	ut_ad(n < LOG_MAX_N_GROUPS);
-
 	mach_write_to_8(buf + LOG_CHECKPOINT_GROUP_ARRAY +
 			8 * n + LOG_CHECKPOINT_ARCHIVED_FILE_NO,
 			file_no);
@@ -1717,11 +1722,10 @@ log_checkpoint_get_nth_group_info(
 	ulint		n,	/*!< in: nth slot */
 	lsn_t*		file_no)/*!< out: archived file number */
 {
-	ut_ad(n < LOG_MAX_N_GROUPS);
-
 	*file_no = mach_read_from_8(buf + LOG_CHECKPOINT_GROUP_ARRAY +
 				8 * n + LOG_CHECKPOINT_ARCHIVED_FILE_NO);
 }
+#endif
 
 /******************************************************//**
 Writes the checkpoint info to a log group header. */
@@ -1731,11 +1735,11 @@ log_group_checkpoint(
 /*=================*/
 	log_group_t*	group)	/*!< in: log group */
 {
-	lsn_t	archived_lsn;
-	lsn_t	lsn_offset;
-	ulint	fold;
-	byte*	buf;
-	ulint	i;
+	lsn_t		archived_lsn;
+	// ulint	fold; TODO laurynas
+	// ulint	i; TODO laurynas
+	lsn_t		lsn_offset;
+	byte*		buf;
 
 	ut_ad(!srv_read_only_mode);
 	ut_ad(log_mutex_own());
@@ -1750,18 +1754,17 @@ log_group_checkpoint(
 			      group->id));
 
 	buf = group->checkpoint_buf;
+	memset(buf, 0, OS_FILE_LOG_BLOCK_SIZE);
 
 	mach_write_to_8(buf + LOG_CHECKPOINT_NO, log_sys->next_checkpoint_no);
 	mach_write_to_8(buf + LOG_CHECKPOINT_LSN, log_sys->next_checkpoint_lsn);
 
 	lsn_offset = log_group_calc_lsn_offset(log_sys->next_checkpoint_lsn,
 					       group);
-	mach_write_to_4(buf + LOG_CHECKPOINT_OFFSET_LOW32,
-			lsn_offset & 0xFFFFFFFFUL);
-	mach_write_to_4(buf + LOG_CHECKPOINT_OFFSET_HIGH32,
-			lsn_offset >> 32);
+	mach_write_to_8(buf + LOG_CHECKPOINT_OFFSET, lsn_offset);
+	mach_write_to_8(buf + LOG_CHECKPOINT_LOG_BUF_SIZE, log_sys->buf_size);
 
-	mach_write_to_4(buf + LOG_CHECKPOINT_LOG_BUF_SIZE, log_sys->buf_size);
+	log_block_set_checksum(buf, log_block_calc_checksum_crc32(buf));
 
 	if (log_sys->archiving_state == LOG_ARCH_OFF) {
 		archived_lsn = LSN_MAX;
@@ -1769,25 +1772,9 @@ log_group_checkpoint(
 		archived_lsn = log_sys->archived_lsn;
 	}
 
+#if 0 // TODO laurynas log archiving broken by WL#8845
 	mach_write_to_8(buf + LOG_CHECKPOINT_ARCHIVED_LSN, archived_lsn);
-
-	for (i = 0; i < LOG_MAX_N_GROUPS; i++) {
-		log_checkpoint_set_nth_group_info(buf, i, 0);
-	}
-
-	for (log_group_t* group2 = UT_LIST_GET_FIRST(log_sys->log_groups);
-	     group2 != NULL;
-	     group2 = UT_LIST_GET_NEXT(log_groups, group2)) {
-		log_checkpoint_set_nth_group_info(buf, group2->id,
-						  group2->archived_file_no);
-	}
-
-	fold = ut_fold_binary(buf, LOG_CHECKPOINT_CHECKSUM_1);
-	mach_write_to_4(buf + LOG_CHECKPOINT_CHECKSUM_1, fold);
-
-	fold = ut_fold_binary(buf + LOG_CHECKPOINT_LSN,
-			      LOG_CHECKPOINT_CHECKSUM_2 - LOG_CHECKPOINT_LSN);
-	mach_write_to_4(buf + LOG_CHECKPOINT_CHECKSUM_2, fold);
+#endif
 
 	MONITOR_INC(MONITOR_PENDING_CHECKPOINT_WRITE);
 
@@ -1835,55 +1822,42 @@ log_reset_first_header_and_checkpoint(
 				we pretend that there is a checkpoint at
 				start + LOG_BLOCK_HDR_SIZE */
 {
-	ulint		fold;
 	byte*		buf;
 	ib_uint64_t	lsn;
 
-	mach_write_to_4(hdr_buf + LOG_GROUP_ID, 0);
-	mach_write_to_8(hdr_buf + LOG_FILE_START_LSN, start);
+	mach_write_to_4(hdr_buf + LOG_HEADER_FORMAT,
+			LOG_HEADER_FORMAT_CURRENT);
+	mach_write_to_8(hdr_buf + LOG_HEADER_START_LSN, start);
 
 	lsn = start + LOG_BLOCK_HDR_SIZE;
 
 	/* Write the label of mysqlbackup --restore */
-	strcpy((char*) hdr_buf + LOG_FILE_WAS_CREATED_BY_HOT_BACKUP,
-	       "ibbackup ");
+	strcpy((char*) hdr_buf + LOG_HEADER_CREATOR, "ibbackup ");
 	ut_sprintf_timestamp((char*) hdr_buf
-			     + (LOG_FILE_WAS_CREATED_BY_HOT_BACKUP
+			     + (LOG_HEADER_CREATOR
 				+ (sizeof "ibbackup ") - 1));
 	buf = hdr_buf + LOG_CHECKPOINT_1;
+	memset(buf, 0, OS_FILE_LOG_BLOCK_SIZE);
 
-	mach_write_to_8(buf + LOG_CHECKPOINT_NO, 0);
+	/*mach_write_to_8(buf + LOG_CHECKPOINT_NO, 0);*/
 	mach_write_to_8(buf + LOG_CHECKPOINT_LSN, lsn);
 
-	mach_write_to_4(buf + LOG_CHECKPOINT_OFFSET_LOW32,
+	mach_write_to_8(buf + LOG_CHECKPOINT_OFFSET,
 			LOG_FILE_HDR_SIZE + LOG_BLOCK_HDR_SIZE);
-	mach_write_to_4(buf + LOG_CHECKPOINT_OFFSET_HIGH32, 0);
+	mach_write_to_8(buf + LOG_CHECKPOINT_LOG_BUF_SIZE, 2 * 1024 * 1024);
 
-	mach_write_to_4(buf + LOG_CHECKPOINT_LOG_BUF_SIZE, 2 * 1024 * 1024);
-
-	mach_write_to_8(buf + LOG_CHECKPOINT_ARCHIVED_LSN, LSN_MAX);
-
-	fold = ut_fold_binary(buf, LOG_CHECKPOINT_CHECKSUM_1);
-	mach_write_to_4(buf + LOG_CHECKPOINT_CHECKSUM_1, fold);
-
-	fold = ut_fold_binary(buf + LOG_CHECKPOINT_LSN,
-			      LOG_CHECKPOINT_CHECKSUM_2 - LOG_CHECKPOINT_LSN);
-	mach_write_to_4(buf + LOG_CHECKPOINT_CHECKSUM_2, fold);
-
-	/* Starting from InnoDB-3.23.50, we should also write info on
-	allocated size in the tablespace, but unfortunately we do not
-	know it here */
+	log_block_set_checksum(buf, log_block_calc_checksum_crc32(buf));
 }
 #endif /* UNIV_HOTBACKUP */
 
 #ifndef UNIV_HOTBACKUP
-/******************************************************//**
-Reads a checkpoint info from a log group header to log_sys->checkpoint_buf. */
+/** Read a log group header page to log_sys->checkpoint_buf.
+@param[in]	group	log group
+@param[in]	header	0 or LOG_CHEKCPOINT_1 or LOG_CHECKPOINT2 */
 void
-log_group_read_checkpoint_info(
-/*===========================*/
-	log_group_t*	group,	/*!< in: log group */
-	ulint		field)	/*!< in: LOG_CHECKPOINT_1 or LOG_CHECKPOINT_2 */
+log_group_header_read(
+	const log_group_t*	group,
+	ulint			header)
 {
 	ut_ad(log_mutex_own());
 
@@ -1892,8 +1866,8 @@ log_group_read_checkpoint_info(
 	MONITOR_INC(MONITOR_LOG_IO);
 
 	fil_io(IORequestLogRead, true,
-	       page_id_t(group->space_id, field / univ_page_size.physical()),
-	       univ_page_size, field % univ_page_size.physical(),
+	       page_id_t(group->space_id, header / univ_page_size.physical()),
+	       univ_page_size, header % univ_page_size.physical(),
 	       OS_FILE_LOG_BLOCK_SIZE, log_sys->checkpoint_buf, NULL);
 }
 
@@ -1957,6 +1931,11 @@ log_checkpoint(
 	lsn_t	oldest_lsn;
 
 	ut_ad(!srv_read_only_mode);
+
+	DBUG_EXECUTE_IF("no_checkpoint",
+			/* We sleep for a long enough time, forcing
+			the checkpoint doesn't happen any more. */
+			os_thread_sleep(360000000););
 
 	if (recv_recovery_is_on()) {
 		recv_apply_hashed_log_recs(TRUE);
@@ -2026,13 +2005,13 @@ log_checkpoint(
 
 	log_mutex_enter();
 
+	ut_ad(log_sys->flushed_to_disk_lsn >= oldest_lsn);
+
 	if (!write_always
 	    && log_sys->last_checkpoint_lsn >= oldest_lsn) {
 		log_mutex_exit();
 		return(true);
 	}
-
-	ut_ad(log_sys->flushed_to_disk_lsn >= oldest_lsn);
 
 	if (log_sys->n_pending_checkpoint_writes > 0) {
 		/* A checkpoint write is running */
@@ -2480,19 +2459,13 @@ loop:
 
 	lsn = log_sys->lsn;
 
-	const bool	is_last
-		= ((srv_force_recovery == SRV_FORCE_NO_LOG_REDO
-		    && lsn == log_sys->last_checkpoint_lsn
-		    + LOG_BLOCK_HDR_SIZE)
-		   || lsn == log_sys->last_checkpoint_lsn)
+	const bool	is_last = (lsn == log_sys->last_checkpoint_lsn)
 		&& (!srv_track_changed_pages
 		    || tracked_lsn == log_sys->last_checkpoint_lsn)
 		&& (!srv_log_archive_on
 		    || lsn == log_sys->archived_lsn + LOG_BLOCK_HDR_SIZE);
 
 	ut_ad(lsn >= log_sys->last_checkpoint_lsn);
-	ut_ad(srv_force_recovery != SRV_FORCE_NO_LOG_REDO
-	      || lsn == log_sys->last_checkpoint_lsn + LOG_BLOCK_HDR_SIZE);
 
 	log_mutex_exit();
 

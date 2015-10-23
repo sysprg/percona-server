@@ -145,7 +145,7 @@ statements_digest	?	CREATE PROCEDURE `p1` ( ) BEGIN SELECT * FROM `t12` ; END 	1
 statements_digest	?	CALL `p1` ( ) 	2	0	0	0
 statements_digest	?	DROP PROCEDURE `p1` 	1	0	0	0
 statements_digest	?	CREATE FUNCTION `func` ( `a` INTEGER , `b` INTEGER ) RETURNS INTEGER (?) RETURN `a` + `b` 	1	0	0	0
-statements_digest	?	SELECT `func` (...) 	2	0	0	0a
+statements_digest	?	SELECT `func` (...) 	2	0	0	0
 statements_digest	?	DROP FUNCTION `func` 	1	0	0	0
 statements_digest	?	CREATE TRIGGER `trg` BEFORE INSERT ON `t12` FOR EACH ROW SET @? := ? 	1	0	0	0
 statements_digest	?	INSERT INTO `t12` VALUES (?) 	2	2	0	0
