@@ -2791,7 +2791,7 @@ public:
   */
   int prepare_index_key_scan_map(const uchar *key, key_part_map keypart_map)
   {
-    uint key_len= calculate_key_len(table, *key, keypart_map);
+    uint key_len= calculate_key_len(table, active_index, keypart_map);
     return prepare_index_key_scan(key, key_len);
   }
 

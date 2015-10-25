@@ -479,9 +479,11 @@ create_log_files(
 		}
 	}
 
+#if 0 // TODO laurynas: log archiving broken by WL#8845
 	/* Create the file space object for archived logs. */
 	ut_a(fil_space_create("arch_log_space", SRV_LOG_SPACE_FIRST_ID + 1,
 			      0, FIL_TYPE_LOG));
+#endif
 
 	if (!log_group_init(0, srv_n_log_files,
 			    srv_log_file_size * UNIV_PAGE_SIZE,
@@ -2102,9 +2104,11 @@ innobase_start_or_create_for_mysql(void)
 		ut_a(fil_validate());
 		ut_a(log_space);
 
+#if 0 // TODO laurynas: log archiving broken by WL#8845
 		/* Create the file space object for archived logs. */
 		ut_a(fil_space_create("arch_log_space", SRV_LOG_SPACE_FIRST_ID + 1,
 				      0, FIL_TYPE_LOG));
+#endif
 
 		/* srv_log_file_size is measured in pages; if page size is 16KB,
 		then we have a limit of 64TB on 32 bit systems */
