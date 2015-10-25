@@ -11022,6 +11022,7 @@ int change_master(THD* thd, Master_info* mi, LEX_MASTER_INFO* lex_mi,
   }
 
   unlock_slave_threads(mi);
+  mi->channel_unlock();
   DBUG_RETURN(false);
 
 err:
