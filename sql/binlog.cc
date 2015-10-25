@@ -8276,7 +8276,15 @@ TC_LOG::enum_result MYSQL_BIN_LOG::commit(THD *thd, bool all)
       binlog_prot_acquired= true;
     }
 
-    if (ordered_commit(thd, all, skip_commit))
+    int rc= ordered_commit(thd, all, skip_commit);
+
+    if (binlog_prot_acquired)
+    {
+      DBUG_PRINT("debug", ("Releasing binlog protection lock"));
+      thd->backup_binlog_lock.release_protection(thd);
+    }
+
+    if (rc)
       DBUG_RETURN(RESULT_INCONSISTENT);
   }
   else if (!skip_commit)
