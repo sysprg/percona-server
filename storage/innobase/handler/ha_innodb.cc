@@ -7698,7 +7698,7 @@ report_error:
 func_exit:
 	innobase_active_small();
 
-	if (UNIV_UNLIKELY(m_share->ib_table
+	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
@@ -8181,7 +8181,7 @@ ha_innobase::update_row(
 
 	ha_statistic_increment(&SSV::ha_update_count);
 
-	if (UNIV_UNLIKELY(m_share->ib_table
+	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
@@ -8285,7 +8285,7 @@ func_exit:
 
 	innobase_active_small();
 
-	if (UNIV_UNLIKELY(m_share->ib_table
+	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
 		DBUG_RETURN(HA_ERR_CRASHED);
 	}
@@ -14210,7 +14210,7 @@ ha_innobase::analyze(
 	THD*		thd,		/*!< in: connection thread handle */
 	HA_CHECK_OPT*	check_opt)	/*!< in: currently ignored */
 {
-	if (UNIV_UNLIKELY(m_share->ib_table
+	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
 		return(HA_ADMIN_CORRUPT);
 	}
@@ -14221,7 +14221,7 @@ ha_innobase::analyze(
 		HA_STATUS_TIME | HA_STATUS_CONST | HA_STATUS_VARIABLE,
 		true /* this is ANALYZE */);
 
-	if (UNIV_UNLIKELY(m_share->ib_table
+	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
 		return(HA_ADMIN_CORRUPT);
 	}
@@ -14508,7 +14508,7 @@ ha_innobase::check(
 		thd_set_kill_status(m_user_thd);
 	}
 
-	if (UNIV_UNLIKELY(m_share->ib_table
+	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
 		return(HA_ADMIN_CORRUPT);
 	}
