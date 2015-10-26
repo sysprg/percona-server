@@ -2224,14 +2224,12 @@ not_freed:
 
 		mach_write_to_4(b->zip.data + FIL_PAGE_SPACE_OR_CHKSUM,
 				checksum);
-	}
 
-	if (b != NULL) {
-		mutex_enter(block_mutex);
+		mutex_enter(&buf_pool->zip_mutex);
 
 		buf_page_unset_sticky(b);
 
-		mutex_exit(block_mutex);
+		mutex_exit(&buf_pool->zip_mutex);
 	}
 
 	buf_LRU_block_free_hashed_page((buf_block_t*) bpage);
