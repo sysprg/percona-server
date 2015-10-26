@@ -2772,7 +2772,7 @@ case SQLCOM_PREPARE:
     {
       /* PURGE CHANGED_PAGE_BITMAPS BEFORE lsn */
       ulonglong lsn= 0;
-      Item *it= lex->purge_before_val;
+      Item* it= lex->purge_value_list.head();
       if ((!it->fixed && it->fix_fields(lex->thd, &it)) || it->check_cols(1)
           || it->null_value)
       {
@@ -2839,7 +2839,7 @@ case SQLCOM_PREPARE:
     if (check_global_access(thd, SUPER_ACL))
       goto error;
     /* PURGE ARCHIVE LOGS BEFORE 'data' */
-    it= lex->purge_before_val;
+    it= lex->purge_value_list.head();
     if ((!it->fixed && it->fix_fields(lex->thd, &it)) ||
         it->check_cols(1))
     {

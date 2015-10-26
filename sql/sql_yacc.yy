@@ -12544,7 +12544,8 @@ purge_options:
         | CHANGED_PAGE_BITMAPS_SYM BEFORE_SYM real_ulonglong_num
           {
             LEX *lex= Lex;
-            lex->purge_before_val= new Item_uint($3);
+            lex->purge_value_list.empty();
+            lex->purge_value_list.push_front(new Item_uint($3));
             lex->type= PURGE_BITMAPS_TO_LSN;
           }
         |  ARCHIVED_SYM LOGS_SYM purge_archive_option
@@ -12560,7 +12561,8 @@ purge_option:
             ITEMIZE($2, &$2);
 
             LEX *lex= Lex;
-            lex->purge_before_val= $2;
+            lex->purge_value_list.empty();
+            lex->purge_value_list.push_front($2);
             lex->sql_command= SQLCOM_PURGE_BEFORE;
           }
         ;
@@ -12576,7 +12578,8 @@ purge_archive_option:
             ITEMIZE($2, &$2);
 
             LEX *lex= Lex;
-            lex->purge_before_val= $2;
+            lex->purge_value_list.empty();
+            lex->purge_value_list.push_front($2);
             lex->sql_command= SQLCOM_PURGE_ARCHIVE_BEFORE;
           }
         ;

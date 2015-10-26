@@ -549,7 +549,6 @@ void LEX::reset()
   binlog_need_explicit_defaults_ts= false;
 
   donor_transaction_id= NULL;
-  purge_before_val= NULL;
 }
 
 
