@@ -339,10 +339,10 @@ log_reserve_and_open(
 	ulint	len)
 {
 	ulint	len_upper_limit;
-#ifdef UNIV_LOG_ARCHIVE
+#if 0 // TODO laurynas: log archiving broken by WL#8845
 	ulint	archived_lsn_age;
 	ulint	dummy;
-#endif /* UNIV_LOG_ARCHIVE */
+#endif
 	ulint	count			= 0;
 	ulint	tcount			= 0;
 
@@ -385,6 +385,7 @@ loop:
 		goto loop;
 	}
 
+#if 0 // TODO laurynas: log archiving broken by WL#8845
 	if (log_sys->archiving_state != LOG_ARCH_OFF) {
 
 		archived_lsn_age = log_sys->lsn - log_sys->archived_lsn;
@@ -406,6 +407,7 @@ loop:
 			goto loop;
 		}
 	}
+#endif
 
 	if (log_check_tracking_margin(len_upper_limit) &&
 		(++tcount + count < 50)) {
@@ -1061,7 +1063,7 @@ log_io_complete(
 /*============*/
 	log_group_t*	group)	/*!< in: log group or a dummy pointer */
 {
-
+#if 0 // TODO laurynas: log archiving broken by WL#8845
 	if ((byte*) group == &log_archive_io) {
 		/* It was an archive write */
 
@@ -1069,6 +1071,7 @@ log_io_complete(
 
 		return;
 	}
+#endif
 
 	if ((ulint) group & 0x1UL) {
 		/* It was a checkpoint write */
