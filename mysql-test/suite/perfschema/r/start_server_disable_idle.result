@@ -105,7 +105,7 @@ select * from performance_schema.session_status;
 select * from performance_schema.global_variables;
 select * from performance_schema.variables_by_thread;
 select * from performance_schema.session_variables;
-show global variables like "performance_schema%" where
+show global variables where
 `Variable_name` != "performance_schema_max_statement_classes" and
 `Variable_name` like "performance_schema%";
 Variable_name	Value

@@ -1,6 +1,5 @@
 SET @old_innodb_file_format=@@innodb_file_format;
 SET @old_innodb_file_per_table=@@innodb_file_per_table;
-SET GLOBAL innodb_file_format='Barracuda';
 SET GLOBAL innodb_file_per_table=ON;
 CREATE TABLE `test1` (
 `a` int primary key auto_increment,
@@ -28,5 +27,4 @@ call insert_many(100000);
 DROP PROCEDURE insert_many;
 ALTER TABLE test1 ENGINE=MyISAM;
 DROP TABLE test1;
-SET GLOBAL innodb_file_format=@old_innodb_file_format;
 SET GLOBAL innodb_file_per_table=@old_innodb_file_per_table;

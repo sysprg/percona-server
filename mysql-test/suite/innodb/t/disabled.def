@@ -16,3 +16,4 @@ percona_innodb_log_archive_func : laurynas disabled until log archiving is fixed
 percona_bug_1133926 : laurynas disabled until log archiving is fixed in 5.7
 percona_bug1155475 : laurynas disabled until log archiving is fixed in 5.7
 percona_purge_archived_logs_to : laurynas disabled until log archiving is fixed in 5.7
+percona_bug_1326379 : laurynas disabled until log archiving is fixed in 5.7
