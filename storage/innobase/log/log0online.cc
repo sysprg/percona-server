@@ -381,26 +381,18 @@ log_online_read_last_tracked_lsn(void)
 }
 
 /****************************************************************//**
-Safely write the log_sys->tracked_lsn value.  Uses atomic operations
-if available, otherwise this field is protected with the log system
-mutex.  The reader counterpart function is log_get_tracked_lsn() in
-log0log.c. */
+Safely write the log_sys->tracked_lsn value.  The reader counterpart function
+is log_get_tracked_lsn() in log0log.ic. */
 UNIV_INLINE
 void
 log_set_tracked_lsn(
 /*================*/
 	lsn_t	tracked_lsn)	/*!<in: new value */
 {
-#ifdef HAVE_ATOMIC_BUILTINS_64
 	/* Single writer, no data race here */
 	lsn_t old_value = os_atomic_increment_uint64(&log_sys->tracked_lsn, 0);
 	(void) os_atomic_increment_uint64(&log_sys->tracked_lsn,
 					  tracked_lsn - old_value);
-#else
-	log_mutex_enter();
-	log_sys->tracked_lsn = tracked_lsn;
-	log_mutex_exit();
-#endif
 }
 
 /*********************************************************************//**
