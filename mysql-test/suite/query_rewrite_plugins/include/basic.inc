@@ -11,6 +11,7 @@ VALUES ( 'SELECT ?', 'SELECT "literal"' );
 
 SELECT * FROM query_rewrite.rewrite_rules;
 CALL query_rewrite.flush_rewrite_rules();
+--replace_column 7 ?
 SELECT * FROM query_rewrite.rewrite_rules;
 
 SELECT NULL;
@@ -42,6 +43,7 @@ VALUES ( 'SELECT * FROM test.t1 WHERE ( a = ? AND TRUE ) OR b = ?',
 
 SELECT * FROM query_rewrite.rewrite_rules;
 CALL query_rewrite.flush_rewrite_rules();
+--replace_column 7 ?
 SELECT * FROM query_rewrite.rewrite_rules;
 
 --echo # Check a query that doesn't have a rewrite rule doesn't get rewritten.
@@ -98,6 +100,7 @@ VALUES ( 'SELECT 1, ?', 'SELECT "rewritten w/rule 1"' ),
 
 SELECT * FROM query_rewrite.rewrite_rules;
 CALL query_rewrite.flush_rewrite_rules();
+--replace_column 7 ?
 SELECT * FROM query_rewrite.rewrite_rules;
 
 SELECT 1, 1;
