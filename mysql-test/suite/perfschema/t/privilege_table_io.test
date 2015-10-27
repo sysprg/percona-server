@@ -38,7 +38,7 @@ insert into test.marker set a = 1;
 insert into test.marker set a = 1;
 show global variables where
     `Variable_name` != "performance_schema_max_statement_classes" and
-    `Variable_name` like "performance_schema%";show status like "performance_schema%";
+    `Variable_name` like "performance_schema%";
 show global status like "performance_schema%";
 # Stop recording events + pull results
 let $schema_to_dump= "test", "mysql";

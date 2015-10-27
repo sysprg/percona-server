@@ -1848,6 +1848,8 @@ length(CAST(b AS CHAR))
 20
 DROP TABLE ubig;
 grant usage on *.* to mysqltest_1@localhost;
+Warnings:
+Warning	1287	Using GRANT for creating new user is deprecated and will be removed in future release. Create new user with CREATE USER statement.
 select 1 from information_schema.tables where table_schema=repeat('a', 2000);
 1
 drop user mysqltest_1@localhost;
