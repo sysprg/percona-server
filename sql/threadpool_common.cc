@@ -55,8 +55,7 @@ extern bool do_command(THD*);
 
   1. Save worker thread context.
   2. Change TLS variables to connection specific ones using thread_attach(THD*).
-     This function does some additional work , e.g setting up 
-     thread_stack/thread_ends_here pointers.
+     This function does some additional work.
   3. Process query
   4. Restore worker thread context.
 
@@ -264,12 +263,6 @@ void threadpool_remove_connection(THD *thd)
 
   Global_THD_manager::get_instance()->remove_thd(thd);
   delete thd;
-
-  /*
-    Free resources associated with this connection: 
-    mysys thread_var and PSI thread.
-  */
-  my_thread_end();
 
   worker_context.restore();
 }
