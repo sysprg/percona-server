@@ -1,4 +1,4 @@
-DROP TABLE IF EXISTS t1;
+SET @saved_innodb_file_per_table=@@GLOBAL.innodb_file_per_table;
 SET GLOBAL innodb_file_per_table=ON;
 CREATE TABLE t1 (a INT PRIMARY KEY) ENGINE=InnoDB;
 Empty table:
@@ -10,7 +10,7 @@ The size of t1 tablespace file in bytes: 344064
 Rows inserted: 15000
 The size of t1 tablespace file in bytes: 458752
 Rows inserted: 20000
-The size of t1 tablespace file in bytes: 573440
+The size of t1 tablespace file in bytes: 589824
 Rows inserted: 25000
 The size of t1 tablespace file in bytes: 9437184
 DROP TABLE t1;
@@ -18,31 +18,32 @@ CREATE TABLE t2 (a INT PRIMARY KEY, b BLOB) ENGINE=InnoDB;
 Empty table:
 The size of t2 tablespace file in bytes: 98304
 Rows inserted: 4
-The size of t2 tablespace file in bytes: 196608
+The size of t2 tablespace file in bytes: 3145728
 Rows inserted: 8
-The size of t2 tablespace file in bytes: 327680
+The size of t2 tablespace file in bytes: 3145728
 Rows inserted: 12
-The size of t2 tablespace file in bytes: 458752
+The size of t2 tablespace file in bytes: 3145728
 Rows inserted: 16
-The size of t2 tablespace file in bytes: 589824
+The size of t2 tablespace file in bytes: 3145728
 Rows inserted: 20
-The size of t2 tablespace file in bytes: 9437184
+The size of t2 tablespace file in bytes: 4194304
 DROP TABLE t2;
 SET GLOBAL innodb_file_format='barracuda';
+Warnings:
+Warning	131	Using innodb_file_format is deprecated and the parameter may be removed in future releases. See http://dev.mysql.com/doc/refman/5.7/en/innodb-file-format.html
 CREATE TABLE t3 (a INT PRIMARY KEY, b BLOB)
 ENGINE=InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=1;
 Empty table:
 The size of t3 tablespace file in bytes: 65536
 Rows inserted: 8
-The size of t3 tablespace file in bytes: 65536
+The size of t3 tablespace file in bytes: 5242880
 Rows inserted: 16
-The size of t3 tablespace file in bytes: 65536
+The size of t3 tablespace file in bytes: 5242880
 Rows inserted: 24
-The size of t3 tablespace file in bytes: 65536
+The size of t3 tablespace file in bytes: 5242880
 Rows inserted: 32
-The size of t3 tablespace file in bytes: 2097152
+The size of t3 tablespace file in bytes: 5242880
 Rows inserted: 40
-The size of t3 tablespace file in bytes: 2097152
+The size of t3 tablespace file in bytes: 5242880
 DROP TABLE t3;
-SET GLOBAL innodb_file_per_table=default;
-SET GLOBAL innodb_file_format=default;
+SET GLOBAL innodb_file_per_table=@saved_innodb_file_per_table;

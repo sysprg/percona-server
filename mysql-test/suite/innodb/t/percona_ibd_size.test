@@ -6,12 +6,9 @@
 #
 --source include/have_innodb.inc
 
---disable_warnings
-DROP TABLE IF EXISTS t1;
---enable_warnings
-
 let MYSQLD_DATADIR=`SELECT @@datadir`;
 
+SET @saved_innodb_file_per_table=@@GLOBAL.innodb_file_per_table;
 SET GLOBAL innodb_file_per_table=ON;
 
 #
@@ -104,5 +101,4 @@ COMMIT;
 
 DROP TABLE t3;
 
-SET GLOBAL innodb_file_per_table=default;
-SET GLOBAL innodb_file_format=default;
+SET GLOBAL innodb_file_per_table=@saved_innodb_file_per_table;
