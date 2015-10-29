@@ -118,7 +118,7 @@ SET DEBUG_SYNC="now WAIT_FOR changed_pages_query_ready";
 # Remove the first bitmap file in the range after it has been enumerated 
 remove_files_wildcard $MYSQLD_DATADIR ib_modified_log_1_*.xdb;
 
-call mtr.add_suppression("InnoDB: Warning: inconsistent bitmap file directory");
+call mtr.add_suppression("Inconsistent bitmap file directory");
 
 SET DEBUG_SYNC="now SIGNAL finish_changed_pages_query";
 

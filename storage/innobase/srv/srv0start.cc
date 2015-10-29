@@ -2392,8 +2392,21 @@ files_checked:
 
 			/* If log tracking is enabled, make it catch up with
 			the old logs synchronously. */
-			if (srv_track_changed_pages)
-				log_online_follow_redo_log();
+			bool saved_srv_track_changed_pages
+				= srv_track_changed_pages;
+			if (srv_track_changed_pages) {
+				log_mutex_enter();
+				lsn_t checkpoint_lsn
+					= log_sys->last_checkpoint_lsn;
+				log_mutex_exit();
+				ib::info()
+					<< "Tracking redo log synchronously "
+					"until " << checkpoint_lsn;
+				if (!log_online_follow_redo_log()) {
+					return(srv_init_abort(DB_ERROR));
+				}
+				srv_track_changed_pages = false;
+			}
 
 			/* Close and free the redo log files, so that
 			we can replace them. */
@@ -2417,6 +2430,22 @@ files_checked:
 				return(srv_init_abort(err));
 			}
 
+			if (saved_srv_track_changed_pages) {
+				log_mutex_enter();
+				lsn_t checkpoint_lsn
+					= log_sys->last_checkpoint_lsn;
+				log_sys->last_checkpoint_lsn = log_sys->lsn;
+				log_mutex_exit();
+				ib::info()
+					<< "Tracking redo log synchronously "
+					"until " << checkpoint_lsn;
+				srv_track_changed_pages = true;
+				if (!log_online_follow_redo_log()) {
+					return(srv_init_abort(DB_ERROR));
+				}
+				srv_track_changed_pages = false;
+			}
+
 			/* create_log_files() can increase system lsn that is
 			why FIL_PAGE_FILE_FLUSH_LSN have to be updated */
 			flushed_lsn = log_get_lsn();
@@ -2426,6 +2455,10 @@ files_checked:
 			create_log_files_rename(
 				logfilename, dirnamelen, log_get_lsn(),
 				logfile0);
+
+			if (saved_srv_track_changed_pages) {
+				srv_track_changed_pages = true;
+			}
 		}
 
 		recv_recovery_rollback_active();

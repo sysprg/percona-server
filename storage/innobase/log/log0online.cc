@@ -101,7 +101,8 @@ static const char* bmp_file_name_template = "%s%s%lu_%llu.xdb";
 
 /* On server startup with empty database srv_start_lsn == 0, in
 which case the first LSN of actual log records will be this. */
-#define MIN_TRACKED_LSN ((LOG_START_LSN) + (LOG_BLOCK_HDR_SIZE))
+#define MIN_TRACKED_LSN (LOG_START_LSN + OS_FILE_LOG_BLOCK_SIZE + \
+			 LOG_BLOCK_HDR_SIZE)
 
 /* Tests if num bit of bitmap is set */
 #define IS_BIT_SET(bitmap, num) \
@@ -402,6 +403,7 @@ capacity.
 
 @return true if the missing interval can be tracked or if there's no missing
 data.  */
+__attribute__((warn_unused_result))
 static
 bool
 log_online_can_track_missing(
@@ -890,20 +892,35 @@ log_online_parse_redo_log(void)
 /*********************************************************************//**
 Check the log block checksum.
 @return true if the log block checksum is OK, false otherwise.  */
+__attribute__((warn_unused_result))
 static
 bool
 log_online_is_valid_log_seg(
 /*========================*/
-	const byte* log_block)	/*!< in: read log data */
+	const byte* log_block,	/*!< in: read log data */
+	lsn_t	    log_block_lsn)/*!< in: expected LSN of the log block */
 {
 	bool checksum_is_ok = log_block_checksum_is_ok(log_block);
 
 	if (!checksum_is_ok) {
 
-		ib::error() << "Log block checksum mismatch: expected "
+		// TODO laurynas: all zero check is a hack to paper over
+		// unwritten log data read! Should be removed
+		/* All zeros? */
+		byte zero_block[OS_FILE_LOG_BLOCK_SIZE] = { 0 };
+		if (!memcmp(log_block, zero_block, OS_FILE_LOG_BLOCK_SIZE))
+			return true;
+
+		ulint no = log_block_get_hdr_no(log_block);
+		ulint expected_no = log_block_convert_lsn_to_no(log_block_lsn);
+		ib::error() << "Log block checksum mismatch: LSN "
+			    << log_block_lsn << ", expected "
 			    << log_block_get_checksum(log_block) << ", "
 			    << "calculated checksum "
-			    << log_block_calc_checksum(log_block);
+			    << log_block_calc_checksum(log_block) << ", "
+			    << "stored log block n:o " << no << ", "
+			    << "expected log block n:o " << expected_no;
+		ut_error;
 	}
 
 	return checksum_is_ok;
@@ -969,8 +986,9 @@ log_online_parse_redo_log_block(
 
 /*********************************************************************//**
 Read and parse one redo log chunk and updates the modified page bitmap. */
+__attribute__((warn_unused_result))
 static
-void
+bool
 log_online_follow_log_seg(
 /*======================*/
 	log_group_t*	group,		       /*!< in: the log group to use */
@@ -985,6 +1003,11 @@ log_online_follow_log_seg(
 
 	ut_ad(mutex_own(&log_bmp_sys->mutex));
 
+	// TODO laurynas: assert below should hold after the server startup
+#if 0
+	ut_ad(ut_uint64_align_down(block_start_lsn, OS_FILE_LOG_BLOCK_SIZE)
+	      >= ut_uint64_align_down(srv_start_lsn, OS_FILE_LOG_BLOCK_SIZE));
+#endif
 	log_mutex_enter();
 	log_group_read_log_seg(LOG_RECOVER, log_bmp_sys->read_buf,
 			       group, block_start_lsn, block_end_lsn, true);
@@ -999,8 +1022,8 @@ log_online_follow_log_seg(
 		data many times */
 		ulint skip_already_parsed_len = 0;
 
-		if (!log_online_is_valid_log_seg(log_block)) {
-			break;
+		if (!log_online_is_valid_log_seg(log_block, block_start_lsn)) {
+			return false;
 		}
 
 		if ((block_start_lsn <= log_bmp_sys->next_parse_lsn)
@@ -1030,14 +1053,15 @@ log_online_follow_log_seg(
 		block_start_lsn += OS_FILE_LOG_BLOCK_SIZE;
 	}
 
-	return;
+	return true;
 }
 
 /*********************************************************************//**
 Read and parse the redo log in a given group in FOLLOW_SCAN_SIZE-sized
 chunks and updates the modified page bitmap. */
+__attribute__((warn_unused_result))
 static
-void
+bool
 log_online_follow_log_group(
 /*========================*/
 	log_group_t*	group,		/*!< in: the log group to use */
@@ -1055,8 +1079,9 @@ log_online_follow_log_group(
 	do {
 		block_end_lsn = block_start_lsn + FOLLOW_SCAN_SIZE;
 
-		log_online_follow_log_seg(group, block_start_lsn,
-					  block_end_lsn);
+		if (!log_online_follow_log_seg(group, block_start_lsn,
+					       block_end_lsn))
+			return false;
 
 		/* Next parse LSN can become higher than the last read LSN
 		only in the case when the read LSN falls right on the block
@@ -1072,6 +1097,7 @@ log_online_follow_log_group(
 
 	/* Assert that the last read log record is a full one */
 	ut_a(log_bmp_sys->parse_buf_end == log_bmp_sys->parse_buf);
+	return true;
 }
 
 /*********************************************************************//**
@@ -1230,7 +1256,10 @@ log_online_follow_redo_log(void)
 						    OS_FILE_LOG_BLOCK_SIZE);
 
 	while (group) {
-		log_online_follow_log_group(group, contiguous_start_lsn);
+		result = log_online_follow_log_group(group,
+						     contiguous_start_lsn);
+		if (!result)
+			goto end;
 		group = UT_LIST_GET_NEXT(log_groups, group);
 	}
 
@@ -1242,6 +1271,7 @@ log_online_follow_redo_log(void)
 	log_bmp_sys->start_lsn = log_bmp_sys->end_lsn;
 	log_set_tracked_lsn(log_bmp_sys->start_lsn);
 
+end:
 	mutex_exit(&log_bmp_sys->mutex);
 	return result;
 }
