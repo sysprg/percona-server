@@ -403,7 +403,7 @@ while ($ddl_cases >= 1)
     # 4: INSERT
     # 5: COMMIT
     #
-    # In RBR the transaction is not committed either and the statement is not
+    # In RBR and MIXED the transaction is not committed either and the statement is not
     # written to the binary log:
     #
     # 1: GTID
@@ -422,10 +422,6 @@ while ($ddl_cases >= 1)
     if (`select @@binlog_format = 'STATEMENT'` )
     {
       let $commit_event_row_number= 5;
-    }
-    if (`select @@binlog_format = 'MIXED'` )
-    {
-      let $commit_event_row_number= 3;
     }
     #
     # In NDB (RBR mode), the commit event is the sixth event
@@ -468,24 +464,6 @@ while ($ddl_cases >= 1)
   {
     let $cmd= ALTER TABLE tt_xx ADD COLUMN (b int);
     #
-    # In MIXED mode, the changes are logged as rows and we have what follows:
-    #
-    # 1: GTID
-    # 2: BEGIN
-    # 3: TABLE MAP EVENT
-    # 4: ROW EVENT
-    # 5: COMMIT
-    # 6: GTID
-    # 7: DDL EVENT which triggered the previous commmit.
-    #
-    if (`select @@binlog_format = 'MIXED'`)
-    {
-      # Since this alter is done on a temp table in MIXED, it will not be
-      # binlogged at all, so explicitly commit.
-      let $in_temporary= yes;
-      let $commit_event_row_number= 5;
-    }
-    #
     # In NDB (RBR and MIXED modes), the commit event is the 7th event
     # in the binary log:
     #
@@ -505,23 +483,6 @@ while ($ddl_cases >= 1)
   if ($ddl_cases == 9)
   {
     let $cmd= ALTER TABLE tt_xx RENAME new_tt_xx;
-    #
-    # In MIXED mode, the changes are logged as rows and we have what follows:
-    #
-    # 1: GTID
-    # 2: BEGIN
-    # 3: TABLE MAP EVENT
-    # 4: ROW EVENT
-    # 5: COMMIT
-    # 6: DDL EVENT which triggered the previous commmit.
-    #
-    if (`select @@binlog_format = 'MIXED'`)
-    {
-      # Since this alter is done on a temp table in MIXED, it will not be
-      # binlogged at all, so explicitly commit.
-      let $in_temporary= yes;
-      let $commit_event_row_number= 5;
-    }
     #
     # In NDB (RBR and MIXED modes), the commit event is the sixth event
     # in the binary log:
@@ -564,7 +525,7 @@ while ($ddl_cases >= 1)
     # 4: ROW EVENT
     # 5: COMMIT
     #
-    if (`select @@binlog_format = 'STATEMENT'`)
+    if (`select @@binlog_format = 'STATEMENT' || @@binlog_format = 'MIXED'`)
     {
       let $commit_event_row_number= 5;
     }
@@ -580,17 +541,6 @@ while ($ddl_cases >= 1)
     if (`select @@binlog_format = 'ROW'`)
     {
       let $commit_event_row_number= 6;
-    }
-    # In MIXED mode, the changes are logged as rows and we have what follows:
-    #
-    # 1: BEGIN
-    # 2: ROW EVENT
-    # 3: DROP TEMPORARY table IF EXISTS
-    # 4: COMMIT
-    #
-    if (`select @@binlog_format = 'MIXED'`)
-    {
-      let $commit_event_row_number= 4;
     }
 
     #
