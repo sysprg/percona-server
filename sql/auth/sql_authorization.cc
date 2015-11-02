@@ -1333,6 +1333,8 @@ int mysql_table_grant(THD *thd, TABLE_LIST *table_list,
   {
     int error;
     GRANT_TABLE *grant_table;
+    DBUG_ASSERT(!acl_is_utility_user(tmp_Str->user.str,
+                                     tmp_Str->host.str, NULL));
 
     if (!(Str= get_current_user(thd, tmp_Str)))
     {
@@ -1910,6 +1912,14 @@ bool mysql_grant(THD *thd, const char *db, List <LEX_USER> &list,
   bool rollback_whole_statement= false;
   while ((tmp_Str = str_list++))
   {
+    if (acl_is_utility_user(tmp_Str->user.str, tmp_Str->host.str, NULL))
+    {
+      my_error(ER_NONEXISTING_GRANT, MYF(0),
+               tmp_Str->user.str, tmp_Str->host.str);
+      result= TRUE;
+      continue;
+    }
+
     if (!(Str= get_current_user(thd, tmp_Str)))
     {
       result= TRUE;

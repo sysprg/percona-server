@@ -381,6 +381,8 @@ bool set_and_validate_user_attributes(THD *thd,
   const char *inbuf;
   char *password= NULL;
 
+  DBUG_ASSERT(!acl_is_utility_user(Str->user.str, Str->host.str, NULL));
+
   what_to_set= 0;
   /* update plugin,auth str attributes */
   if (Str->uses_identified_by_clause ||
@@ -1292,6 +1294,13 @@ bool mysql_create_user(THD *thd, List <LEX_USER> &list, bool if_not_exists)
 
   while ((tmp_user_name= user_list++))
   {
+    if (acl_is_utility_user(tmp_user_name->user.str, tmp_user_name->host.str,
+                            NULL))
+    {
+      append_user(thd, &wrong_users, tmp_user_name, wrong_users.length() > 0);
+      result= true;
+      continue;
+    }
     /*
       If tmp_user_name.user.str is == NULL then
       user_name := tmp_user_name.
@@ -1449,6 +1458,13 @@ bool mysql_drop_user(THD *thd, List <LEX_USER> &list, bool if_exists)
 
   while ((tmp_user_name= user_list++))
   {
+    if (acl_is_utility_user(tmp_user_name->user.str, tmp_user_name->host.str,
+                            NULL))
+    {
+      append_user(thd, &wrong_users, tmp_user_name, wrong_users.length() > 0);
+      result= true;
+      continue;
+    }
     if (!(user_name= get_current_user(thd, tmp_user_name)))
     {
       result= TRUE;
