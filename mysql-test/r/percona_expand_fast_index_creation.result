@@ -111,7 +111,7 @@ key	NULL
 key_len	NULL
 ref	NULL
 rows	16
-filtered	6.25
+filtered	10.00
 Extra	Using where; Using join buffer (Block Nested Loop)
 Warnings:
 Level	Note
@@ -148,7 +148,7 @@ key	NULL
 key_len	NULL
 ref	NULL
 rows	16
-filtered	6.25
+filtered	10.00
 Extra	Using where; Using join buffer (Block Nested Loop)
 Warnings:
 Level	Note
