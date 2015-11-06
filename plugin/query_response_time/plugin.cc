@@ -180,7 +180,7 @@ static int query_response_time_audit_notify(MYSQL_THD thd,
 static struct st_mysql_audit query_response_time_audit_descriptor=
 {
   MYSQL_AUDIT_INTERFACE_VERSION, NULL, query_response_time_audit_notify,
-  { MYSQL_AUDIT_GENERAL_CLASS }
+  { MYSQL_AUDIT_GENERAL_ALL, 0, 0, 0, 0, 0, 0, 0, 0, 0 }
 };
 
 
