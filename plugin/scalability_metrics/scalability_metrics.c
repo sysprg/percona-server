@@ -422,8 +422,9 @@ static struct st_mysql_audit scalability_metrics_descriptor=
   MYSQL_AUDIT_INTERFACE_VERSION,                /* interface version    */
   NULL,                                         /* release_thd function */
   sm_notify,                                    /* notify function      */
-  { MYSQL_AUDIT_GENERAL_CLASS,
-    MYSQL_AUDIT_CONNECTION_CLASS }              /* class mask           */
+  { MYSQL_AUDIT_GENERAL_ALL,
+    MYSQL_AUDIT_CONNECTION_ALL,
+    0, 0, 0, 0, 0, 0, 0, 0 }                    /* class mask           */
 };
 
 /*
