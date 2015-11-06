@@ -673,15 +673,16 @@ int audit_log_plugin_deinit(void *arg __attribute__((unused)))
 
 
 static
-int is_event_class_allowed_by_policy(unsigned int class,
+int is_event_class_allowed_by_policy(mysql_event_class_t class,
                                      enum audit_log_policy_t policy)
 {
   static unsigned int class_mask[]=
   {
-    MYSQL_AUDIT_GENERAL_CLASS | MYSQL_AUDIT_CONNECTION_CLASS, /* ALL */
+    /* ALL */
+    (1 << MYSQL_AUDIT_GENERAL_CLASS) | (1 << MYSQL_AUDIT_CONNECTION_CLASS),
     0,                                                        /* NONE */
-    MYSQL_AUDIT_CONNECTION_CLASS,                             /* LOGINS */
-    MYSQL_AUDIT_GENERAL_CLASS,                                /* QUERIES */
+    (1 << MYSQL_AUDIT_CONNECTION_CLASS),                      /* LOGINS */
+    (1 << MYSQL_AUDIT_GENERAL_CLASS),                         /* QUERIES */
   };
 
   return (class_mask[policy] & (1 << class)) != 0;
@@ -941,8 +942,9 @@ static struct st_mysql_audit audit_log_descriptor=
   MYSQL_AUDIT_INTERFACE_VERSION,                /* interface version    */
   NULL,                                         /* release_thd function */
   audit_log_notify,                             /* notify function      */
-  { MYSQL_AUDIT_GENERAL_CLASS |
-    MYSQL_AUDIT_CONNECTION_CLASS }              /* class mask           */
+  { MYSQL_AUDIT_GENERAL_ALL,
+    MYSQL_AUDIT_CONNECTION_ALL,
+    0, 0, 0, 0, 0, 0, 0, 0 }                    /* class mask           */
 };
 
 /*
