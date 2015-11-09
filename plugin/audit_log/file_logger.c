@@ -118,14 +118,14 @@ LOGGER_HANDLE *logger_open(const char *path,
 
   if ((new_log.file= my_open(new_log.path, LOG_FLAGS, 0666)) < 0)
   {
-    errno= my_errno;
+    errno= my_errno();
     /* Check errno for the cause */
     return 0;
   }
 
   if (my_fstat(new_log.file, &stat_arg, MYF(0)))
   {
-    errno= my_errno;
+    errno= my_errno();
     my_close(new_log.file, MYF(0));
     new_log.file= -1;
     return 0;
@@ -162,7 +162,7 @@ int logger_close(LOGGER_HANDLE *log, logger_epilog_func_t footer)
   flogger_mutex_destroy(log);
   my_free(log);
   if ((result= my_close(file, MYF(0))))
-    errno= my_errno;
+    errno= my_errno();
   return result;
 }
 
@@ -182,20 +182,20 @@ int logger_reopen(LOGGER_HANDLE *log, logger_prolog_func_t header,
 
   if ((result= my_close(log->file, MYF(0))))
   {
-    errno= my_errno;
+    errno= my_errno();
     goto error;
   }
 
   if ((log->file= my_open(log->path, LOG_FLAGS, MYF(0))) < 0)
   {
-    errno= my_errno;
+    errno= my_errno();
     result= 1;
     goto error;
   }
 
   if ((result= my_fstat(log->file, &stat_arg, MYF(0))))
   {
-    errno= my_errno;
+    errno= my_errno();
     goto error;
   }
 
@@ -248,7 +248,7 @@ static int do_rotate(LOGGER_HANDLE *log)
   result= my_rename(namebuf, logname(log, log->path, FN_REFLEN, 1), MYF(0));
   log->file= my_open(namebuf, LOG_FLAGS, MYF(0));
 exit:
-  errno= my_errno;
+  errno= my_errno();
   return log->file < 0 || result;
 }
 
@@ -267,7 +267,7 @@ int logger_vprintf(LOGGER_HANDLE *log, const char* fmt, va_list ap)
          do_rotate(log)))
     {
       result= -1;
-      errno= my_errno;
+      errno= my_errno();
       goto exit; /* Log rotation needed but failed */
     }
 
@@ -300,7 +300,7 @@ int logger_write(LOGGER_HANDLE *log, const char *buffer, size_t size,
          do_rotate(log)))
     {
       result= -1;
-      errno= my_errno;
+      errno= my_errno();
       goto exit; /* Log rotation needed but failed */
     }
   }
