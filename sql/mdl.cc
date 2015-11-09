@@ -1239,7 +1239,7 @@ MDL_lock* MDL_map::find(LF_PINS *pins, const MDL_key *mdl_key, bool *pinned)
       lock= m_binlog_lock;
       break;
     default:
-      DBUG_ASSERT(0);
+      MY_ASSERT_UNREACHABLE();
     }
 
     *pinned= false;
