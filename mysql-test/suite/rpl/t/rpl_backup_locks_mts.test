@@ -2,7 +2,6 @@
 # MTS tests for binlog backup locks
 ###########################################################################
 
---let $rpl_skip_reset_master_and_slave=1
 --source include/master-slave.inc
 
 --connection master

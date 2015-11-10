@@ -3,7 +3,6 @@
 #               binary log disabled
 ###############################################################################
 
---let $rpl_skip_reset_master_and_slave=1
 --source include/master-slave.inc
 
 CREATE TABLE t1 (
