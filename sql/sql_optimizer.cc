@@ -2160,6 +2160,8 @@ test_if_skip_sort_order(JOIN_TAB *tab, ORDER *order, ha_rows select_limit,
       */
       DBUG_ASSERT(tab->quick() == save_quick || tab->quick() == NULL);
       tab->set_quick(qck);
+      if (qck)
+        tab->set_type(calc_join_type(qck->get_type()));
     }
     order_direction= best_key_direction;
     /*
