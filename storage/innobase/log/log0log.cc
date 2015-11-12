@@ -1738,7 +1738,9 @@ log_group_checkpoint(
 /*=================*/
 	log_group_t*	group)	/*!< in: log group */
 {
+#if 0 // TODO laurynas log archiving broken by WL#8845
 	lsn_t		archived_lsn;
+#endif
 	// ulint	fold; TODO laurynas
 	// ulint	i; TODO laurynas
 	lsn_t		lsn_offset;
@@ -1769,13 +1771,13 @@ log_group_checkpoint(
 
 	log_block_set_checksum(buf, log_block_calc_checksum_crc32(buf));
 
+#if 0 // TODO laurynas log archiving broken by WL#8845
 	if (log_sys->archiving_state == LOG_ARCH_OFF) {
 		archived_lsn = LSN_MAX;
 	} else {
 		archived_lsn = log_sys->archived_lsn;
 	}
 
-#if 0 // TODO laurynas log archiving broken by WL#8845
 	mach_write_to_8(buf + LOG_CHECKPOINT_ARCHIVED_LSN, archived_lsn);
 #endif
 

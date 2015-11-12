@@ -259,35 +259,6 @@ hash_table_t*
 btr_get_search_table(const dict_index_t* index);
 
 /********************************************************************//**
-Returns the adaptive hash index table for a given index key.
-@return the adaptive hash index table for a given index key */
-UNIV_INLINE
-hash_table_t*
-btr_search_get_hash_table(
-/*======================*/
-	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((pure,warn_unused_result));
-
-/********************************************************************//**
-Returns the adaptive hash index latch for a given index key.
-@return the adaptive hash index latch for a given index key */
-UNIV_INLINE
-rw_lock_t*
-btr_search_get_latch(
-/*=================*/
-	const dict_index_t*	index)	/*!< in: index */
-	__attribute__((pure,warn_unused_result));
-
-/*********************************************************************//**
-Returns the AHI partition number corresponding to a given index ID. */
-UNIV_INLINE
-ulint
-btr_search_get_key(
-/*===============*/
-	index_id_t	index_id)	/*!< in: index ID */
-	__attribute__((pure,warn_unused_result));
-
-/********************************************************************//**
 Latches all adaptive hash index latches in exclusive mode.  */
 UNIV_INLINE
 void
