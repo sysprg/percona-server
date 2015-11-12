@@ -73,7 +73,6 @@ DROP TABLE t2;
 #
 # Table 3: compressed BLOB
 #
-SET GLOBAL innodb_file_format='barracuda';
 CREATE TABLE t3 (a INT PRIMARY KEY, b BLOB)
        ENGINE=InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=1;
 

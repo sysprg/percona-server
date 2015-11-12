@@ -28,9 +28,6 @@ The size of t2 tablespace file in bytes: 3145728
 Rows inserted: 20
 The size of t2 tablespace file in bytes: 4194304
 DROP TABLE t2;
-SET GLOBAL innodb_file_format='barracuda';
-Warnings:
-Warning	131	Using innodb_file_format is deprecated and the parameter may be removed in future releases. See http://dev.mysql.com/doc/refman/5.7/en/innodb-file-format.html
 CREATE TABLE t3 (a INT PRIMARY KEY, b BLOB)
 ENGINE=InnoDB ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=1;
 Empty table:
