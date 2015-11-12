@@ -268,7 +268,7 @@ IF(NOT DISABLE_SHARED)
     ENDIF()
     # Name of shared library is perconaserverclient on Unix
     SET_TARGET_PROPERTIES(libmysql PROPERTIES 
-      OUTPUT_NAME perconaserverclient 
+      OUTPUT_NAME perconaserverclient
       VERSION "${OS_SHARED_LIB_VERSION}" 
       SOVERSION "${SHARED_LIB_MAJOR_VERSION}")
     CONFIGURE_FILE(libmysql.ver.in ${CMAKE_CURRENT_BINARY_DIR}/libmysql.ver)

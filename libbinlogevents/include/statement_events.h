@@ -480,7 +480,7 @@ public:
       a TIMESTAMP column, that are dependent on that feature.
       For pre-WL6292 master's the associated with this code value is zero.
     */
-    Q_EXPLICIT_DEFAULTS_FOR_TIMESTAMP,
+    Q_EXPLICIT_DEFAULTS_FOR_TIMESTAMP
   };
   const char* query;
   const char* db;

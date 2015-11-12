@@ -11,7 +11,6 @@
 # [--let $extra_debug_info= some text]
 # [--let $extra_debug_eval= expression parsable by include/eval.inc]
 # [--let $rpl_debug= 1]
-# [--let $innodb_debug= 1]
 # --source include/assert.inc
 #
 # Parameters:
@@ -64,10 +63,6 @@ if (!$eval_result)
   if ($show_rpl_debug_info)
   {
     --source include/show_rpl_debug_info.inc
-  }
-  if ($innodb_debug)
-  {
-    SHOW ENGINE INNODB STATUS;
   }
   --echo Assertion text: '$assert_text'
   --echo Assertion condition: '$assert_cond'
