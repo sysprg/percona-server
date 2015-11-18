@@ -28,6 +28,8 @@ TAG=''
 CMAKE_BUILD_TYPE=''
 COMMON_FLAGS=''
 #
+TOKUDB_BACKUP_VERSION='@@TOKUDB_BACKUP_VERSION@@'
+#
 # Some programs that may be overriden
 TAR=${TAR:-tar}
 
@@ -154,15 +156,15 @@ PRODUCT="Percona-Server-$MYSQL_VERSION-$PERCONA_SERVER_VERSION"
 # Build information
 if test -e "$SOURCEDIR/Docs/INFO_SRC"
 then
-    REVISION="$(cd "$SOURCEDIR"; grep '^revno: ' Docs/INFO_SRC |sed -e 's/revno: //')"
-elif test -e "$SOURCEDIR/.bzr/branch/last-revision"
+    REVISION="$(cd "$SOURCEDIR"; grep '^short: ' Docs/INFO_SRC |sed -e 's/short: //')"
+elif [ -n "$(which git)" -a -d "$SOURCEDIR/.git" ];
 then
-    REVISION="$(cd "$SOURCEDIR"; cat .bzr/branch/last-revision | awk -F ' ' '{print $1}')"
+    REVISION="$(git rev-parse --short HEAD)"
 else
     REVISION=""
 fi
 PRODUCT_FULL="Percona-Server-$MYSQL_VERSION-$PERCONA_SERVER_VERSION"
-PRODUCT_FULL="$PRODUCT_FULL-$REVISION${BUILD_COMMENT:-}$TAG.$(uname -s).$TARGET"
+PRODUCT_FULL="$PRODUCT_FULL${BUILD_COMMENT:-}-$TAG$(uname -s)${DIST_NAME:-}.$TARGET${SSL_VER:-}"
 COMMENT="Percona Server (GPL), Release ${MYSQL_VERSION_EXTRA#-}"
 COMMENT="$COMMENT, Revision $REVISION${BUILD_COMMENT:-}"
 
@@ -173,7 +175,7 @@ export CXX=${CXX:-g++}
 # TokuDB cmake flags
 if test -d "$SOURCEDIR/storage/tokudb"
 then
-    CMAKE_OPTS="${CMAKE_OPTS:-} -DBUILD_TESTING=OFF -DUSE_GTAGS=OFF -DUSE_CTAGS=OFF -DUSE_ETAGS=OFF -DUSE_CSCOPE=OFF"
+    CMAKE_OPTS="${CMAKE_OPTS:-} -DBUILD_TESTING=OFF -DUSE_GTAGS=OFF -DUSE_CTAGS=OFF -DUSE_ETAGS=OFF -DUSE_CSCOPE=OFF -DTOKUDB_BACKUP_PLUGIN_VERSION=${TOKUDB_BACKUP_VERSION}"
     
     if test "x$CMAKE_BUILD_TYPE" != "xDebug"
     then
@@ -191,6 +193,18 @@ fi
 #
 if [ -n "$(which rpm)" ]; then
   export COMMON_FLAGS=$(rpm --eval %optflags | sed -e "s|march=i386|march=i686|g")
+  # Attempt to remove any optimisation flags from the debug build
+  # BLD-238 - bug1408232
+  if test "x$CMAKE_BUILD_TYPE" = "xDebug"
+  then
+    COMMON_FLAGS=`echo " ${COMMON_FLAGS} " | \
+              sed -e 's/ -O[0-9]* / /' \
+                  -e 's/-Wp,-D_FORTIFY_SOURCE=2/ /' \
+                  -e 's/ -unroll2 / /' \
+                  -e 's/ -ip / /' \
+                  -e 's/^ //' \
+                  -e 's/ $//'`
+  fi
 fi
 #
 export CFLAGS="${COMMON_FLAGS} -DPERCONA_INNODB_VERSION=$PERCONA_SERVER_VERSION"
@@ -242,6 +256,10 @@ fi
     (
         cd "$JEMALLOCDIR"
 
+        unset CFLAGS
+        unset CXXFLAGS
+
+        ./autogen.sh
         ./configure --prefix="/usr/local/$PRODUCT_FULL/" \
                 --libdir="/usr/local/$PRODUCT_FULL/lib/mysql/"
         make $MAKE_JFLAG
@@ -259,17 +277,7 @@ fi
 (
     cd "$INSTALLDIR/usr/local/"
 
-    find $PRODUCT_FULL ! -type d  ! \( -iname '*toku*' -o -iwholename '*/tokudb*/*' \) | sort > $WORKDIR_ABS/tokudb_server.list
-    $TAR --owner=0 --group=0 -czf "$WORKDIR_ABS/$PRODUCT_FULL.tar.gz" -T $WORKDIR_ABS/tokudb_server.list
-    rm -f $WORKDIR_ABS/tokudb_server.list
-
-    if test -e "$PRODUCT_FULL/lib/mysql/plugin/ha_tokudb.so"
-    then
-        TARGETTOKU=$(echo $PRODUCT_FULL | sed 's/.Linux/.TokuDB.Linux/')
-	find $PRODUCT_FULL ! -type d \( -iname '*toku*' -o -iwholename '*/tokudb*/*' \) > $WORKDIR_ABS/tokudb_plugin.list
-        $TAR --owner=0 --group=0 -czf "$WORKDIR_ABS/$TARGETTOKU.tar.gz" -T $WORKDIR_ABS/tokudb_plugin.list
-        rm -f $WORKDIR_ABS/tokudb_plugin.list
-    fi
+    $TAR --owner=0 --group=0 -czf "$WORKDIR_ABS/$PRODUCT_FULL.tar.gz" $PRODUCT_FULL
 )
 
 # Clean up

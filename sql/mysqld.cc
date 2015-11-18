@@ -40,6 +40,9 @@
 #ifdef _WIN32
 #include <crtdbg.h>
 #endif
+#ifdef HAVE_ARPA_INET_H
+# include <arpa/inet.h>
+#endif
 
 #include "sql_parse.h"    // test_if_data_home_dir
 #include "sql_cache.h"    // query_cache, query_cache_*
@@ -287,6 +290,7 @@ static char *character_set_filesystem_name;
 static char *lc_messages;
 static char *lc_time_names_name;
 char *my_bind_addr_str;
+char *my_proxy_protocol_networks;
 static char *default_collation_name;
 char *default_storage_engine;
 char *default_tmp_storage_engine;
@@ -386,7 +390,7 @@ my_bool opt_secure_auth= 0;
 char* opt_secure_file_priv;
 my_bool opt_log_slow_admin_statements= 0;
 my_bool opt_log_slow_slave_statements= 0;
-my_bool opt_log_slow_sp_statements= 0;
+ulong opt_log_slow_sp_statements= 0;
 ulonglong opt_slow_query_log_use_global_control= 0;
 ulong opt_slow_query_log_rate_type= 0;
 my_bool lower_case_file_system= 0;
@@ -637,6 +641,7 @@ SHOW_COMP_OPTION have_crypt, have_compress;
 SHOW_COMP_OPTION have_profiling;
 SHOW_COMP_OPTION have_statement_timeout= SHOW_OPTION_DISABLED;
 SHOW_COMP_OPTION have_backup_locks;
+SHOW_COMP_OPTION have_backup_safe_binlog_info;
 SHOW_COMP_OPTION have_snapshot_cloning;
 
 ulonglong opt_log_warnings_suppress= 0;
@@ -1463,6 +1468,196 @@ static void clean_up_mutexes()
 ** Init IP and UNIX socket
 ****************************************************************************/
 
+/* Initialise proxy protocol. */
+static void set_proxy()
+{
+  const char *p;
+  struct st_vio_network net;
+
+  if (opt_disable_networking)
+    return;
+
+  /* Check for special case '*'. */
+  if (strcmp(my_proxy_protocol_networks, "*") == 0) {
+    memset(&net, 0, sizeof(net));
+    net.family= AF_INET;
+    vio_proxy_protocol_add(&net);
+#ifdef HAVE_IPV6
+    net.family= AF_INET6;
+    vio_proxy_protocol_add(&net);
+#endif
+    return;
+  }
+
+  p= my_proxy_protocol_networks;
+
+  while(1) {
+
+    const char *start;
+    char buffer[INET6_ADDRSTRLEN + 1 + 3 + 1];
+    unsigned bits;
+
+    /* jump spaces. */
+    while (*p == ' ')
+      p++;
+    if (*p == '\0')
+      break;
+    start= p;
+
+    /* look for separator */
+    while (*p != ',' && *p != '/' && *p != ' ' && *p != '\0')
+      p++;
+    if (p - start > INET6_ADDRSTRLEN) {
+      sql_print_error("Too long network in 'proxy_protocol_networks' "
+                      "directive.");
+      unireg_abort(1);
+    }
+    memcpy(buffer, start, p - start);
+    buffer[p - start]= '\0';
+
+    /* Try to convert to ipv4. */
+    if (inet_pton(AF_INET, buffer, &net.addr.in))
+      net.family= AF_INET;
+
+#ifdef HAVE_IPV6
+    /* Try to convert to ipv6. */
+    else if (inet_pton(AF_INET6, buffer, &net.addr.in6))
+      net.family= AF_INET6;
+#endif
+
+    else {
+      sql_print_error("Bad network '%s' in 'proxy_protocol_networks' "
+                      "directive.", buffer);
+      unireg_abort(1);
+    }
+
+    /* Look for network. */
+    if (*p == '/') {
+      if (!my_isdigit(&my_charset_bin, *++p)) {
+        sql_print_error("Missing network prefix in 'proxy_protocol_networks' "
+                        "directive.");
+        unireg_abort(1);
+      }
+      start= p;
+      bits= 0;
+      while (my_isdigit(&my_charset_bin, *p) && p - start < 3)
+        bits= bits * 10 + *p++ - '0';
+
+      /* Check bits value. */
+      if (net.family == AF_INET && bits > 32) {
+        sql_print_error("Bad IPv4 mask in 'proxy_protocol_networks' "
+                        "directive.");
+        unireg_abort(1);
+      }
+#ifdef HAVE_IPV6
+      if (net.family == AF_INET6 && bits > 128) {
+        sql_print_error("Bad IPv6 mask in 'proxy_protocol_networks' "
+                        "directive.");
+        unireg_abort(1);
+      }
+#endif
+    }
+    else {
+      if (net.family == AF_INET)
+        bits= 32;
+#ifdef HAVE_IPV6
+      else {
+        DBUG_ASSERT(net.family == AF_INET6);
+        bits= 128;
+      }
+#endif
+    }
+
+    /* Build binary mask. */
+    if (net.family == AF_INET) {
+
+      /* Process IPv4 mask. */
+      if (bits == 0)
+        net.mask.in.s_addr= 0x00000000;
+      else if (bits == 32)
+        net.mask.in.s_addr= 0xffffffff;
+      else
+        net.mask.in.s_addr= ~((0x80000000>>(bits-1))-1);
+      net.mask.in.s_addr= htonl(net.mask.in.s_addr);
+
+      /* Apply mask */
+      struct in_addr check= net.addr.in;
+      check.s_addr&= net.mask.in.s_addr;
+
+      /* Check network. */
+      if (check.s_addr != net.addr.in.s_addr)
+        sql_print_warning("The network mask hides a part of the address for "
+                          "'%s/%d' in 'proxy_protocol_networks' directive.",
+                          buffer, bits);
+    }
+#ifdef HAVE_IPV6
+    else {
+
+      /* Process IPv6 mask */
+      memset(&net.mask.in6, 0, sizeof(net.mask.in6));
+      if (bits > 0 && bits < 32) {
+        net.mask.in6.s6_addr32[0]= ~((0x80000000>>(bits-1))-1);
+      }
+      else if (bits == 32) {
+        net.mask.in6.s6_addr32[0]= 0xffffffff;
+      }
+      else if (bits > 32 && bits <= 64) {
+        net.mask.in6.s6_addr32[0]= 0xffffffff;
+        net.mask.in6.s6_addr32[1]= (bits == 64)
+          ? 0xffffffff : ~((0x80000000>>(bits-32-1))-1);
+      }
+      else if (bits > 64 && bits <= 96) {
+        net.mask.in6.s6_addr32[0]= 0xffffffff;
+        net.mask.in6.s6_addr32[1]= 0xffffffff;
+        net.mask.in6.s6_addr32[2]= (bits == 96)
+          ? 0xffffffff : ~((0x80000000>>(bits-64-1))-1);
+      }
+      else if (bits > 96) {
+        DBUG_ASSERT(bits <= 128);
+        net.mask.in6.s6_addr32[0]= 0xffffffff;
+        net.mask.in6.s6_addr32[1]= 0xffffffff;
+        net.mask.in6.s6_addr32[2]= 0xffffffff;
+        net.mask.in6.s6_addr32[3]= (bits == 128)
+          ? 0xffffffff : ~((0x80000000>>(bits-96-1))-1);
+      }
+
+      net.mask.in6.s6_addr32[0]= htonl(net.mask.in6.s6_addr32[0]);
+      net.mask.in6.s6_addr32[1]= htonl(net.mask.in6.s6_addr32[1]);
+      net.mask.in6.s6_addr32[2]= htonl(net.mask.in6.s6_addr32[2]);
+      net.mask.in6.s6_addr32[3]= htonl(net.mask.in6.s6_addr32[3]);
+
+      /* Apply mask */
+      struct in6_addr check= net.addr.in6;
+      check.s6_addr32[0]&= net.mask.in6.s6_addr32[0];
+      check.s6_addr32[1]&= net.mask.in6.s6_addr32[1];
+      check.s6_addr32[2]&= net.mask.in6.s6_addr32[2];
+      check.s6_addr32[3]&= net.mask.in6.s6_addr32[3];
+
+      /* Check network. */
+      if (memcmp(check.s6_addr, net.addr.in6.s6_addr, 16))
+      {
+        sql_print_warning("The network mask hides a part of the address for "
+                          "'%s/%d' in 'proxy_protocol_networks' directive.",
+                          buffer, bits);
+      }
+    }
+#endif
+
+    if (*p != '\0' && *p != ',') {
+      sql_print_error("Bad syntax in 'proxy_protocol_networks' directive.");
+      unireg_abort(1);
+    }
+
+    /* add network. */
+    vio_proxy_protocol_add(&net);
+
+    /* stop the parsing. */
+    if (*p == '\0')
+      break;
+    p++;
+  }
+}
+
 static void set_ports()
 {
   char  *env;
@@ -1628,6 +1823,7 @@ static bool network_init(void)
 
   set_ports();
 
+  set_proxy();
 #ifdef HAVE_SYS_UN_H
   std::string const unix_sock_name(mysqld_unix_port ? mysqld_unix_port : "");
 #else
@@ -7094,6 +7290,7 @@ static int mysql_init_variables(void)
 #endif
 
   have_backup_locks= SHOW_OPTION_YES;
+  have_backup_safe_binlog_info= SHOW_OPTION_YES;
   have_snapshot_cloning= SHOW_OPTION_YES;
 
 #if defined(_WIN32)
@@ -7569,6 +7766,7 @@ C_MODE_END
 /* defined in sys_vars.cc */
 extern void init_log_slow_verbosity();
 extern void init_slow_query_log_use_global_control();
+extern void init_log_slow_sp_statements();
 
 /**
   Ensure all the deprecared options with 1 possible value are
@@ -7773,6 +7971,7 @@ static int get_options(int *argc_ptr, char ***argv_ptr)
 
   init_log_slow_verbosity();
   init_slow_query_log_use_global_control();
+  init_log_slow_sp_statements();
   if (opt_short_log_format)
     opt_specialflag|= SPECIAL_SHORT_LOG_FORMAT;
 

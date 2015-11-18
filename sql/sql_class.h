@@ -532,6 +532,8 @@ typedef struct system_variables
     thread the query is being run to replicate temp tables properly
   */
   my_thread_id pseudo_thread_id;
+
+  ulong pseudo_server_id;
   /**
     Default transaction access mode. READ ONLY (true) or READ WRITE (false).
   */
@@ -1473,6 +1475,8 @@ public:
 
   bool acquire(THD *thd);
   void release(THD *thd);
+
+  void set_explicit_locks_duration(THD *thd);
 
   bool acquire_protection(THD *thd, enum_mdl_duration duration,
                           ulong lock_wait_timeout);
@@ -2728,6 +2732,7 @@ public:
   */
   void set_new_thread_id();
   my_thread_id thread_id() const { return m_thread_id; }
+
   uint	     tmp_table;
   uint	     server_status,open_options;
   enum enum_thread_type system_thread;

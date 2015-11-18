@@ -704,6 +704,15 @@ static Sys_var_charptr Sys_my_bind_addr(
        IN_FS_CHARSET, DEFAULT(MY_BIND_ALL_ADDRESSES));
 #endif
 
+static Sys_var_charptr Sys_my_proxy_protocol_networks(
+       "proxy_protocol_networks", "Enable proxy protocol for these source "
+       "networks. The syntax is a comma separated list of IPv4 and IPv6 "
+       "networks. If the network doesn't contain mask, it is considered to be "
+       "a single host. \"*\" represents all networks and must the only "
+       "directive on the line.",
+       READ_ONLY GLOBAL_VAR(my_proxy_protocol_networks),
+       CMD_LINE(REQUIRED_ARG), IN_FS_CHARSET, DEFAULT(""));
+
 static bool fix_binlog_cache_size(sys_var *self, THD *thd, enum_var_type type)
 {
   check_binlog_cache_size(thd);
@@ -2502,6 +2511,21 @@ static Sys_var_uint Sys_pseudo_thread_id(
        BLOCK_SIZE(1), NO_MUTEX_GUARD, IN_BINLOG,
        ON_CHECK(check_has_super));
 
+static bool fix_pseudo_server_id(sys_var *self, THD *thd, enum_var_type type)
+{
+  thd->server_id= thd->variables.pseudo_server_id != 0 ?
+                  thd->variables.pseudo_server_id : server_id;
+  return false;
+}
+
+static Sys_var_ulong Sys_pseudo_server_id(
+       "pseudo_server_id",
+       "Override server_id for currrent session",
+       SESSION_ONLY(pseudo_server_id),
+       NO_CMD_LINE, VALID_RANGE(0, ULONG_MAX), DEFAULT(0),
+       BLOCK_SIZE(1), NO_MUTEX_GUARD, IN_BINLOG,
+       ON_CHECK(check_has_super), ON_UPDATE(fix_pseudo_server_id));
+
 static bool fix_max_join_size(sys_var *self, THD *thd, enum_var_type type)
 {
   SV *sv= type == OPT_GLOBAL ? &global_system_variables : &thd->variables;
@@ -3453,7 +3477,8 @@ static bool fix_server_id(sys_var *self, THD *thd, enum_var_type type)
   // server_id is 'MYSQL_PLUGIN_IMPORT ulong'
   // So we cast here, rather than change its type.
   server_id_supplied = 1;
-  thd->server_id= static_cast<uint32>(server_id);
+  thd->server_id= thd->variables.pseudo_server_id != 0 ?
+    thd->variables.pseudo_server_id : static_cast<uint32>(server_id);
   return false;
 }
 static Sys_var_ulong Sys_server_id(
@@ -4962,6 +4987,10 @@ static Sys_var_have Sys_have_backup_locks(
        "have_backup_locks", "have_backup_locks",
        READ_ONLY GLOBAL_VAR(have_backup_locks), NO_CMD_LINE);
 
+static Sys_var_have Sys_have_backup_safe_binlog_info(
+       "have_backup_safe_binlog_info", "have_backup_safe_binlog_info",
+       READ_ONLY GLOBAL_VAR(have_backup_safe_binlog_info), NO_CMD_LINE);
+
 static Sys_var_have Sys_have_snapshot_cloning(
        "have_snapshot_cloning", "have_snapshot_cloning",
        READ_ONLY GLOBAL_VAR(have_snapshot_cloning), NO_CMD_LINE);
@@ -5069,11 +5098,31 @@ static Sys_var_set Sys_log_slow_verbosity(
         log_slow_verbosity_name, DEFAULT(SLOG_V_MICROTIME),
         NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0),
         ON_UPDATE(update_log_slow_verbosity_helper));
-static Sys_var_mybool Sys_log_slow_sp_statements(
+static const char *log_slow_sp_statements_names[]=
+  {"OFF", "ON", "OFF_NO_CALLS", "FALSE", "TRUE", "0", "1", 0};
+static bool fix_log_slow_sp_statements(sys_var */*self*/, THD */*thd*/,
+                                       enum_var_type /*type*/)
+{
+  if(opt_log_slow_sp_statements > 2)
+  {
+    opt_log_slow_sp_statements= (opt_log_slow_sp_statements - 3) % 2;
+  }
+  return false;
+}
+void init_log_slow_sp_statements()
+{
+  fix_log_slow_sp_statements(NULL, NULL, OPT_GLOBAL);
+}
+static Sys_var_enum Sys_log_slow_sp_statements(
        "log_slow_sp_statements",
-       "Log slow statements executed by stored procedure to the slow log if it is open.",
+       "Choice between logging slow CALL statements, logging individual slow "
+       "statements inside stored procedures or skipping the logging of stored "
+       "procedures into the slow log entirely. Values are OFF, ON and "
+       "OFF_NO_CALLS respectively.",
        GLOBAL_VAR(opt_log_slow_sp_statements), CMD_LINE(OPT_ARG),
-       DEFAULT(TRUE));
+       log_slow_sp_statements_names, DEFAULT(1),
+       NO_MUTEX_GUARD, NOT_IN_BINLOG, ON_CHECK(0),
+       ON_UPDATE(fix_log_slow_sp_statements));
 const char *slow_query_log_use_global_control_name[]= { "log_slow_filter", "log_slow_rate_limit", "log_slow_verbosity", "long_query_time", "min_examined_row_limit", "all", 0};
 static bool update_slow_query_log_use_global_control(sys_var */*self*/, THD */*thd*/,
                                                enum_var_type /*type*/)

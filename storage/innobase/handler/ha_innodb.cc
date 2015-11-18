@@ -1146,6 +1146,15 @@ innobase_end(
 	ha_panic_function	type);
 
 /*****************************************************************//**
+Stores the current binlog coordinates in the trx system header. */
+static
+int
+innobase_store_binlog_info(
+/*=======================*/
+	handlerton*	hton,	/*!< in: InnoDB handlerton */
+	THD*		thd);	/*!< in: MySQL thread handle */
+
+/*****************************************************************//**
 Creates an InnoDB transaction struct for the thd if it does not yet have one.
 Starts a new InnoDB transaction if a transaction is not yet started. And
 assigns a new snapshot for a consistent read if the transaction does not yet
@@ -3446,6 +3455,9 @@ innobase_init(
 	innobase_hton->clone_consistent_snapshot =
 		innobase_start_trx_and_clone_read_view;
 
+	innobase_hton->store_binlog_info =
+		innobase_store_binlog_info;
+
 	innobase_hton->flush_logs = innobase_flush_logs;
 	innobase_hton->show_status = innobase_show_status;
 	innobase_hton->fill_is_table = innobase_fill_i_s_table;
@@ -4115,6 +4127,35 @@ innobase_commit_low(
 		trx_commit_for_mysql(trx);
 	}
 	trx->will_lock = 0;
+}
+
+/*****************************************************************//**
+Stores the current binlog coordinates in the trx system header. */
+static
+int
+innobase_store_binlog_info(
+/*=======================*/
+	handlerton*	hton,	/*!< in: InnoDB handlerton */
+	THD*		thd)	/*!< in: MySQL thread handle */
+{
+	const char*			file_name;
+	unsigned long long 	pos;
+	mtr_t			mtr;
+
+	DBUG_ENTER("innobase_store_binlog_info");
+
+	thd_binlog_pos(thd, &file_name, &pos);
+
+	mtr_start(&mtr);
+
+	trx_sys_update_mysql_binlog_offset(file_name, pos,
+					   TRX_SYS_MYSQL_LOG_INFO, &mtr);
+
+	mtr_commit(&mtr);
+
+	innobase_flush_logs(hton, false);
+
+	DBUG_RETURN(0);
 }
 
 /*****************************************************************//**
@@ -14510,7 +14551,7 @@ ha_innobase::check(
 
 	if (UNIV_UNLIKELY(m_share && m_share->ib_table
 			  && m_share->ib_table->is_corrupt)) {
-		return(HA_ADMIN_CORRUPT);
+		DBUG_RETURN(HA_ADMIN_CORRUPT);
 	}
 
 	DBUG_RETURN(is_ok ? HA_ADMIN_OK : HA_ADMIN_CORRUPT);
@@ -17159,6 +17200,9 @@ innodb_log_archive_update(
 	void*				var_ptr,
 	const void*			save)
 {
+	if (srv_read_only_mode)
+		return;
+
 	my_bool	in_val = *static_cast<const my_bool*>(save);
 
 	if (in_val) {
@@ -18702,6 +18746,46 @@ innodb_sched_priority_master_update(
 
 #endif /* defined(UNIV_LINUX) && (defined(UNIV_DEBUG) || (UNIV_PERF_DEBUG)) */
 
+#ifdef UNIV_DEBUG
+/*************************************************************//**
+Check if it is a valid value of innodb_track_changed_pages.
+Changed pages tracking is not working correctly without initialization
+procedure on server startup. The function allows to temporary
+disable tracking, but only if the feature was enabled on startup.
+This function is registered as a callback with MySQL.
+@return	0 for valid innodb_track_changed_pages */
+static
+int
+innodb_track_changed_pages_validate(
+	THD*				thd,	/*!< in: thread handle */
+	struct st_mysql_sys_var*	var,	/*!< in: pointer to system
+						variable */
+	void*				save,	/*!< out: immediate result
+						for update function */
+	struct st_mysql_value*		value)	/*!< in: incoming bool */
+{
+	static bool     enabled_on_startup = false;
+	long long	intbuf = 0;
+
+	if (value->val_int(value, &intbuf)) {
+		/* The value is NULL. That is invalid. */
+		return 1;
+	}
+
+	if (srv_track_changed_pages || enabled_on_startup) {
+		enabled_on_startup = true;
+		*reinterpret_cast<ulong*>(save)
+			= static_cast<ulong>(intbuf);
+		return 0;
+	}
+
+	if (intbuf == srv_track_changed_pages)
+		return 0;
+
+	return 1;
+}
+#endif
+
 /****************************************************************//**
 Callback function for accessing the InnoDB variables from MySQL:
 SHOW VARIABLES. */
@@ -20154,7 +20238,12 @@ static MYSQL_SYSVAR_BOOL(track_changed_pages, srv_track_changed_pages,
 #endif
   ,
   "Track the redo log for changed pages and output a changed page bitmap",
-  NULL, NULL, FALSE);
+#ifdef UNIV_DEBUG
+  innodb_track_changed_pages_validate,
+#else
+  NULL,
+#endif
+  NULL, FALSE);
 
 static MYSQL_SYSVAR_ULONGLONG(max_bitmap_file_size, srv_max_bitmap_file_size,
     PLUGIN_VAR_RQCMDARG,

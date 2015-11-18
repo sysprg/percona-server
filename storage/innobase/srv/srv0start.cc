@@ -2486,25 +2486,27 @@ files_checked:
 		log_buffer_flush_to_disk();
 	}
 
-	if (!srv_log_archive_on) {
-		ut_a(DB_SUCCESS == log_archive_noarchivelog());
-	} else {
-		bool	start_archive;
+	if (!srv_read_only_mode) {
+		if (!srv_log_archive_on) {
+			ut_a(DB_SUCCESS == log_archive_noarchivelog());
+		} else {
+			bool	start_archive;
 
-		log_mutex_enter();
+			log_mutex_enter();
 
-		start_archive = false;
+			start_archive = false;
 
-		if (log_sys->archiving_state == LOG_ARCH_OFF) {
+			if (log_sys->archiving_state == LOG_ARCH_OFF) {
 
-			start_archive = true;
-		}
+				start_archive = true;
+			}
 
-		log_mutex_exit();
+			log_mutex_exit();
 
-		if (start_archive) {
+			if (start_archive) {
 
-			ut_a(DB_SUCCESS == log_archive_archivelog());
+				ut_a(DB_SUCCESS == log_archive_archivelog());
+			}
 		}
 	}
 

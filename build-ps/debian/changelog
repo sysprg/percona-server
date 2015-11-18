@@ -1,3 +1,22 @@
+percona-server-5.6 (5.6.26-rel74.0) unstable; urgency=low
+
+  * Included Percona-TokuBackup into TokuDB package
+
+ -- Tomislav Plavcic <tomislav.plavcic@percona.com>  Thu, 10 Sep 2015 11:09:00 +0200
+
+percona-server-5.6 (5.6.24-rel72.2) unstable; urgency=low
+
+  * Fixed PS .deb binaries are built without fast mutexes (bug1433980)
+  * mysql client is now built with readline (bug1266386)
+
+ -- Tomislav Plavcic <tomislav.plavcic@percona.com>  Wed, 06 May 2015 10:43:10 +0200
+
+percona-server-5.6 (5.6.23-rel72.1) unstable; urgency=low
+
+  * Fixed errors in debug build when maintainer mode is on (bug1408232)
+
+ -- Tomislav Plavcic <tomislav.plavcic@percona.com>  Fri, 27 Feb 2015 15:26:10 +0100
+
 percona-server-5.6 (5.6.22-rel72.0) unstable; urgency=low
 
   * Added ps_tokudb_admin script for TokuDB plugin installation (BLD-212)

@@ -1962,11 +1962,6 @@ Stage_manager::enroll_for(StageID stage, THD *thd, mysql_mutex_t *stage_mutex)
   */
   if (!leader)
   {
-#ifdef HAVE_PSI_THREAD_INTERFACE
-    PSI_thread *psi_thread;
-    psi_thread= PSI_THREAD_CALL(get_thread)();
-    PSI_THREAD_CALL(set_thread)(NULL);
-#endif
     mysql_mutex_lock(&m_lock_done);
 #ifndef DBUG_OFF
     /*
@@ -1981,9 +1976,6 @@ Stage_manager::enroll_for(StageID stage, THD *thd, mysql_mutex_t *stage_mutex)
     while (thd->get_transaction()->m_flags.pending)
       mysql_cond_wait(&m_cond_done, &m_lock_done);
     mysql_mutex_unlock(&m_lock_done);
-#ifdef HAVE_PSI_THREAD_INTERFACE
-    PSI_THREAD_CALL(set_thread)(psi_thread);
-#endif
   }
   return leader;
 }
@@ -3313,7 +3305,7 @@ static bool is_number(const char *str,
     nonzero if not possible to get unique filename.
 */
 
-static int find_uniq_filename(char *name, ulong *next)
+static int find_uniq_filename(char *name, ulong *next, bool need_next)
 {
   uint                  i;
   char                  buff[FN_REFLEN], ext_buf[FN_REFLEN];
@@ -3360,7 +3352,7 @@ updating the index files.", max_found);
     goto end;
   }
 
-  *next= max_found + 1;
+  *next= (need_next || max_found == 0) ? max_found + 1 : max_found;
   if (sprintf(ext_buf, "%06lu", *next) < 0)
   {
     error= 1;
@@ -3399,13 +3391,13 @@ end:
 }
 
 bool generate_new_log_name(char *new_name, ulong *new_ext,
-                           const char *log_name, bool unique)
+                           const char *log_name, bool is_binlog)
 {
   fn_format(new_name, log_name, mysql_data_home, "", 4);
-  if (!fn_ext(log_name)[0] && unique)
+  if (!fn_ext(log_name)[0] && (is_binlog || max_slowlog_size > 0))
   {
     ulong scratch;
-    if (find_uniq_filename(new_name, new_ext ? new_ext : &scratch))
+    if (find_uniq_filename(new_name, new_ext ? new_ext : &scratch, is_binlog))
     {
       my_printf_error(ER_NO_UNIQUE_LOGFILE, ER(ER_NO_UNIQUE_LOGFILE),
                       MYF(ME_FATALERROR), log_name);
@@ -8695,9 +8687,9 @@ MYSQL_BIN_LOG::finish_commit(THD *thd)
     if (thd->commit_error == THD::CE_NONE)
     {
       /*
-        Acquire a shared lock to block commits until START TRANSACTION WITH
-        CONSISTENT SNAPSHOT completes snapshot creation for all storage
-        engines. We only reach this code if binlog_order_commits=0.
+        Acquire a shared lock to block commits if an X lock has been acquired by
+        LOCK TABLES FOR BACKUP or START TRANSACTION WITH CONSISTENT SNAPSHOT. We
+        only reach this code if binlog_order_commits=0.
       */
       DBUG_ASSERT(opt_binlog_order_commits == 0);
 
@@ -9273,7 +9265,7 @@ void MYSQL_BIN_LOG::xlock(void)
     threads with each acquiring a shared lock on LOCK_consistent_snapshot.
 
     binlog_order_commits is a dynamic variable, so we have to keep track what
-    primitives should be used in unlock_for_snapshot().
+    primitives should be used in xunlock().
   */
   if (opt_binlog_order_commits)
   {

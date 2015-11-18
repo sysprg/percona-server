@@ -419,8 +419,8 @@ enum row_type { ROW_TYPE_NOT_USED=-1, ROW_TYPE_DEFAULT, ROW_TYPE_FIXED,
                 /** Unused. Reserved for future versions. */
                 ROW_TYPE_PAGE,
                 ROW_TYPE_TOKU_UNCOMPRESSED, ROW_TYPE_TOKU_ZLIB,
-                ROW_TYPE_TOKU_QUICKLZ, ROW_TYPE_TOKU_LZMA,
-                ROW_TYPE_TOKU_FAST, ROW_TYPE_TOKU_SMALL };
+                ROW_TYPE_TOKU_SNAPPY, ROW_TYPE_TOKU_QUICKLZ,
+                ROW_TYPE_TOKU_LZMA, ROW_TYPE_TOKU_FAST, ROW_TYPE_TOKU_SMALL };
 
 /* Specifies data storage format for individual columns */
 enum column_format_type {
@@ -783,6 +783,7 @@ struct handlerton
      @retval true Error
    */
    bool (*flush_logs)(handlerton *hton, bool binlog_group_flush);
+   int (*store_binlog_info)(handlerton *hton, THD *thd);
    bool (*show_status)(handlerton *hton, THD *thd, stat_print_fn *print, enum ha_stat_type stat);
    /*
      The flag values are defined in sql_partition.h.
@@ -2279,7 +2280,8 @@ public:
     m_psi_batch_mode(PSI_BATCH_MODE_NONE),
     m_psi_numrows(0),
     m_psi_locker(NULL),
-    m_lock_type(F_UNLCK), ha_share(NULL), m_update_generated_read_fields(false)
+    m_lock_type(F_UNLCK), ha_share(NULL),
+    m_update_generated_read_fields(false), cloned(false)
     {
       DBUG_PRINT("info",
                  ("handler created F_UNLCK %d F_RDLCK %d F_WRLCK %d",
@@ -3816,6 +3818,13 @@ protected:
   void set_ha_share_ptr(Handler_share *arg_ha_share);
   void lock_shared_ha_data();
   void unlock_shared_ha_data();
+
+private:
+  /**
+    If true, the current handler is a clone. In that case certain invariants
+    such as table->in_use == current_thd are relaxed to support cloning a
+    handler belonging to a different thread. */
+  bool cloned;
 };
 
 
@@ -4034,6 +4043,7 @@ int ha_release_temporary_latches(THD *thd);
 
 /* transactions: interface to handlerton functions */
 int ha_start_consistent_snapshot(THD *thd);
+int ha_store_binlog_info(THD *thd);
 int ha_commit_trans(THD *thd, bool all, bool ignore_global_read_lock= false);
 int ha_commit_attachable(THD *thd);
 int ha_rollback_trans(THD *thd, bool all);

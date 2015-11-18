@@ -2200,7 +2200,6 @@ bool create_myisam_tmp_table(TABLE *table, KEY *keyinfo,
     goto err;
   }
   table->in_use->inc_status_created_tmp_disk_tables();
-  table->in_use->query_plan_flags|= QPLAN_TMP_DISK;
   share->db_record_offset= 1;
   DBUG_RETURN(0);
  err:

@@ -17,3 +17,4 @@ percona_bug_1133926 : laurynas disabled until log archiving is fixed in 5.7
 percona_bug1155475 : laurynas disabled until log archiving is fixed in 5.7
 percona_purge_archived_logs_to : laurynas disabled until log archiving is fixed in 5.7
 percona_bug_1326379 : laurynas disabled until log archiving is fixed in 5.7
+percona_log_archive_ro : laurynas disabled until log archiving is fixed in 5.7

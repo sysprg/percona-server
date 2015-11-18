@@ -43,7 +43,7 @@ Installation
 ============
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :glob:
 
    installation
@@ -95,6 +95,8 @@ Flexibility Improvements
    flexibility/mysqlbinlog_change_db
    flexibility/csv_engine_mode
    flexibility/online_gtid_deployment
+   flexibility/proxy_protocol_support
+   flexibility/per_session_server-id
 
 Reliability Improvements
 ========================
@@ -131,6 +133,7 @@ Management Improvements
    management/audit_log_plugin
    management/start_transaction_with_consistent_snapshot
    management/super_read_only
+   management/extended_show_grants
 
 Diagnostics Improvements
 ========================
@@ -162,8 +165,10 @@ TokuDB
    tokudb/tokudb_intro
    tokudb/tokudb_installation
    tokudb/using_tokudb
-   tokudb/tokudb_compression
-   tokudb/tokudb_multiple_clustering_keys
+   tokudb/tokudb_variables
+   tokudb/tokudb_troubleshooting
+   tokudb/toku_backup
+   tokudb/tokudb_faq
    tokudb/removing_tokudb
 
 Reference

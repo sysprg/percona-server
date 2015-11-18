@@ -29,6 +29,7 @@
 %define redhatversion %(lsb_release -rs | awk -F. '{ print $1}')
 %define percona_server_version @@PERCONA_VERSION@@
 %define revision @@REVISION@@
+%define tokudb_backup_version @@TOKUDB_BACKUP_VERSION@@
 
 #
 %bcond_with tokudb
@@ -46,7 +47,7 @@
 
 #
 %if %{with tokudb}
-  %define TOKUDB_FLAGS -DWITH_VALGRIND=OFF -DUSE_VALGRIND=OFF -DDEBUG_EXTNAME=OFF -DBUILD_TESTING=OFF -DUSE_GTAGS=OFF -DUSE_CTAGS=OFF -DUSE_ETAGS=OFF -DUSE_CSCOPE=OFF
+  %define TOKUDB_FLAGS -DWITH_VALGRIND=OFF -DUSE_VALGRIND=OFF -DDEBUG_EXTNAME=OFF -DBUILD_TESTING=OFF -DUSE_GTAGS=OFF -DUSE_CTAGS=OFF -DUSE_ETAGS=OFF -DUSE_CSCOPE=OFF -DTOKUDB_BACKUP_PLUGIN_VERSION=%{tokudb_backup_version}
   %define TOKUDB_DEBUG_ON -DTOKU_DEBUG_PARANOID=ON
   %define TOKUDB_DEBUG_OFF -DTOKU_DEBUG_PARANOID=OFF
 %else
@@ -260,9 +261,6 @@ Release:        %{release}
 Distribution:   %{distro_description}
 License:        Copyright (c) 2000, 2010, %{mysql_vendor}.  All rights reserved.  Use is subject to license terms.  Under %{license_type} license as shown in the Description field.
 Source:         http://www.percona.com/downloads/Percona-Server-5.6/Percona-Server-%{mysql_version}-%{percona_server_version}/source/%{src_dir}.tar.gz
-%if %{with tokudb}
-Source1:        http://www.percona.com/downloads/Percona-Server-5.6/Percona-Server-%{mysql_version}-%{percona_server_version}/source/%{src_dir}.tokudb.tar.gz
-%endif
 URL:            http://www.percona.com/
 Packager:       Percona MySQL Development Team <mysqldev@percona.com>
 Vendor:         %{percona_server_vendor}
@@ -272,6 +270,7 @@ BuildRequires:  %{distro_buildreq} pam-devel openssl-devel
 BuildRequires:  systemd
 %endif
 Patch0:         mysql-5.6-sharedlib-rename.patch
+Patch1:         mysql-5.6-libmysqlclient-symbols.patch
 
 # Think about what you use here since the first step is to
 # run a rm -rf
@@ -394,6 +393,9 @@ Summary:        Percona Server - Development header files and libraries
 Group:          Applications/Databases
 Provides:       mysql-devel
 Conflicts:      Percona-SQL-devel-50 Percona-Server-devel-51 Percona-Server-devel-55
+%if "%rhel" > "6"
+Obsoletes:      mariadb-devel
+%endif
 
 %description -n Percona-Server-devel%{product_suffix}
 This package contains the development header files and libraries necessary
@@ -427,12 +429,10 @@ and applications need to dynamically load and use Percona Server.
 ##############################################################################
 %prep
 %setup -n %{src_dir}
-%if %{with tokudb}
-%setup -n %{src_dir} -T -D -b 1
-%endif
 
 %if "%rhel" > "6"
 %patch0 -p1
+%patch1 -p1
 %endif
 
 ##############################################################################
@@ -454,11 +454,7 @@ touch optional-files-devel
 RPM_OPT_FLAGS=
 %endif
 #
-%if %{with tokudb}
-RPM_OPT_FLAGS= 
-%else
 RPM_OPT_FLAGS=$(echo ${RPM_OPT_FLAGS} | sed -e 's|-march=i386|-march=i686|g')
-%endif
 #
 # Needed on centos5 to force debug symbols compatibility with older gdb version
 %if "%rhel" == "5"
@@ -488,14 +484,17 @@ mkdir debug
 (
   cd debug
   # Attempt to remove any optimisation flags from the debug build
+  # BLD-238 - bug1408232
   CFLAGS=`echo " ${CFLAGS} " | \
             sed -e 's/ -O[0-9]* / /' \
+                -e 's/-Wp,-D_FORTIFY_SOURCE=2/ /' \
                 -e 's/ -unroll2 / /' \
                 -e 's/ -ip / /' \
                 -e 's/^ //' \
                 -e 's/ $//'`
   CXXFLAGS=`echo " ${CXXFLAGS} " | \
               sed -e 's/ -O[0-9]* / /' \
+                  -e 's/-Wp,-D_FORTIFY_SOURCE=2/ /' \
                   -e 's/ -unroll2 / /' \
                   -e 's/ -ip / /' \
                   -e 's/^ //' \
@@ -504,7 +503,6 @@ mkdir debug
   # XXX: install_layout so we can't just set it based on INSTALL_LAYOUT=RPM
   ${CMAKE} ../ -DBUILD_CONFIG=mysql_release -DINSTALL_LAYOUT=RPM \
            -DCMAKE_BUILD_TYPE=Debug \
-           -DMYSQL_MAINTAINER_MODE=OFF \
            -DENABLE_DTRACE=OFF \
            -DWITH_EMBEDDED_SERVER=OFF \
            -DWITH_INNODB_MEMCACHED=ON \
@@ -619,7 +617,13 @@ install -D -m 0644 $MBD/build-ps/rpm/my.cnf $RBR%{_sysconfdir}/my.cnf
 %endif
 
 #
-%{__rm} -f $RBR/%{_prefix}/README*
+%{__rm} -f $RBR/%{_prefix}/README
+%if %{with tokudb}
+%{__rm} -f $RBR/%{_prefix}/README.md
+%{__rm} -f $RBR/%{_prefix}/COPYING.AGPLv3
+%{__rm} -f $RBR/%{_prefix}/COPYING.GPLv2
+%{__rm} -f $RBR/%{_prefix}/PATENTS
+%endif
 #
 # Delete the symlinks to the libraries from the libdir. These are created by
 # ldconfig(8) afterwards.
@@ -669,11 +673,17 @@ rm -rf $RBR%{_bindir}/ps_tokudb_admin
 if [ -x %{_bindir}/my_print_defaults ]
 then
   mysql_datadir=`%{_bindir}/my_print_defaults server mysqld | grep '^--datadir=' | sed -n 's/--datadir=//p' | tail -n 1`
+  PID_FILE_PATT=`%{_bindir}/my_print_defaults server mysqld | grep '^--pid-file=' | sed -n 's/--pid-file=//p' | sort -u`
 fi
 if [ -z "$mysql_datadir" ]
 then
   mysql_datadir=%{mysqldatadir}
 fi
+if [ -z "$PID_FILE_PATT" ]
+then
+  PID_FILE_PATT="$mysql_datadir/*.pid"
+fi
+
 # Check if we can safely upgrade.  An upgrade is only safe if it's from one
 # of our RPMs in the same version family.
 
@@ -751,7 +761,7 @@ fi
 
 # We assume that if there is exactly one ".pid" file,
 # it contains the valid PID of a running MySQL server.
-NR_PID_FILES=`ls $mysql_datadir/*.pid 2>/dev/null | wc -l`
+NR_PID_FILES=`ls -1 $PID_FILE_PATT 2>/dev/null | wc -l`
 case $NR_PID_FILES in
 	0 ) SERVER_TO_START=''  ;;  # No "*.pid" file == no running server
 	1 ) SERVER_TO_START='true' ;;
@@ -773,8 +783,8 @@ if [ -f $STATUS_FILE ]; then
 	echo "before repeating the MySQL upgrade."
 	exit 1
 elif [ -n "$SEVERAL_PID_FILES" ] ; then
-	echo "Your MySQL directory '$mysql_datadir' has more than one PID file:"
-	ls -ld $mysql_datadir/*.pid
+	echo "You have more than one PID file:"
+	ls -ld $PID_FILE_PATT
 	echo "Please check which one (if any) corresponds to a running server"
 	echo "and delete all others before repeating the MySQL upgrade."
 	exit 1
@@ -788,28 +798,31 @@ if [ -d $mysql_datadir ] ; then
 	echo "MySQL RPM upgrade to version $NEW_VERSION"  > $STATUS_FILE
 	echo "'pre' step running at `date`"          >> $STATUS_FILE
 	echo                                         >> $STATUS_FILE
-	echo "ERR file(s):"                          >> $STATUS_FILE
-	ls -ltr $mysql_datadir/*.err                 >> $STATUS_FILE
-	echo                                         >> $STATUS_FILE
-	echo "Latest 'Version' line in latest file:" >> $STATUS_FILE
-	grep '^Version' `ls -tr $mysql_datadir/*.err | tail -1` | \
-		tail -1                              >> $STATUS_FILE
-	echo                                         >> $STATUS_FILE
+	fcount=`ls -ltr $mysql_datadir/*.err 2>/dev/null | wc -l`
+	if [ $fcount -gt 0 ] ; then
+		echo "ERR file(s):"                          >> $STATUS_FILE
+		ls -ltr $mysql_datadir/*.err                 >> $STATUS_FILE
+		echo                                         >> $STATUS_FILE
+		echo "Latest 'Version' line in latest file:" >> $STATUS_FILE
+		grep '^Version' `ls -tr $mysql_datadir/*.err | tail -1` | \
+			tail -1                              >> $STATUS_FILE
+		echo                                         >> $STATUS_FILE
+	fi
 
 	if [ -n "$SERVER_TO_START" ] ; then
 		# There is only one PID file, race possibility ignored
 		echo "PID file:"                           >> $STATUS_FILE
-		ls -l   $mysql_datadir/*.pid               >> $STATUS_FILE
-		cat     $mysql_datadir/*.pid               >> $STATUS_FILE
+		ls -l   $PID_FILE_PATT                     >> $STATUS_FILE
+		cat     $PID_FILE_PATT                     >> $STATUS_FILE
 		echo                                       >> $STATUS_FILE
 		echo "Server process:"                     >> $STATUS_FILE
-		ps -fp `cat $mysql_datadir/*.pid`          >> $STATUS_FILE
+		ps -fp `cat $PID_FILE_PATT`                >> $STATUS_FILE
 		echo                                       >> $STATUS_FILE
 		echo "SERVER_TO_START=$SERVER_TO_START"    >> $STATUS_FILE
 	else
 		# Take a note we checked it ...
 		echo "PID file:"                           >> $STATUS_FILE
-		ls -l   $mysql_datadir/*.pid               >> $STATUS_FILE 2>&1
+		ls -l   $PID_FILE_PATT                     >> $STATUS_FILE 2>&1
 	fi
 fi
 
@@ -1265,6 +1278,7 @@ fi
 %attr(755, root, root) %{_libdir}/mysql/plugin/auth_pam_compat.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/dialog.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/query_response_time.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/mysql_no_login.so
 
 # %attr(755, root, root) %{_libdir}/mysql/plugin/debug/*.so*
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/adt_null.so
@@ -1288,6 +1302,7 @@ fi
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/semisync_slave.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/validate_password.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/query_response_time.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/debug/mysql_no_login.so
 # Audit Log and Scalability Metrics files
 %attr(755, root, root) %{_libdir}/mysql/plugin/audit_log.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/audit_log.so
@@ -1396,7 +1411,24 @@ fi
 %{_libdir}/mysql/%{shared_lib_pri_name}.a
 %{_libdir}/mysql/%{shared_lib_pri_name}_r.a
 %{_libdir}/mysql/libmysqlservices.a
-%{_libdir}/*.so
+%{_libdir}/%{shared_lib_pri_name}.so
+%{_libdir}/%{shared_lib_pri_name}_r.so
+
+%post -n Percona-Server-devel%{product_suffix}
+# For compatibility after reverting name to libmysql
+for lib in %{shared_lib_sec_name}{.a,_r.a}; do
+if [ ! -f %{_libdir}/mysql/$lib ]; then
+	ln -s %{shared_lib_pri_name}.a %{_libdir}/mysql/$lib;
+fi
+done
+
+%postun -n Percona-Server-devel%{product_suffix}
+# Cleanup of symlinks after uninstall
+for lib in %{shared_lib_sec_name}{.a,_r.a}; do
+if [ -h %{_libdir}/mysql/$lib ]; then
+	rm -f %{_libdir}/mysql/$lib;
+fi
+done
 
 # ----------------------------------------------------------------------------
 %if %{with tokudb}
@@ -1406,6 +1438,15 @@ fi
 %{_libdir}/mysql/plugin/ha_tokudb.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/ha_tokudb.so
 %attr(755, root, root) %{_bindir}/ps_tokudb_admin
+%attr(755, root, root) %{_bindir}/tokuft_logprint
+%attr(755, root, root) %{_libdir}/mysql/plugin/tokudb_backup.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/debug/tokudb_backup.so
+%attr(755, root, root) %{_libdir}/libHotBackup.so
+%{_includedir}/backup.h
+%doc storage/tokudb/PerconaFT/README.md
+%doc storage/tokudb/PerconaFT/COPYING.AGPLv3
+%doc storage/tokudb/PerconaFT/COPYING.GPLv2
+%doc storage/tokudb/PerconaFT/PATENTS
 %endif
 
 # ----------------------------------------------------------------------------
@@ -1428,7 +1469,7 @@ for lib in %{shared_lib_pri_name}{.so.18,_r.so.18}; do
 done
 %endif
 # For compatibility between different names of library
-for lib in %{shared_lib_sec_name}{.so.18.0.0,.so.18,_r.so.18.0.0,_r.so.18}; do
+for lib in %{shared_lib_sec_name}{.so.18.0.0,.so.18,_r.so.18.0.0,_r.so.18,.so,_r.so}; do
 if [ ! -f %{_libdir}/$lib ]; then
         ln -s %{shared_lib_pri_name}.so.18 %{_libdir}/$lib;
 fi
@@ -1442,6 +1483,19 @@ done
 /sbin/ldconfig
 
 %postun -n Percona-Server-shared%{product_suffix}
+# Cleanup of symlinks after uninstall
+for lib in %{shared_lib_sec_name}{.so.18.0.0,.so.18,_r.so.18.0.0,_r.so.18,.so,_r.so,.so.18.1.0,_r.so.18.1.0}; do
+if [ -h %{_libdir}/$lib ]; then
+	rm -f %{_libdir}/$lib;
+fi
+done
+%if "%rhel" > "6"
+for lib in %{shared_lib_pri_name}{.so.18,_r.so.18}; do
+if [ -h %{_libdir}/$lib ]; then
+	rm -f %{_libdir}/$lib;
+fi
+done
+%endif
 /sbin/ldconfig
 
 # ----------------------------------------------------------------------------
@@ -1458,6 +1512,23 @@ done
 %doc %attr(644, root, man) %{_mandir}/man1/mysqltest_embedded.1*
 
 %changelog
+* Thu Sep 10 2015 Tomislav Plavcic <tomislav.plavcic@percona.com>
+
+- Included Percona-TokuBackup into TokuDB package
+
+* Wed Jul 15 2015 Tomislav Plavcic <tomislav.plavcic@percona.com>
+
+- Fixed symbol versioning for rhel7 in 5.6 rpm (bug1420691)
+
+* Wed May 06 2015 Tomislav Plavcic <tomislav.plavcic@percona.com>
+
+- mysql client is now built with readline (bug1266386)
+
+* Fri Feb 27 2015 Tomislav Plavcic <tomislav.plavcic@percona.com>
+
+- Fixed RPMs assumes that .pid file is located in datadir (bug1201896)
+- Fixed errors in debug build when maintainer mode is on (bug1408232)
+
 * Wed Feb 04 2015 Tomislav Plavcic <tomislav.plavcic@percona.com>
 
 - Added ps_tokudb_admin script for TokuDB plugin installation (BLD-212)

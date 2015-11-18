@@ -4,10 +4,6 @@
  Thread Pool
 =============
 
-.. note::
-
- This feature implementation is considered BETA quality.
-
 |MySQL| executes statements using one thread per client connection. Once the number of connections increases past a certain point performance will degrade. 
 
 This feature enables the server to keep the top performance even with large number of client connections by introducing a dynamic thread pool. By using the thread pool server would decrease the number of threads, which will then reduce the context switching and hot locks contentions. Using the thread pool will have the most effect with ``OLTP`` workloads (relatively short CPU-bound queries). 
@@ -199,7 +195,7 @@ This variable can be used to specify additional port |Percona Server| will liste
      :vartype: Numeric
      :default: 1
      
-This variable can be used to specify the maximum allowed number of connections on the extra port. This can be used with the :variable:`extra_port` variable to access the server in case no new connections can be established due to all worker threads being busy or being locked when ``pool-of-threads`` feature is enabled.
+This variable can be used to specify the maximum allowed number of connections plus one extra ``SUPER`` users connection on the :variable:`extra_port`. This can be used with the :variable:`extra_port` variable to access the server in case no new connections can be established due to all worker threads being busy or being locked when ``pool-of-threads`` feature is enabled.
 
 Status Variables
 =====================

@@ -15,3 +15,5 @@ query_cache_size_basic_64           : Bug#11748572
 innodb_log_archive_basic : laurynas disabled until log archiving is fixed in 5.7
 innodb_log_arch_dir_basic : laurynas disabled until log archiving is fixed in 5.7
 innodb_log_arch_expire_sec_basic : laurynas disabled until log archiving is fixed in 5.7
+super_read_only_func2 : Percona regression in switching to upstream implementation https://bugs.mysql.com/bug.php?id=79328
+super_read_only_func3 : Percona regression in switching to upstream implementation https://bugs.mysql.com/bug.php?id=79328

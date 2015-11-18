@@ -964,7 +964,7 @@ void register_binlog_handler(THD *thd, bool trx);
 int query_error_code(THD *thd, bool not_killed);
 
 bool generate_new_log_name(char *new_name, ulong *new_ext,
-                           const char *log_name, bool unique);
+                           const char *log_name, bool is_binlog);
 
 extern const char *log_bin_index;
 extern const char *log_bin_basename;

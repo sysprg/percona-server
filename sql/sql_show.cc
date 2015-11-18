@@ -2457,8 +2457,9 @@ public:
     }
 
     /* TIME_MS */
-    table->field[8]->store(((inspect_thd->start_utime ?
-                             now_utime - inspect_thd->start_utime : 0)/ 1000));
+    ulonglong tmp_start_utime= inspect_thd->start_utime;
+    table->field[8]->store(((tmp_start_utime < now_utime ?
+                             now_utime - tmp_start_utime : 0)/ 1000));
 
     /* ROWS_SENT */
     table->field[9]->store((ulonglong) inspect_thd->get_sent_row_count());
@@ -2509,6 +2510,8 @@ public:
 int fill_schema_processlist(THD* thd, TABLE_LIST* tables, Item* cond)
 {
   DBUG_ENTER("fill_schema_processlist");
+
+  DEBUG_SYNC(thd, "before_fill_schema_processlist");
 
   Fill_process_list fill_process_list(thd, tables);
   if (!thd->killed)
@@ -4521,14 +4524,13 @@ public:
         continue;
       }
 #endif
-      THD *t= tmp->in_use;
-      tmp->in_use= m_client_thd;
+      DEBUG_SYNC(m_client_thd,
+                 "fill_global_temporary_tables_before_storing_rec");
 
       if (store_temporary_table_record(thd, m_tables->table, tmp,
                                        m_client_thd->lex->select_lex->db))
         m_failed= true;
 
-      tmp->in_use= t;
     }
     mysql_mutex_unlock(&thd->LOCK_temporary_tables);
   }
@@ -5484,6 +5486,9 @@ static int get_schema_tables_record(THD *thd, TABLE_LIST *tables,
         break;
       case ROW_TYPE_TOKU_ZLIB:
         tmp_buff= "tokudb_zlib";
+        break;
+      case ROW_TYPE_TOKU_SNAPPY:
+        tmp_buff= "tokudb_snappy";
         break;
       case ROW_TYPE_TOKU_QUICKLZ:
         tmp_buff= "tokudb_quicklz";

@@ -549,8 +549,7 @@ bool File_query_log::open()
     goto err;
   }
 
-  if (generate_new_log_name(log_file_name, &cur_log_ext, name,
-                            max_slowlog_size > 0))
+  if (generate_new_log_name(log_file_name, &cur_log_ext, name, false))
     goto err;
 
   /* File is regular writable file */
@@ -734,6 +733,9 @@ bool File_query_log::write_slow(THD *thd, ulonglong current_utime,
   mysql_mutex_lock(&LOCK_log);
   DBUG_ASSERT(is_open());
 
+  if ((max_slowlog_size > 0) && rotate(max_slowlog_size, &need_purge))
+    goto err;
+
   if (!(specialflag & SPECIAL_SHORT_LOG_FORMAT))
   {
     char my_timestamp[iso8601_size];
@@ -783,7 +785,7 @@ bool File_query_log::write_slow(THD *thd, ulonglong current_utime,
   if (my_b_write(&log_file, (uchar*) "\n", 1))
     goto err;
 
-  if (opt_log_slow_sp_statements && thd->sp_runtime_ctx &&
+  if (opt_log_slow_sp_statements == 1 && thd->sp_runtime_ctx &&
       my_b_printf(&log_file,
                   "# Stored_routine: %s\n",
                   thd->sp_runtime_ctx->sp->m_qname.str) == (uint) -1)
@@ -907,9 +909,6 @@ bool File_query_log::write_slow(THD *thd, ulonglong current_utime,
   if (my_b_write(&log_file, (uchar*) sql_text, sql_text_len) ||
       my_b_write(&log_file, (uchar*) ";\n",2) ||
       flush_io_cache(&log_file))
-    goto err;
-
-  if ((max_slowlog_size > 0) && rotate(max_slowlog_size, &need_purge))
     goto err;
 
   save_cur_ext = cur_log_ext;
@@ -1761,7 +1760,7 @@ bool log_slow_applicable(THD *thd)
     Don't log the CALL statement if slow statements logging
     inside of stored procedures is enabled.
   */
-  if (opt_log_slow_sp_statements && thd->lex)
+  if (opt_log_slow_sp_statements > 0 && thd->lex)
   {
     if (thd->lex->sql_command == SQLCOM_CALL)
     {
@@ -2059,7 +2058,7 @@ int File_query_log::new_file()
   if (cur_log_ext == (ulong)-1)
   {
     strcpy(new_name, name);
-    if ((error= generate_new_log_name(new_name, &cur_log_ext, name, true)))
+    if ((error= generate_new_log_name(new_name, &cur_log_ext, name, false)))
       goto end;
   }
   else

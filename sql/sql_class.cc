@@ -1660,6 +1660,7 @@ void THD::init(void)
     avoid temporary tables replication failure.
   */
   variables.pseudo_thread_id= m_thread_id;
+  variables.pseudo_server_id= 0;
   mysql_mutex_unlock(&LOCK_global_system_variables);
 
   /*
@@ -1782,7 +1783,7 @@ void THD::update_stats(bool ran_command)
         if (!sent_row_count_2)
           diff_empty_queries++;
       }
-      else if (!(sql_command_flags[lex->sql_command] & CF_STATUS_COMMAND))
+      else if ((sql_command_flags[lex->sql_command] & CF_STATUS_COMMAND) != 0)
       {
         // 'SHOW ' commands become SQLCOM_SELECT.
         diff_other_commands++;
@@ -4535,6 +4536,7 @@ void THD::inc_examined_row_count(ha_rows count)
 void THD::inc_status_created_tmp_disk_tables()
 {
   status_var.created_tmp_disk_tables++;
+  query_plan_flags|= QPLAN_TMP_DISK;
 #ifdef HAVE_PSI_STATEMENT_INTERFACE
   PSI_STATEMENT_CALL(inc_statement_created_tmp_disk_tables)(m_statement_psi, 1);
 #endif
@@ -4681,6 +4683,11 @@ void THD::leave_locked_tables_mode()
       when leaving LTM.
     */
     global_read_lock.set_explicit_lock_duration(this);
+
+    /* Make sure backup locks are not released when leaving LTM */
+    DBUG_ASSERT(!backup_tables_lock.is_acquired());
+    backup_binlog_lock.set_explicit_locks_duration(this);
+
     /*
       Also ensure that we don't release metadata locks for open HANDLERs
       and user-level locks.

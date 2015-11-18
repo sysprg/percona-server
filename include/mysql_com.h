@@ -165,8 +165,8 @@
                                               table */
 #define REFRESH_THREAD_STATS    0x4000000L /* Refresh thread stats my_hash
                                               table */
-#define REFRESH_FLUSH_PAGE_BITMAPS 0x800000L
-#define REFRESH_RESET_PAGE_BITMAPS 0x1000000L
+#define REFRESH_FLUSH_PAGE_BITMAPS 0x8000000L
+#define REFRESH_RESET_PAGE_BITMAPS 0x10000000L
 
 #define PURGE_BITMAPS_TO_LSN 1
 
