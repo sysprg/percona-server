@@ -2637,10 +2637,13 @@ InnoDB extended statistics should be collected.
 trx_t*
 innobase_get_trx_for_slow_log(void)
 {
-	THD *thd = current_thd;
+	THD* thd = current_thd;
 	if (UNIV_LIKELY(!innobase_slow_log_verbose(thd)))
-		return NULL;
-	return(thd_to_trx(thd));
+		return(NULL);
+	trx_t* trx = thd_to_trx(thd);
+	if (trx && trx->take_stats)
+		return(trx);
+	return(NULL);
 }
 
 /** InnoDB transaction object that is currently associated with THD is
