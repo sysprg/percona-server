@@ -2524,6 +2524,23 @@ innobase_next_autoinc(
 	return(next_value);
 }
 
+/**
+  Check whether given connection should log stats for slow query log InnoDB
+  extensions.
+
+  @param[in]	thd	connection handle
+  @return whether stats for slow query log InnoDB extensions should be logged
+*/
+static
+bool
+innobase_slow_log_verbose(THD* thd)
+{
+	return thd && thd_opt_slow_log()
+		&& unlikely(thd_log_slow_verbosity(thd)
+			    & (1ULL << SLOG_V_INNODB))
+		&& !thd_is_background_thread(thd);
+}
+
 /*********************************************************************//**
 Initializes some fields in an InnoDB transaction object. */
 static
@@ -2543,8 +2560,7 @@ innobase_trx_init(
 	trx->check_unique_secondary = !thd_test_options(
 		thd, OPTION_RELAXED_UNIQUE_CHECKS);
 
-	trx->take_stats = thd_log_slow_verbosity(thd)
-		& (1ULL << SLOG_V_INNODB);
+	trx->take_stats = innobase_slow_log_verbose(thd);
 
 	DBUG_VOID_RETURN;
 }
@@ -2603,26 +2619,28 @@ check_trx_exists(
 	return(trx);
 }
 
-/*************************************************************************
-Gets current trx. */
+/** Get the transaction of the current connection handle, if either exists.
+@return transaction of the current connection handle, or NULL. */
 trx_t*
-innobase_get_trx()
+innobase_get_trx(void)
 {
-	THD *thd=current_thd;
-	if (likely(thd != 0)) {
-		if (unlikely(get_server_state() == SERVER_BOOTING))
-			return(NULL);
-		trx_t*& trx = thd_to_trx(thd);
-		return(trx);
-	} else {
+	THD *thd = current_thd;
+	if (UNIV_UNLIKELY(!thd))
 		return(NULL);
-	}
+
+	return(thd_to_trx(thd));
 }
 
-bool
-innobase_get_slow_log()
+/** Get the transaction of the current connection handle if slow query log
+InnoDB extended statistics should be collected.
+@return transaction object if statistics should be collected, or NULL. */
+trx_t*
+innobase_get_trx_for_slow_log(void)
 {
-	return(static_cast<bool>(thd_opt_slow_log()));
+	THD *thd = current_thd;
+	if (UNIV_LIKELY(!innobase_slow_log_verbose(thd)))
+		return NULL;
+	return(thd_to_trx(thd));
 }
 
 /** InnoDB transaction object that is currently associated with THD is
