@@ -548,9 +548,14 @@ bool File_query_log::open()
     name= const_cast<char *>(log_name); // for the error message
     goto err;
   }
-
-  if (generate_new_log_name(log_file_name, &cur_log_ext, name, false))
-    goto err;
+  if (cur_log_ext == (ulong)-1)
+  {
+    if (generate_new_log_name(log_file_name, &cur_log_ext, name, false))
+      goto err;
+  } else {
+    snprintf(log_file_name, sizeof(log_file_name),
+             "%s.%06lu", name, cur_log_ext);
+  }
 
   /* File is regular writable file */
   if (my_stat(log_file_name, &f_stat, MYF(0)) && !MY_S_ISREG(f_stat.st_mode))
