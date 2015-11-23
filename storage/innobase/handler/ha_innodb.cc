@@ -302,21 +302,6 @@ static TYPELIB innodb_cleaner_lsn_age_factor_typelib = {
 	NULL
 };
 
-/** Possible values for system variable "innodb_foreground_preflush".  */
-static const char* innodb_foreground_preflush_names[] = {
-	"sync_preflush",
-	"exponential_backoff",
-	NullS
-};
-
-/* Enumeration for innodb_foreground_preflush.  */
-static TYPELIB innodb_foreground_preflush_typelib = {
-	array_elements(innodb_foreground_preflush_names) - 1,
-	"innodb_foreground_preflush_typelib",
-	innodb_foreground_preflush_names,
-	NULL
-};
-
 /** Possible values for system variable "innodb_empty_free_list_algorithm".  */
 static const char* innodb_empty_free_list_algorithm_names[] = {
 	"legacy",
@@ -19775,15 +19760,6 @@ static MYSQL_SYSVAR_ULONG(buffer_pool_chunk_size, srv_buf_pool_chunk_unit,
   NULL, NULL,
   128 * 1024 * 1024, 1024 * 1024, LONG_MAX, 1024 * 1024);
 
-static MYSQL_SYSVAR_ENUM(foreground_preflush, srv_foreground_preflush,
-  PLUGIN_VAR_OPCMDARG,
-  "The algorithm InnoDB uses for the query threads at sync preflush.  "
-  "Possible values are "
-  "SYNC_PREFLUSH: perform a sync preflush as Oracle MySQL; "
-  "EXPONENTIAL_BACKOFF: (default) wait for the page cleaner flush.",
-  NULL, NULL, SRV_FOREGROUND_PREFLUSH_EXP_BACKOFF,
-  &innodb_foreground_preflush_typelib);
-
 #if defined UNIV_DEBUG || defined UNIV_PERF_DEBUG
 static MYSQL_SYSVAR_ULONG(page_hash_locks, srv_n_page_hash_locks,
   PLUGIN_VAR_OPCMDARG | PLUGIN_VAR_READONLY,
@@ -19824,12 +19800,14 @@ static MYSQL_SYSVAR_BOOL(priority_master, srv_master_thread_priority,
 
 #endif /* UNIV_LINUX */
 
+// TODO: the option is here, but currently a no-op
 static MYSQL_SYSVAR_ULONG(cleaner_max_lru_time, srv_cleaner_max_lru_time,
   PLUGIN_VAR_RQCMDARG,
   "The maximum time limit for a single LRU tail flush iteration by the page "
   "cleaner thread in miliseconds",
   NULL, NULL, 1000, 0, ~0UL, 0);
 
+// TODO: the option is here, but currently a no-op
 static MYSQL_SYSVAR_ULONG(cleaner_max_flush_time, srv_cleaner_max_flush_time,
   PLUGIN_VAR_RQCMDARG,
   "The maximum time limit for a single flush list flush iteration by the page "
@@ -20599,7 +20577,6 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(status_output),
   MYSQL_SYSVAR(status_output_locks),
   MYSQL_SYSVAR(cleaner_lsn_age_factor),
-  MYSQL_SYSVAR(foreground_preflush),
   MYSQL_SYSVAR(empty_free_list_algorithm),
   MYSQL_SYSVAR(print_all_deadlocks),
   MYSQL_SYSVAR(cmp_per_index_enabled),
