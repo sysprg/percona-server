@@ -4198,6 +4198,7 @@ row_merge_create_index(
 						     index_def->rebuild);
 
 		ut_a(index);
+		ut_ad(index->page != FIL_NULL || index->type == DICT_FTS);
 
 		index->parser = index_def->parser;
 		index->is_ngram = index_def->is_ngram;
