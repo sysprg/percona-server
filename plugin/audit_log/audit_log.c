@@ -252,8 +252,9 @@ void csv_escape(const char *in, size_t *inlen, char *out, size_t *outlen)
   @param[out] endptr       A pointer to the character after the
                            last escaped character in the output
                            buffer
-  @param[out] full_outlen  Full lenght of the output buffer needed to
-                           store escaped input
+  @param[out] full_outlen  Length of the output buffer that would
+                           be needed to store complete non-truncated
+                           escaped input buffer
 
   @return
     pointer to the beginning of the output buffer
@@ -279,28 +280,28 @@ char *escape_string(const char *in, size_t inlen,
     out[outlen]= 0;
     if (endptr)
       *endptr= out + outlen + 1;
+    if (full_outlen)
+    {
+      char tmp[20];
+      in= in + inlen;
+      *full_outlen= *full_outlen + outlen;
+      inlen_orig= inlen_orig - inlen;
+      while (inlen_orig > 0)
+      {
+        size_t tmp_size= sizeof(tmp);
+        inlen= inlen_orig;
+        format_escape_func[audit_log_format](in, &inlen, tmp, &tmp_size);
+        in= in + inlen;
+        inlen_orig= inlen_orig - inlen;
+        *full_outlen= *full_outlen + tmp_size;
+      }
+    }
   }
   else
   {
     *out= 0;
     if (endptr)
       *endptr= out + 1;
-  }
-  if (full_outlen)
-  {
-    char tmp[20];
-    in= in + inlen;
-    *full_outlen= *full_outlen + outlen;
-    inlen_orig= inlen_orig - inlen;
-    while (inlen_orig > 0)
-    {
-      size_t tmp_size= sizeof(tmp);
-      inlen= inlen_orig;
-      format_escape_func[audit_log_format](in, &inlen, tmp, &tmp_size);
-      in= in + inlen;
-      inlen_orig= inlen_orig - inlen;
-      *full_outlen= *full_outlen + outlen;
-    }
   }
   return out;
 }
@@ -465,7 +466,7 @@ size_t audit_log_general_record(char **buf, size_t buflen,
   buflen_estimated= full_outlen * 2 +
                     strlen(format_string[audit_log_format]) +
                     strlen(name) +
-                    strlen(event->general_sql_command.str) +
+                    event->general_sql_command.length +
                     20 + /* general_thread_id */
                     20 + /* status */
                     MAX_RECORD_ID_SIZE + MAX_TIMESTAMP_SIZE;
@@ -479,7 +480,7 @@ size_t audit_log_general_record(char **buf, size_t buflen,
                    make_timestamp(timestamp, sizeof(timestamp), t),
                    event->general_sql_command.str,
                    event->general_thread_id,
-                   status, query, user, host, external_user,ip);
+                   status, query, user, host, external_user, ip);
   *buf= endptr;
 
   return len;
@@ -559,6 +560,15 @@ size_t audit_log_connection_record(char **buf, size_t buflen,
                     endptr, endbuf - endptr, &endptr, NULL);
   database= escape_string(event->database, event->database_length,
                           endptr, endbuf - endptr, &endptr, NULL);
+
+  DBUG_ASSERT((endptr - *buf) * 2 +
+              strlen(format_string[audit_log_format]) +
+              strlen(name) +
+              MAX_RECORD_ID_SIZE +
+              MAX_TIMESTAMP_SIZE +
+              20 + /* event->thread_id */
+              20 /* event->status */
+              < buflen);
 
   len= my_snprintf(endptr, endbuf - endptr,
                    format_string[audit_log_format],
@@ -682,7 +692,7 @@ int reopen_log_file()
 typedef struct
 {
   /* size of allocated large buffer to for record formatting */
-  size_t large_buffer_size;
+  size_t record_buffer_size;
 } audit_log_thd_local;
 
 /*
@@ -695,7 +705,7 @@ audit_log_thd_local *get_thd_local(MYSQL_THD thd);
  Allocate and return buffer of given size.
  */
 static
-char *get_large_buffer(MYSQL_THD thd, size_t size);
+char *get_record_buffer(MYSQL_THD thd, size_t size);
 
 
 static
@@ -754,7 +764,8 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
 {
   char buf[4096];
   char *log_rec = buf;
-  size_t len;
+  char *allocated_buf= get_record_buffer(thd, 0);
+  size_t len, buflen= sizeof(buf);
 
   if (!is_event_class_allowed_by_policy(event_class, audit_log_policy))
     return;
@@ -769,15 +780,23 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
       if (event_general->general_command_length == 4 &&
           strncmp(event_general->general_command, "Quit", 4) == 0)
         break;
-      len= audit_log_general_record(&log_rec, sizeof(buf),
+
+      /* use allocated buffer if available */
+      if (allocated_buf != NULL)
+      {
+        log_rec= allocated_buf;
+        buflen= get_thd_local(thd)->record_buffer_size;
+      }
+      len= audit_log_general_record(&log_rec, buflen,
                                     event_general->general_command,
                                     event_general->general_time,
                                     event_general->general_error_code,
                                     event_general);
-      if (len > sizeof(buf))
+      if (len > buflen)
       {
-        log_rec= get_large_buffer(thd, len * 4);
-        len= audit_log_general_record(&log_rec, len * 4,
+        buflen= len * 4;
+        log_rec= get_record_buffer(thd, buflen);
+        len= audit_log_general_record(&log_rec, buflen,
                                       event_general->general_command,
                                       event_general->general_time,
                                       event_general->general_error_code,
@@ -975,7 +994,7 @@ static MYSQL_SYSVAR_ENUM(syslog_priority, audit_log_syslog_priority,
        NULL, NULL, 0,
        &audit_log_syslog_priority_typelib);
 
-static MYSQL_THDVAR_STR(large_buffer,
+static MYSQL_THDVAR_STR(record_buffer,
                         PLUGIN_VAR_READONLY | PLUGIN_VAR_MEMALLOC | \
                         PLUGIN_VAR_NOSYSVAR | PLUGIN_VAR_NOCMDOPT,
                         "Buffer for query formatting.", NULL, NULL, "");
@@ -999,7 +1018,7 @@ static struct st_mysql_sys_var* audit_log_system_variables[] =
   MYSQL_SYSVAR(syslog_ident),
   MYSQL_SYSVAR(syslog_priority),
   MYSQL_SYSVAR(syslog_facility),
-  MYSQL_SYSVAR(large_buffer),
+  MYSQL_SYSVAR(record_buffer),
   MYSQL_SYSVAR(local),
   NULL
 };
@@ -1027,19 +1046,19 @@ audit_log_thd_local *get_thd_local(MYSQL_THD thd)
  Allocate and return buffer of given size.
  */
 static
-char *get_large_buffer(MYSQL_THD thd, size_t size)
+char *get_record_buffer(MYSQL_THD thd, size_t size)
 {
   audit_log_thd_local *local= get_thd_local(thd);
-  char *buf= THDVAR(thd, large_buffer);
+  char *buf= THDVAR(thd, record_buffer);
 
-  if (local->large_buffer_size < size)
+  if (local->record_buffer_size < size)
   {
-    local->large_buffer_size= size;
+    local->record_buffer_size= size;
     if (buf == NULL)
       buf= (char *) my_malloc(size, MYF(MY_FAE));
     else
       buf= (char *) my_realloc(buf, size, MYF(MY_FAE));
-    THDVAR(thd, large_buffer)= (char *) buf;
+    THDVAR(thd, record_buffer)= (char *) buf;
   }
 
   return buf;
