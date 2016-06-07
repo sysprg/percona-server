@@ -351,8 +351,9 @@ char *make_argv(char *buf, size_t len, int argc, char **argv)
 }
 
 static
-size_t audit_log_audit_record(char *buf, size_t buflen,
-                              const char *name, time_t t)
+char *audit_log_audit_record(char *buf, size_t buflen,
+                             const char *name, time_t t,
+                             size_t *outlen)
 {
   char id_str[MAX_RECORD_ID_SIZE];
   char timestamp[MAX_TIMESTAMP_SIZE];
@@ -384,28 +385,31 @@ size_t audit_log_audit_record(char *buf, size_t buflen,
                      "\"%s\",\"%s\",\"%s\",\"%s\",\"%s\","
                      "\""MACHINE_TYPE"-"SYSTEM_TYPE"\"\n" };
 
-  return my_snprintf(buf, buflen,
-                     format_string[audit_log_format],
-                     name,
-                     make_record_id(id_str, sizeof(id_str)),
-                     make_timestamp(timestamp, sizeof(timestamp), t),
-                     server_version,
-                     make_argv(arg_buf, sizeof(arg_buf),
-                               orig_argc - 1, orig_argv + 1));
+  *outlen= my_snprintf(buf, buflen,
+                       format_string[audit_log_format],
+                       name,
+                       make_record_id(id_str, sizeof(id_str)),
+                       make_timestamp(timestamp, sizeof(timestamp), t),
+                       server_version,
+                       make_argv(arg_buf, sizeof(arg_buf),
+                                 orig_argc - 1, orig_argv + 1));
+
+  return buf;
 }
 
 
 static
-size_t audit_log_general_record(char **buf, size_t buflen,
-                                const char *name, time_t t, int status,
-                                const struct mysql_event_general *event)
+char *audit_log_general_record(char *buf, size_t buflen,
+                               const char *name, time_t t, int status,
+                               const struct mysql_event_general *event,
+                               size_t *outlen)
 {
   char id_str[MAX_RECORD_ID_SIZE];
   char timestamp[MAX_TIMESTAMP_SIZE];
   char *query, *user, *host, *external_user, *ip;
-  char *endptr= *buf, *endbuf= *buf + buflen;
+  char *endptr= buf, *endbuf= buf + buflen;
   size_t full_outlen= 0, buflen_estimated;
-  size_t len;
+
   const char *format_string[] = {
                      "<AUDIT_RECORD\n"
                      "  NAME=\"%s\"\n"
@@ -471,9 +475,12 @@ size_t audit_log_general_record(char **buf, size_t buflen,
                     20 + /* status */
                     MAX_RECORD_ID_SIZE + MAX_TIMESTAMP_SIZE;
   if (buflen_estimated > buflen)
-    return buflen_estimated;
+  {
+    *outlen= buflen_estimated;
+    return NULL;
+  }
 
-  len= my_snprintf(endptr, endbuf - endptr,
+  *outlen= my_snprintf(endptr, endbuf - endptr,
                    format_string[audit_log_format],
                    name,
                    make_record_id(id_str, sizeof(id_str)),
@@ -481,21 +488,21 @@ size_t audit_log_general_record(char **buf, size_t buflen,
                    event->general_sql_command.str,
                    event->general_thread_id,
                    status, query, user, host, external_user, ip);
-  *buf= endptr;
 
-  return len;
+  return endptr;
 }
 
 static
-size_t audit_log_connection_record(char **buf, size_t buflen,
-                                   const char *name, time_t t,
-                                   const struct mysql_event_connection *event)
+char *audit_log_connection_record(char *buf, size_t buflen,
+                                  const char *name, time_t t,
+                                  const struct mysql_event_connection *event,
+                                  size_t *outlen)
 {
   char id_str[MAX_RECORD_ID_SIZE];
   char timestamp[MAX_TIMESTAMP_SIZE];
   char *user, *priv_user, *external_user, *proxy_user, *host, *ip, *database;
-  char *endptr= *buf, *endbuf= *buf + buflen;
-  size_t len;
+  char *endptr= buf, *endbuf= buf + buflen;
+
   const char *format_string[] = {
                      "<AUDIT_RECORD\n"
                      "  NAME=\"%s\"\n"
@@ -561,7 +568,7 @@ size_t audit_log_connection_record(char **buf, size_t buflen,
   database= escape_string(event->database, event->database_length,
                           endptr, endbuf - endptr, &endptr, NULL);
 
-  DBUG_ASSERT((endptr - *buf) * 2 +
+  DBUG_ASSERT((endptr - buf) * 2 +
               strlen(format_string[audit_log_format]) +
               strlen(name) +
               MAX_RECORD_ID_SIZE +
@@ -570,17 +577,16 @@ size_t audit_log_connection_record(char **buf, size_t buflen,
               20 /* event->status */
               < buflen);
 
-  len= my_snprintf(endptr, endbuf - endptr,
-                   format_string[audit_log_format],
-                   name,
-                   make_record_id(id_str, sizeof(id_str)),
-                   make_timestamp(timestamp, sizeof(timestamp), t),
-                   event->thread_id,
-                   event->status, user, priv_user,external_user,
-                   proxy_user, host, ip, database);
-  *buf= endptr;
+  *outlen= my_snprintf(endptr, endbuf - endptr,
+                       format_string[audit_log_format],
+                       name,
+                       make_record_id(id_str, sizeof(id_str)),
+                       make_timestamp(timestamp, sizeof(timestamp), t),
+                       event->thread_id,
+                       event->status, user, priv_user,external_user,
+                       proxy_user, host, ip, database);
 
-  return len;
+  return endptr;
 }
 
 static
@@ -719,8 +725,8 @@ int audit_log_plugin_init(void *arg __attribute__((unused)))
   if (init_new_log_file())
     return(1);
 
-  len= audit_log_audit_record(buf, sizeof(buf), "Audit", time(NULL));
-  audit_log_write(buf, len);
+  if (audit_log_audit_record(buf, sizeof(buf), "Audit", time(NULL), &len))
+    audit_log_write(buf, len);
 
   return(0);
 }
@@ -732,8 +738,8 @@ int audit_log_plugin_deinit(void *arg __attribute__((unused)))
   char buf[1024];
   size_t len;
 
-  len= audit_log_audit_record(buf, sizeof(buf), "NoAudit", time(NULL));
-  audit_log_write(buf, len);
+  if (audit_log_audit_record(buf, sizeof(buf), "NoAudit", time(NULL), &len))
+    audit_log_write(buf, len);
 
   audit_handler_close(log_handler);
 
@@ -763,9 +769,9 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
                       const void *event)
 {
   char buf[4096];
-  char *log_rec = buf;
+  char *log_rec = NULL;
   char *allocated_buf= get_record_buffer(thd, 0);
-  size_t len, buflen= sizeof(buf);
+  size_t len, buflen;
 
   if (!is_event_class_allowed_by_policy(event_class, audit_log_policy))
     return;
@@ -787,22 +793,30 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
         log_rec= allocated_buf;
         buflen= get_thd_local(thd)->record_buffer_size;
       }
-      len= audit_log_general_record(&log_rec, buflen,
-                                    event_general->general_command,
-                                    event_general->general_time,
-                                    event_general->general_error_code,
-                                    event_general);
+      else
+      {
+        log_rec= buf;
+        buflen= sizeof(buf);
+      }
+      log_rec= audit_log_general_record(log_rec, buflen,
+                                        event_general->general_command,
+                                        event_general->general_time,
+                                        event_general->general_error_code,
+                                        event_general,
+                                        &len);
       if (len > buflen)
       {
         buflen= len * 4;
-        log_rec= get_record_buffer(thd, buflen);
-        len= audit_log_general_record(&log_rec, buflen,
-                                      event_general->general_command,
-                                      event_general->general_time,
-                                      event_general->general_error_code,
-                                      event_general);
+        log_rec= audit_log_general_record(get_record_buffer(thd, buflen),
+                                          buflen,
+                                          event_general->general_command,
+                                          event_general->general_time,
+                                          event_general->general_error_code,
+                                          event_general,
+                                          &len);
       }
-      audit_log_write(log_rec, len);
+      if (log_rec)
+        audit_log_write(log_rec, len);
       break;
     }
   }
@@ -813,24 +827,22 @@ void audit_log_notify(MYSQL_THD thd __attribute__((unused)),
     switch (event_connection->event_subclass)
     {
     case MYSQL_AUDIT_CONNECTION_CONNECT:
-      len= audit_log_connection_record(&log_rec, sizeof(buf),
-                                       "Connect", time(NULL), event_connection);
-      audit_log_write(log_rec, len);
+      log_rec= audit_log_connection_record(buf, sizeof(buf), "Connect",
+                                           time(NULL), event_connection, &len);
       break;
     case MYSQL_AUDIT_CONNECTION_DISCONNECT:
-      len= audit_log_connection_record(&log_rec, sizeof(buf),
-                                       "Quit", time(NULL), event_connection);
-      audit_log_write(log_rec, len);
+      log_rec= audit_log_connection_record(buf, sizeof(buf), "Quit",
+                                           time(NULL), event_connection, &len);
       break;
    case MYSQL_AUDIT_CONNECTION_CHANGE_USER:
-      len= audit_log_connection_record(&log_rec, sizeof(buf),
-                                       "Change user", time(NULL),
-                                       event_connection);
-      audit_log_write(log_rec, len);
+      log_rec= audit_log_connection_record(buf, sizeof(buf), "Change user",
+                                           time(NULL), event_connection, &len);
       break;
     default:
       break;
     }
+    if (log_rec)
+      audit_log_write(log_rec, len);
   }
 }
 
