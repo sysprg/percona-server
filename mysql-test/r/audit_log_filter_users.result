@@ -1,0 +1,67 @@
+SET GLOBAL audit_log_include_accounts= 'user1@localhost,, user22@127.0.0.1,admin@%';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+user1@localhost,, user22@127.0.0.1,admin@%	NULL
+SET GLOBAL audit_log_exclude_accounts= '22useer@localhost';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	22useer@localhost
+SET GLOBAL audit_log_include_accounts= 'user1@localhost, user2@localhost, user3@localhost';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+user1@localhost, user2@localhost, user3@localhost	NULL
+SET GLOBAL audit_log_include_accounts= '';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	NULL
+SET GLOBAL audit_log_include_accounts= NULL;
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	NULL
+SET GLOBAL audit_log_exclude_accounts= "'us,er1'@'localhost',, user22@127.0.0.1,admin@%";
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	'us,er1'@'localhost',, user22@127.0.0.1,admin@%
+SET GLOBAL audit_log_include_accounts= '22useer@localhost';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+22useer@localhost	NULL
+SET GLOBAL audit_log_exclude_accounts= 'user1@localhost, user2@localhost, user3@localhost';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	user1@localhost, user2@localhost, user3@localhost
+SET GLOBAL audit_log_exclude_accounts= '';
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	NULL
+SET GLOBAL audit_log_exclude_accounts= NULL;
+SELECT @@audit_log_include_accounts, @@audit_log_exclude_accounts;
+@@audit_log_include_accounts	@@audit_log_exclude_accounts
+NULL	NULL
+SET GLOBAL audit_log_include_accounts= ',,';
+SET GLOBAL audit_log_flush=ON;
+SET GLOBAL audit_log_flush=ON;
+SET GLOBAL audit_log_include_accounts= 'user1@localhost,, user22@127.0.0.1,admin@%';
+SELECT 'skip';
+skip
+skip
+SET GLOBAL audit_log_include_accounts= 'user1@localhost,root@localhost , user22,admin';
+SELECT 'pass';
+pass
+pass
+SET GLOBAL audit_log_exclude_accounts= 'user1@localhost,, user22@127.0.0.1,admin@%';
+SELECT 'pass';
+pass
+pass
+SET GLOBAL audit_log_exclude_accounts= 'user1@localhost, \'root\'@localhost, user22,admin';
+SELECT 'skip';
+skip
+skip
+SET GLOBAL audit_log_exclude_accounts= NULL;
+set global audit_log_flush= ON;
+================================
+SET GLOBAL audit_log_flush=ON
+SELECT 'pass'
+SELECT 'pass'
+SET GLOBAL audit_log_exclude_accounts= NULL
+================================
