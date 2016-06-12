@@ -20,30 +20,19 @@
 #include <my_sys.h>
 #include <my_list.h>
 #include <my_pthread.h>
+#include <my_atomic.h>
 #include <typelib.h>
 #include <limits.h>
 #include <string.h>
 
-static volatile ulonglong starttime= 0;
-static volatile ulonglong concurrency= 0;
-static volatile ulonglong busystart= 0;
-static volatile ulonglong busytime= 0;
-static volatile ulonglong totaltime= 0;
-static volatile ulonglong queries= 0;
+static ulonglong starttime= 0;
+static ulonglong concurrency= 0;
+static ulonglong busytime_start= 0;
+static ulonglong busytime= 0;
+static ulonglong queries= 0;
+static ulonglong totaltime= 0;
 
-#ifdef HAVE_PSI_INTERFACE
-PSI_mutex_key key_thd_list_mutex;
-#endif
-mysql_mutex_t thd_list_mutex;
-
-LIST *thd_list_root= NULL;
-
-typedef struct sm_thd_data_struct {
-  ulonglong start;
-  ulonglong duration;
-  ulonglong queries;
-  LIST *backref;
-} sm_thd_data_t;
+static my_atomic_rwlock_t sm_lock __attribute__((unused));
 
 typedef enum { CTL_ON= 0, CTL_OFF= 1, CTL_RESET= 2 } sm_ctl_t;
 static const char* sm_ctl_names[]= { "ON", "OFF", "RESET", NullS };
@@ -61,9 +50,14 @@ void sm_ctl_update(MYSQL_THD thd, struct st_mysql_sys_var *var,
 static ulong sm_ctl= CTL_OFF;
 
 static
-MYSQL_THDVAR_ULONGLONG(thd_data,
+MYSQL_THDVAR_BOOL(must_contribute,
   PLUGIN_VAR_READONLY | PLUGIN_VAR_NOSYSVAR | PLUGIN_VAR_NOCMDOPT,
-  "scalability metrics data", NULL, NULL, 0, 0, ULONGLONG_MAX, 0);
+  "should this thread contribute?", NULL, NULL, FALSE);
+
+static
+MYSQL_THDVAR_ULONGLONG(start_time,
+  PLUGIN_VAR_READONLY | PLUGIN_VAR_NOSYSVAR | PLUGIN_VAR_NOCMDOPT,
+  "query start time in MS", NULL, NULL, 0, 0, ULONGLONG_MAX, 0);
 
 
 static MYSQL_SYSVAR_ENUM(
@@ -78,81 +72,14 @@ static MYSQL_SYSVAR_ENUM(
 );
 
 static
-ulonglong sm_clock_time_get()
-{
-#if (defined HAVE_CLOCK_GETTIME)
-  struct timespec ts;
-#ifdef CLOCK_MONOTONIC_RAW
-  clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-#else
-  clock_gettime(CLOCK_MONOTONIC, &ts);
-#endif
-  return((ulonglong) ts.tv_sec * 1000000000 + ts.tv_nsec);
-#else
-  /* since output values measured in microseconds anyway,
-  100 nanoseconds precision should be enough here */
-  return(my_getsystime() * 100);
-#endif
-}
-
-
-/* Get duration in microseconds */
-static
-ulonglong sm_clock_time_duration(ulonglong beg, ulonglong end)
-{
-  return((end - beg) / 1000);
-}
-
-static
-sm_thd_data_t *sm_thd_data_get(MYSQL_THD thd)
-{
-  sm_thd_data_t *thd_data = (sm_thd_data_t *) (intptr) THDVAR(thd, thd_data);
-  if (unlikely(thd_data == NULL))
-  {
-    thd_data= calloc(sizeof(sm_thd_data_t), 1);
-    mysql_mutex_lock(&thd_list_mutex);
-    thd_data->backref= list_push(thd_list_root, thd_data);
-    mysql_mutex_unlock(&thd_list_mutex);
-    THDVAR(thd, thd_data)= (ulonglong) (intptr) thd_data;
-  }
-  return thd_data;
-}
-
-
-static
-void sm_thd_data_release(MYSQL_THD thd)
-{
-  sm_thd_data_t *thd_data = (sm_thd_data_t *) (intptr) THDVAR(thd, thd_data);
-  if (likely(thd_data != NULL && thd_data->backref != NULL))
-  {
-    (void) __sync_add_and_fetch(&queries, thd_data->queries);
-    (void) __sync_add_and_fetch(&totaltime, thd_data->duration);
-    mysql_mutex_lock(&thd_list_mutex);
-    thd_list_root= list_delete(thd_list_root, thd_data->backref);
-    mysql_mutex_unlock(&thd_list_mutex);
-    free(thd_data->backref);
-    free(thd_data);
-    THDVAR(thd, thd_data)= 0;
-  }
-}
-
-static
-int sm_reset_one(void *data, void *argument __attribute__((unused)))
-{
-  sm_thd_data_t *thd_data= (sm_thd_data_t *) data;
-  thd_data->queries= 0;
-  thd_data->duration= 0;
-  return(0);
-}
-
-static
 void sm_reset()
 {
-  starttime= sm_clock_time_get();
-  busytime= totaltime= queries= 0;
-  mysql_mutex_lock(&thd_list_mutex);
-  list_walk(thd_list_root, sm_reset_one, NULL);
-  mysql_mutex_unlock(&thd_list_mutex);
+  my_atomic_rwlock_wrlock(&sm_lock);
+  my_atomic_store64(&starttime, my_micro_time() / 1000);
+  my_atomic_store64(&busytime, 0ULL);
+  my_atomic_store64(&queries, 0ULL);
+  my_atomic_store64(&totaltime, 0ULL);
+  my_atomic_rwlock_wrunlock(&sm_lock);
 }
 
 
@@ -163,21 +90,10 @@ void sm_ctl_update(MYSQL_THD thd __attribute__((unused)),
                    const void *save) {
   ulong new_val= *((sm_ctl_t*) save);
 
-  if (new_val != sm_ctl)
-    sm_reset();
+  sm_reset();
 
   if (new_val != CTL_RESET)
-  {
     sm_ctl= new_val;
-
-    if (new_val == CTL_OFF)
-    {
-      mysql_mutex_lock(&thd_list_mutex);
-      list_free(thd_list_root, TRUE);
-      thd_list_root= NULL;
-      mysql_mutex_unlock(&thd_list_mutex);
-    }
-  }
 
 }
 
@@ -185,7 +101,7 @@ void sm_ctl_update(MYSQL_THD thd __attribute__((unused)),
 static
 int sm_plugin_init(void *arg __attribute__((unused)))
 {
-  mysql_mutex_init(key_thd_list_mutex, &thd_list_mutex, MY_MUTEX_INIT_FAST);
+  my_atomic_rwlock_init(&sm_lock);
 
   sm_reset();
 
@@ -196,67 +112,56 @@ int sm_plugin_init(void *arg __attribute__((unused)))
 static
 int sm_plugin_deinit(void *arg __attribute__((unused)))
 {
-  list_free(thd_list_root, TRUE);
-  thd_list_root= NULL;
-
-  mysql_mutex_destroy(&thd_list_mutex);
-
+  my_atomic_rwlock_destroy(&sm_lock);
   return(0);
 }
 
 static
-void sm_query_started(MYSQL_THD thd,
-                      const char* query __attribute__((unused))) {
+void sm_query_started(MYSQL_THD thd)
+{
+  ulonglong zero= 0;
+  ulonglong now= my_micro_time() / 1000;
 
-  sm_thd_data_t *thd_data= sm_thd_data_get(thd);
-
-  if (__sync_bool_compare_and_swap(&concurrency, 0, 1))
-  {
-    thd_data->start= sm_clock_time_get();
-    busystart= thd_data->start;
-  }
+  my_atomic_rwlock_wrlock(&sm_lock);
+  if (my_atomic_cas64(&concurrency, &zero, 1ULL))
+    busytime_start= now;
   else
-  {
-    thd_data->start= sm_clock_time_get();
-    (void) __sync_add_and_fetch(&concurrency, 1);
-  }
+    my_atomic_add64(&concurrency, 1ULL);
+  my_atomic_rwlock_wrunlock(&sm_lock);
+
+  THDVAR(thd, must_contribute)= TRUE;
+  THDVAR(thd, start_time)= now;
 }
 
 static
-void sm_query_finished(MYSQL_THD thd,
-                       const char* query __attribute__((unused))) {
+void sm_query_finished(MYSQL_THD thd)
+{
+  ulonglong one= 1, now, start_time, save_busytime_start;
 
-  sm_thd_data_t *thd_data= sm_thd_data_get(thd);
-  ulonglong end, save_busystart;
+  if (!THDVAR(thd, must_contribute))
+    return;
 
-  if (thd_data->start != 0)
-  {
-    save_busystart= busystart;
-    if (__sync_sub_and_fetch(&concurrency, 1) == 0)
-    {
-      end= sm_clock_time_get();
-      (void) __sync_add_and_fetch(&busytime,
-                           sm_clock_time_duration(save_busystart, end));
-    }
-    else
-    {
-      end= sm_clock_time_get();
-    }
+  now= my_micro_time() / 1000;
+  start_time= THDVAR(thd, start_time);
 
-    thd_data->duration+= sm_clock_time_duration(thd_data->start, end);
-    thd_data->queries++;
-  }
+  my_atomic_rwlock_wrlock(&sm_lock);
+  save_busytime_start= my_atomic_load64(&busytime_start);
+ 
+  if (my_atomic_cas64(&concurrency, &one, 0ULL))
+    my_atomic_add64(&busytime, now - save_busytime_start);
+  else
+    my_atomic_add64(&concurrency, -1LL);
+
+  my_atomic_add64(&totaltime, now - start_time);
+  my_atomic_add64(&queries, 1ULL);
+  my_atomic_rwlock_wrunlock(&sm_lock);
 }
 
 static
-void sm_query_failed(MYSQL_THD thd,
-                     const char* query,
-                     int err __attribute__((unused))) {
-
+void sm_query_failed(MYSQL_THD thd)
+{
   /* currently there is no difference between success and failure */
-
-  sm_query_finished(thd, query);
-
+  sm_query_finished(thd);
 }
 
 
@@ -265,20 +170,14 @@ int sm_elapsedtime(MYSQL_THD thd __attribute__((unused)),
                    struct st_mysql_show_var* var,
                    char *buff)
 {
-  *((ulonglong*)buff)= (sm_ctl == CTL_ON) ?
-                      sm_clock_time_duration(starttime, sm_clock_time_get()) :
-                      0;
+  ulonglong now;
+
+  now= my_micro_time() / 1000;
+  my_atomic_rwlock_wrlock(&sm_lock);
+  *((ulonglong*)buff)= (sm_ctl == CTL_ON) ? now - my_atomic_load64(&starttime) : 0;
+  my_atomic_rwlock_wrunlock(&sm_lock);
   var->type= SHOW_LONGLONG;
   var->value= buff;
-  return(0);
-}
-
-
-static
-int sm_sum_queries(void *data, void *argument)
-{
-  sm_thd_data_t *thd_data= (sm_thd_data_t *) data;
-  *((ulonglong *) argument)+= thd_data->queries;
   return(0);
 }
 
@@ -288,15 +187,13 @@ int sm_queries(MYSQL_THD thd __attribute__((unused)),
                struct st_mysql_show_var* var,
                char *buff)
 {
-  ulonglong sum_queries= 0;
+  ulonglong queries_local= 0;
 
-  if (sm_ctl == CTL_ON)
-  {
-    mysql_mutex_lock(&thd_list_mutex);
-    list_walk(thd_list_root, sm_sum_queries, (unsigned char *) &sum_queries);
-    mysql_mutex_unlock(&thd_list_mutex);
-  }
-  *((ulonglong *) buff)= queries + sum_queries;
+  my_atomic_rwlock_rdlock(&sm_lock);
+  queries_local= my_atomic_load64(&queries);
+  my_atomic_rwlock_rdunlock(&sm_lock);
+
+  *((ulonglong *) buff)= queries_local;
   var->type= SHOW_LONGLONG;
   var->value= buff;
   return(0);
@@ -304,29 +201,46 @@ int sm_queries(MYSQL_THD thd __attribute__((unused)),
 
 
 static
-int sm_sum_totaltime(void *data, void *argument)
+int sm_totaltime(MYSQL_THD thd __attribute__((unused)),
+                 struct st_mysql_show_var* var,
+                 char *buff)
 {
-  sm_thd_data_t *thd_data= (sm_thd_data_t *) data;
-  *((ulonglong *) argument)+= thd_data->duration;
+  ulonglong totaltime_local= 0;
+
+  my_atomic_rwlock_rdlock(&sm_lock);
+  totaltime_local= my_atomic_load64(&totaltime);
+  my_atomic_rwlock_rdunlock(&sm_lock);
+
+  *((ulonglong *) buff)= totaltime_local;
+  var->type= SHOW_LONGLONG;
+  var->value= buff;
   return(0);
 }
 
 
 static
-int sm_totaltime(MYSQL_THD thd __attribute__((unused)),
-               struct st_mysql_show_var* var,
-               char *buff)
+int sm_busytime(MYSQL_THD thd __attribute__((unused)),
+                struct st_mysql_show_var* var,
+                char *buff)
 {
-  ulonglong sum_totaltime= 0;
+  ulonglong busytime_start_local;
+  ulonglong busytime_local;
+  ulonglong now= 0;
 
-  if (sm_ctl == CTL_ON)
+  if (sm_ctl != CTL_OFF)
   {
-    mysql_mutex_lock(&thd_list_mutex);
-    list_walk(thd_list_root, sm_sum_totaltime,
-              (unsigned char *) &sum_totaltime);
-    mysql_mutex_unlock(&thd_list_mutex);
+    now= my_micro_time() / 1000;
+    my_atomic_rwlock_rdlock(&sm_lock);
+    busytime_start_local= my_atomic_load64(&busytime_start);
+    busytime_local= my_atomic_load64(&busytime);
+    my_atomic_rwlock_rdunlock(&sm_lock);
+
+    *((ulonglong *) buff)= now - busytime_start_local + busytime_local;
   }
-  *((ulonglong *) buff)= totaltime + sum_totaltime;
+  else
+  {
+    *((ulonglong *) buff)= 0;
+  }
   var->type= SHOW_LONGLONG;
   var->value= buff;
   return(0);
@@ -351,42 +265,25 @@ static void sm_notify(MYSQL_THD thd, unsigned int event_class,
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_LOG &&
         strcmp(event_general->general_command, "Query") == 0)
     {
-      sm_query_started(thd, event_general->general_query);
+      sm_query_started(thd);
     }
     else if (event_general->general_command &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_LOG &&
         strcmp(event_general->general_command, "Execute") == 0)
     {
-      sm_query_started(thd, event_general->general_query);
+      sm_query_started(thd);
     }
     else if (event_general->general_query &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_RESULT)
     {
-      sm_query_finished(thd, event_general->general_query);
+      sm_query_finished(thd);
     }
     else if (event_general->general_query &&
         event_general->event_subclass == MYSQL_AUDIT_GENERAL_ERROR)
     {
-      sm_query_failed(thd, event_general->general_query,
-                                event_general->general_error_code);
+      sm_query_failed(thd);
     }
 
-  }
-  else if (event_class == MYSQL_AUDIT_CONNECTION_CLASS)
-  {
-    const struct mysql_event_connection *event_connection=
-      (const struct mysql_event_connection *) event;
-    switch (event_connection->event_subclass)
-    {
-    case MYSQL_AUDIT_CONNECTION_CONNECT:
-      sm_thd_data_get(thd);
-      break;
-    case MYSQL_AUDIT_CONNECTION_DISCONNECT:
-      sm_thd_data_release(thd);
-      break;
-    default:
-      break;
-    }
   }
 }
 
@@ -395,7 +292,8 @@ static void sm_notify(MYSQL_THD thd, unsigned int event_class,
  */
 static struct st_mysql_sys_var* scalability_metrics_system_variables[] =
 {
-  MYSQL_SYSVAR(thd_data),
+  MYSQL_SYSVAR(must_contribute),
+  MYSQL_SYSVAR(start_time),
   MYSQL_SYSVAR(control),
   NULL
 };
@@ -422,7 +320,7 @@ static struct st_mysql_show_var simple_status[]=
   { "scalability_metrics_queries", (char *) &sm_queries, SHOW_FUNC },
   { "scalability_metrics_concurrency", (char *) &concurrency, SHOW_LONGLONG },
   { "scalability_metrics_totaltime", (char *) &sm_totaltime, SHOW_FUNC },
-  { "scalability_metrics_busytime", (char *) &busytime, SHOW_LONGLONG },
+  { "scalability_metrics_busytime", (char *) &sm_busytime, SHOW_FUNC },
   { 0, 0, 0}
 };
 
