@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights
+/* Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights
  * reserved.
 
    This program is free software; you can redistribute it and/or modify
@@ -5234,7 +5234,7 @@ static bool ror_intersect_add(ROR_INTERSECT_INFO *info,
   {
     Cost_estimate sweep_cost;
     JOIN *join= info->param->thd->lex->select_lex.join;
-    const bool is_interrupted= join && join->tables == 1;
+    const bool is_interrupted= join && join->tables != 1;
     get_sweep_read_cost(info->param->table, double2rows(info->out_rows),
                         is_interrupted, &sweep_cost);
     info->total_cost += sweep_cost.total_cost();
@@ -12885,7 +12885,12 @@ bool QUICK_GROUP_MIN_MAX_SELECT::add_range(SEL_ARG *sel_range)
     if (sel_range->maybe_null &&
         sel_range->min_value[0] && sel_range->max_value[0])
       range_flag|= NULL_RANGE; /* IS NULL condition */
-    else if (memcmp(sel_range->min_value, sel_range->max_value,
+    /*
+      Do not perform comparison if one of the argiment is NULL value.
+    */
+    else if (!sel_range->min_value[0] &&
+             !sel_range->max_value[0] &&
+             memcmp(sel_range->min_value, sel_range->max_value,
                     min_max_arg_len) == 0)
       range_flag|= EQ_RANGE;  /* equality condition */
   }
@@ -13037,9 +13042,16 @@ int QUICK_GROUP_MIN_MAX_SELECT::reset(void)
   }
   if (quick_prefix_select && quick_prefix_select->reset())
     DBUG_RETURN(1);
+
   result= head->file->ha_index_last(record);
-  if (result == HA_ERR_END_OF_FILE)
-    DBUG_RETURN(0);
+  if (result != 0)
+  {
+    if (result == HA_ERR_END_OF_FILE)
+      DBUG_RETURN(0);
+    else
+      DBUG_RETURN(result);
+  }
+
   /* Save the prefix of the last group. */
   key_copy(last_prefix, record, index_info, group_prefix_len);
 

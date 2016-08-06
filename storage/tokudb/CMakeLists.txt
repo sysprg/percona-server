@@ -20,7 +20,7 @@ include(CheckCXXCompilerFlag)
 # pick language dialect
 check_cxx_compiler_flag(-std=c++11 HAVE_STDCXX11)
 if (HAVE_STDCXX11)
-  set(CMAKE_CXX_FLAGS "-std=c++11 ${CMAKE_CXX_FLAGS}")
+  set(CMAKE_CXX_FLAGS "-std=c++11 -Wno-deprecated-declarations ${CMAKE_CXX_FLAGS}")
 else ()
   message(FATAL_ERROR "${CMAKE_CXX_COMPILER} doesn't support -std=c++11, you need one that does.")
 endif ()
@@ -49,10 +49,6 @@ ENDIF()
 
 IF(DEFINED TOKUDB_NOPATCH_CONFIG)
     ADD_DEFINITIONS("-DTOKUDB_NOPATCH_CONFIG=${TOKUDB_NOPATCH_CONFIG}")
-ENDIF()
-
-IF(DEFINED TOKUDB_CHECK_JEMALLOC)
-    ADD_DEFINITIONS("-DTOKUDB_CHECK_JEMALLOC=${TOKUDB_CHECK_JEMALLOC}")
 ENDIF()
 
 macro(set_cflags_if_supported)

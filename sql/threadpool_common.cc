@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA */
 
 #include <my_global.h>
 #include <violite.h>
@@ -111,13 +111,14 @@ static bool thread_attach(THD* thd)
 extern PSI_statement_info stmt_info_new_packet;
 #endif
 
-void threadpool_net_before_header_psi_noop(struct st_net * /* net */,
-                                           void * /* user_data */,
-                                           size_t /* count */)
+static void threadpool_net_before_header_psi_noop(struct st_net * /* net */,
+                                                  void * /* user_data */,
+                                                  size_t /* count */)
 { }
 
-void threadpool_net_after_header_psi(struct st_net *net, void *user_data,
-                                     size_t /* count */, my_bool rc)
+static void threadpool_net_after_header_psi(struct st_net *net,
+                                            void *user_data,
+                                            size_t /* count */, my_bool rc)
 {
   THD *thd;
   thd= static_cast<THD*> (user_data);
@@ -158,7 +159,7 @@ void threadpool_net_after_header_psi(struct st_net *net, void *user_data,
   }
 }
 
-void threadpool_init_net_server_extension(THD *thd)
+static void threadpool_init_net_server_extension(THD *thd)
 {
 #ifdef HAVE_PSI_INTERFACE
   /* Start with a clean state for connection events. */
@@ -256,9 +257,10 @@ void threadpool_remove_connection(THD *thd)
   close_connection(thd, 0);
 
   thd->release_resources();
-  dec_connection_count(thd);
 
   remove_global_thread(thd);
+  dec_connection_count(thd);
+
   delete thd;
 
   /*

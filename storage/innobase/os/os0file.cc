@@ -1,6 +1,6 @@
 /***********************************************************************
 
-Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2016, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2009, Percona Inc.
 
 Portions of this file contain modifications contributed and copyrighted
@@ -378,6 +378,42 @@ os_get_os_version(void)
 #endif /* __WIN__ */
 
 /***********************************************************************//**
+For an EINVAL I/O error, prints a diagnostic message if innodb_flush_method
+== ALL_O_DIRECT.
+@return true if the diagnostic message was printed
+@return false if the diagnostic message does not apply */
+static
+bool
+os_diagnose_all_o_direct_einval(
+/*============================*/
+	ulint err)	/*!< in: C error code */
+{
+	if ((err == EINVAL)
+	    && (srv_unix_file_flush_method == SRV_UNIX_ALL_O_DIRECT)) {
+		ib_logf(IB_LOG_LEVEL_INFO,
+			"The error might be caused by redo log I/O not "
+			"satisfying innodb_flush_method=ALL_O_DIRECT "
+			"requirements by the underlying file system.");
+		if (srv_log_block_size != 512)
+			ib_logf(IB_LOG_LEVEL_INFO,
+				"This might be caused by an incompatible "
+				"non-default innodb_log_block_size value %lu.",
+				srv_log_block_size);
+		ib_logf(IB_LOG_LEVEL_INFO,
+			"Please file a bug at https://bugs.percona.com and "
+			"include this error message, my.cnf settings, and "
+			"information about the file system where the redo log "
+			"resides.");
+		ib_logf(IB_LOG_LEVEL_INFO,
+			"A possible workaround is to change "
+			"innodb_flush_method value to something else "
+			"than ALL_O_DIRECT.");
+		return(true);
+	}
+	return(false);
+}
+
+/***********************************************************************//**
 Retrieves the last error number if an error occurs in a file io function.
 The number should be retrieved before any other OS calls (because they may
 overwrite the error number). If the number is not known to this program,
@@ -512,7 +548,7 @@ os_file_get_last_error_low(
 				"InnoDB: The error means mysqld does not have"
 				" the access rights to\n"
 				"InnoDB: the directory.\n");
-		} else {
+		} else if (!os_diagnose_all_o_direct_einval(err)) {
 			if (strerror(err) != NULL) {
 				fprintf(stderr,
 					"InnoDB: Error number %d"
@@ -750,7 +786,7 @@ os_file_lock(
 #ifndef UNIV_HOTBACKUP
 /****************************************************************//**
 Creates the seek mutexes used in positioned reads and writes. */
-UNIV_INTERN
+static
 void
 os_io_init_simple(void)
 /*===================*/
@@ -764,17 +800,19 @@ os_io_init_simple(void)
 	}
 }
 
-/***********************************************************************//**
-Creates a temporary file.  This function is like tmpfile(3), but
-the temporary file is created in the MySQL temporary directory.
-@return	temporary file handle, or NULL on error */
+/** Create a temporary file. This function is like tmpfile(3), but
+the temporary file is created in the given parameter path. If the path
+is null then it will create the file in the mysql server configuration
+parameter (--tmpdir).
+@param[in]	path	location for creating temporary file
+@return temporary file handle, or NULL on error */
 UNIV_INTERN
 FILE*
-os_file_create_tmpfile(void)
-/*========================*/
+os_file_create_tmpfile(
+	const char*	path)
 {
 	FILE*	file	= NULL;
-	int	fd	= innobase_mysql_tmpfile();
+	int	fd	= innobase_mysql_tmpfile(path);
 
 	ut_ad(!srv_read_only_mode);
 
@@ -1505,11 +1543,11 @@ void
 os_file_set_nocache(
 /*================*/
 	int		fd		/*!< in: file descriptor to alter */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const char*	file_name	/*!< in: used in the diagnostic
 					message */
-					__attribute__((unused)),
-	const char*	operation_name __attribute__((unused)))
+					MY_ATTRIBUTE((unused)),
+	const char*	operation_name MY_ATTRIBUTE((unused)))
 					/*!< in: "open" or "create"; used
 					in the diagnostic message */
 {
@@ -1560,14 +1598,14 @@ short_warning:
 Tries to enable the atomic write feature, if available, for the specified file
 handle.
 @return TRUE if success */
-static __attribute__((warn_unused_result))
+static MY_ATTRIBUTE((warn_unused_result))
 ibool
 os_file_set_atomic_writes(
 /*======================*/
 	const char*	name	/*!< in: name of the file */
-	__attribute__((unused)),
+	MY_ATTRIBUTE((unused)),
 	os_file_t	file	/*!< in: handle to the file */
-	__attribute__((unused)))
+	MY_ATTRIBUTE((unused)))
 
 {
 #ifdef DFS_IOCTL_ATOMIC_WRITE_SET
@@ -1583,7 +1621,7 @@ os_file_set_atomic_writes(
 #else
 	ib_logf(IB_LOG_LEVEL_ERROR,
 		"trying to enable atomic writes on non-supported platform! "
-		"Please restart with innodb_use_atomic_writes disabled.\n");
+		"Please restart with innodb_use_atomic_writes disabled.");
 	return(FALSE);
 #endif
 }
@@ -2202,7 +2240,7 @@ os_file_set_size(
 
 			ib_logf(IB_LOG_LEVEL_ERROR, "preallocating file "
 				"space for file \'%s\' failed.  Current size "
-				INT64PF ", desired size " INT64PF "\n",
+				INT64PF ", desired size " INT64PF,
 				name, current_size, size);
 			os_file_handle_error_no_exit (name, "posix_fallocate",
 						      FALSE);
@@ -2462,7 +2500,7 @@ os_file_flush_func(
 /*******************************************************************//**
 Does a synchronous read operation in Posix.
 @return	number of bytes read, -1 if error */
-static __attribute__((nonnull(2), warn_unused_result))
+static MY_ATTRIBUTE((nonnull(2), warn_unused_result))
 ssize_t
 os_file_pread(
 /*==========*/
@@ -2625,7 +2663,7 @@ os_file_pread(
 /*******************************************************************//**
 Does a synchronous write operation in Posix.
 @return	number of bytes written, -1 if error */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 ssize_t
 os_file_pwrite(
 /*===========*/
@@ -2670,6 +2708,9 @@ os_file_pwrite(
 	/* Handle partial writes and signal interruptions correctly */
 	for (ret = 0; ret < (ssize_t) n; ) {
 		n_written = pwrite(file, buf, (ssize_t)n - ret, offs);
+		DBUG_EXECUTE_IF("xb_simulate_all_o_direct_write_failure",
+				n_written = -1;
+				errno = EINVAL;);
 		if (n_written >= 0) {
 			ret += n_written;
 			offs += n_written;
@@ -2841,6 +2882,10 @@ try_again:
 
 try_again:
 	ret = os_file_pread(file, buf, n, offset, trx);
+
+	DBUG_EXECUTE_IF("xb_simulate_all_o_direct_read_failure",
+			ret = -1;
+			errno = EINVAL;);
 
 	if ((ulint) ret == n) {
 		return(TRUE);
@@ -3217,6 +3262,8 @@ retry:
 			" are described at\n"
 			"InnoDB: "
 			REFMAN "operating-system-error-codes.html\n");
+
+		os_diagnose_all_o_direct_einval(errno);
 
 		os_has_said_disk_full = TRUE;
 	}
@@ -3815,7 +3862,7 @@ os_aio_native_aio_supported(void)
 		return(FALSE);
 	} else if (!srv_read_only_mode) {
 		/* Now check if tmpdir supports native aio ops. */
-		fd = innobase_mysql_tmpfile();
+		fd = innobase_mysql_tmpfile(NULL);
 
 		if (fd < 0) {
 			ib_logf(IB_LOG_LEVEL_WARN,
@@ -4192,6 +4239,14 @@ os_aio_free(void)
 
 	for (ulint i = 0; i < os_aio_n_segments; i++) {
 		os_event_free(os_aio_segment_wait_events[i]);
+	}
+
+#if !defined(HAVE_ATOMIC_BUILTINS) || UNIV_WORD_SIZE < 8
+	os_mutex_free(os_file_count_mutex);
+#endif /* !HAVE_ATOMIC_BUILTINS || UNIV_WORD_SIZE < 8 */
+
+	for (ulint i = 0; i < OS_FILE_N_SEEK_MUTEXES; i++) {
+		os_mutex_free(os_file_seek_mutexes[i]);
 	}
 
 	ut_free(os_aio_segment_wait_events);
@@ -5898,7 +5953,7 @@ os_aio_print(
 			srv_io_thread_function[i]);
 
 #ifndef __WIN__
-		if (os_aio_segment_wait_events[i]->is_set) {
+		if (os_aio_segment_wait_events[i]->is_set()) {
 			fprintf(file, " ev set");
 		}
 #endif /* __WIN__ */

@@ -1280,6 +1280,7 @@ fi
 %attr(755, root, root) %{_libdir}/mysql/plugin/handlersocket.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/query_response_time.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/mysql_no_login.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/test_udf_services.so
 
 # %attr(755, root, root) %{_libdir}/mysql/plugin/debug/*.so*
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/adt_null.so
@@ -1305,6 +1306,7 @@ fi
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/handlersocket.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/query_response_time.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/mysql_no_login.so
+%attr(755, root, root) %{_libdir}/mysql/plugin/debug/test_udf_services.so
 # Audit Log and Scalability Metrics files
 %attr(755, root, root) %{_libdir}/mysql/plugin/audit_log.so
 %attr(755, root, root) %{_libdir}/mysql/plugin/debug/audit_log.so
@@ -1514,6 +1516,11 @@ done
 %doc %attr(644, root, man) %{_mandir}/man1/mysqltest_embedded.1*
 
 %changelog
+* Thu Mar 03 2016 Tomislav Plavcic <tomislav.plavcic@percona.com>
+
+- Fixed systemctl start mysqld fails with timeout if
+  custom path for socket specified (#1534825)
+
 * Tue Nov 24 2015 Tomislav Plavcic <tomislav.plavcic@percona.com>
 
 - Added dependency on numactl-devel

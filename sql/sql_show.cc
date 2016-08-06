@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -369,7 +369,7 @@ ignore_db_dirs_init()
 
 static uchar *
 db_dirs_hash_get_key(const uchar *data, size_t *len_ret,
-                     my_bool __attribute__((unused)))
+                     my_bool MY_ATTRIBUTE((unused)))
 {
   LEX_STRING *e= (LEX_STRING *) data;
 
@@ -1122,29 +1122,44 @@ static const char *require_quotes(const char *name, uint name_length)
 }
 
 
-/*
-  Quote the given identifier if needed and append it to the target string.
-  If the given identifier is empty, it will be quoted.
-
-  SYNOPSIS
-  append_identifier()
-  thd                   thread handler
-  packet                target string
-  name                  the identifier to be appended
-  name_length           length of the appending identifier
+/**
+  Convert and quote the given identifier if needed and append it to the
+  target string. If the given identifier is empty, it will be quoted.
+  @thd                         thread handler
+  @packet                      target string
+  @name                        the identifier to be appended
+  @length                      length of the appending identifier
+  @param from_cs               Charset information about the input string
+  @param to_cs                 Charset information about the target string
 */
 
 void
-append_identifier(THD *thd, String *packet, const char *name, uint length)
+append_identifier(THD *thd, String *packet, const char *name, uint length,
+                  const CHARSET_INFO *from_cs, const CHARSET_INFO *to_cs)
 {
   const char *name_end;
   char quote_char;
   int q;
-  q= thd ? get_quote_char_for_identifier(thd, name, length) : '`';
 
+  const CHARSET_INFO *cs_info= system_charset_info;
+  const char *to_name= name;
+  size_t to_length= length;
+  String to_string(name,length, from_cs);
+
+  if (from_cs != NULL && to_cs != NULL && from_cs != to_cs)
+    thd->convert_string(&to_string, from_cs, to_cs);
+
+  if (to_cs != NULL)
+  {
+    to_name= to_string.c_ptr();
+    to_length= to_string.length();
+    cs_info= to_cs;
+  }
+
+  q= thd ? get_quote_char_for_identifier(thd, to_name, to_length) : '`';
   if (q == EOF)
   {
-    packet->append(name, length, packet->charset());
+    packet->append(to_name, to_length, packet->charset());
     return;
   }
 
@@ -1153,14 +1168,14 @@ append_identifier(THD *thd, String *packet, const char *name, uint length)
    it's a keyword
   */
 
-  (void) packet->reserve(length*2 + 2);
+  (void) packet->reserve(to_length*2 + 2);
   quote_char= (char) q;
   packet->append(&quote_char, 1, system_charset_info);
 
-  for (name_end= name+length ; name < name_end ; name+= length)
+  for (name_end= to_name+to_length ; to_name < name_end ; to_name+= to_length)
   {
-    uchar chr= (uchar) *name;
-    length= my_mbcharlen(system_charset_info, chr);
+    uchar chr= (uchar) *to_name;
+    to_length= my_mbcharlen(cs_info, chr);
     /*
       my_mbcharlen can return 0 on a wrong multibyte
       sequence. It is possible when upgrading from 4.0,
@@ -1168,11 +1183,11 @@ append_identifier(THD *thd, String *packet, const char *name, uint length)
       The manual says it does not work. So we'll just
       change length to 1 not to hang in the endless loop.
     */
-    if (!length)
-      length= 1;
-    if (length == 1 && chr == (uchar) quote_char)
+    if (!to_length)
+      to_length= 1;
+    if (to_length == 1 && chr == (uchar) quote_char)
       packet->append(&quote_char, 1, system_charset_info);
-    packet->append(name, length, system_charset_info);
+    packet->append(to_name, to_length, system_charset_info);
   }
   packet->append(&quote_char, 1, system_charset_info);
 }
@@ -2019,8 +2034,8 @@ public:
   {
     return (void*) sql_alloc((uint) size);
   }
-  static void operator delete(void *ptr __attribute__((unused)),
-                              size_t size __attribute__((unused)))
+  static void operator delete(void *ptr MY_ATTRIBUTE((unused)),
+                              size_t size MY_ATTRIBUTE((unused)))
   { TRASH(ptr, size); }
 
   ulong thread_id;
@@ -2239,6 +2254,8 @@ int fill_schema_processlist(THD* thd, TABLE_LIST* tables, Item* cond)
      */
     mysql_mutex_lock(&LOCK_thd_remove);
     copy_global_thread_list(&global_thread_list_copy);
+
+    DEBUG_SYNC(thd,"fill_schema_processlist_after_copying_threads");
 
     Thread_iterator it= global_thread_list_copy.begin();
     Thread_iterator end= global_thread_list_copy.end();
@@ -4110,13 +4127,18 @@ int make_temporary_tables_old_format(THD *thd, ST_SCHEMA_TABLE *schema_table)
   @param[in]      table                    I_S table
   @param[in]      tmp_table                temporary table
   @param[in]      db                       database name
+  @param[in]      mem_root                 memory root for allocating cloned
+                                           handlers, must have the lifetime of
+                                           the current thread
 
   @return         Operation status
     @retval       0                        success
     @retval       1                        error
 */
 
-static int store_temporary_table_record(THD *thd, TABLE *table, TABLE *tmp_table, const char *db)
+static int store_temporary_table_record(THD *thd, TABLE *table,
+                                        TABLE *tmp_table, const char *db,
+                                        MEM_ROOT* mem_root)
 {
   CHARSET_INFO *cs= system_charset_info;
   DBUG_ENTER("store_temporary_table_record");
@@ -4155,7 +4177,7 @@ static int store_temporary_table_record(THD *thd, TABLE *table, TABLE *tmp_table
   be in use by other thread.  Do not trash it by invoking handler methods on
   it but rather clone it. */
   if (file) {
-    file= file->clone(tmp_table->s->normalized_path.str, thd->mem_root);
+    file= file->clone(tmp_table->s->normalized_path.str, mem_root);
   }
 
   if (file) {
@@ -4247,7 +4269,8 @@ static int fill_global_temporary_tables(THD *thd, TABLE_LIST *tables, Item *cond
       DEBUG_SYNC(thd, "fill_global_temporary_tables_before_storing_rec");
 
       if (store_temporary_table_record(thd_item, tables->table, tmp,
-                                       thd->lex->select_lex.db)) {
+                                       thd->lex->select_lex.db,
+                                       thd->mem_root)) {
         mysql_mutex_unlock(&thd_item->LOCK_temporary_tables);
         mysql_mutex_unlock(&LOCK_thread_count); 
         DBUG_RETURN(1);
@@ -4284,7 +4307,8 @@ int fill_temporary_tables(THD *thd, TABLE_LIST *tables, Item *cond)
 
   for (tmp=thd->temporary_tables; tmp; tmp=tmp->next) {
     if (store_temporary_table_record(thd, tables->table, tmp,
-                                     thd->lex->select_lex.db)) {
+                                     thd->lex->select_lex.db,
+                                     thd->mem_root)) {
       DBUG_RETURN(1);
     }
   }

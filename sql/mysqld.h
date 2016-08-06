@@ -1,4 +1,4 @@
-/* Copyright (c) 2010, 2015, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2006, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -74,6 +74,7 @@ bool one_thread_per_connection_end(THD *thd, bool block_pthread);
 void kill_blocked_pthreads();
 void refresh_status(THD *thd);
 bool is_secure_file_path(char *path);
+bool is_mysql_datadir_path(const char *path);
 void dec_connection_count(THD *thd);
 
 // These are needed for unit testing.
@@ -115,6 +116,7 @@ extern MYSQL_PLUGIN_IMPORT bool volatile abort_loop;
 extern bool in_bootstrap;
 extern my_bool opt_bootstrap;
 extern uint connection_count;
+extern uint extra_connection_count;
 extern my_bool opt_safe_user_create;
 extern my_bool opt_safe_show_db, opt_local_infile, opt_myisam_use_mmap;
 extern my_bool opt_slave_compressed_protocol, use_temp_pool;
@@ -365,7 +367,7 @@ extern PSI_mutex_key
   key_delayed_insert_mutex, key_hash_filo_lock, key_LOCK_active_mi,
   key_LOCK_connection_count, key_LOCK_crypt, key_LOCK_delayed_create,
   key_LOCK_delayed_insert, key_LOCK_delayed_status, key_LOCK_error_log,
-  key_LOCK_stats, key_LOCK_global_user_client_stats,
+  key_LOCK_global_user_client_stats,
   key_LOCK_global_table_stats, key_LOCK_global_index_stats,
   key_LOCK_gdl, key_LOCK_global_system_variables,
   key_LOCK_lock_db, key_LOCK_logger, key_LOCK_manager,
@@ -420,7 +422,8 @@ extern PSI_cond_key key_BINLOG_update_cond,
   key_relay_log_info_sleep_cond, key_cond_slave_parallel_pend_jobs,
   key_cond_slave_parallel_worker,
   key_TABLE_SHARE_cond, key_user_level_lock_cond,
-  key_COND_thread_count, key_COND_thread_cache, key_COND_flush_thread_cache;
+  key_COND_thread_count, key_COND_thread_cache, key_COND_flush_thread_cache,
+  key_COND_connection_count;
 extern PSI_cond_key key_BINLOG_COND_done;
 extern PSI_cond_key key_RELAYLOG_COND_done;
 extern PSI_cond_key key_RELAYLOG_update_cond;
@@ -627,7 +630,7 @@ extern mysql_mutex_t
        LOCK_global_system_variables, LOCK_user_conn, LOCK_log_throttle_qni,
        LOCK_prepared_stmt_count, LOCK_error_messages, LOCK_connection_count,
        LOCK_sql_slave_skip_counter, LOCK_slave_net_timeout,
-       LOCK_stats, LOCK_global_user_client_stats,
+       LOCK_global_user_client_stats,
        LOCK_global_table_stats, LOCK_global_index_stats;
 #ifdef HAVE_OPENSSL
 extern char* des_key_file;
@@ -645,7 +648,7 @@ extern my_atomic_rwlock_t slave_open_temp_tables_lock;
 extern my_atomic_rwlock_t opt_binlog_max_flush_queue_time_lock;
 
 extern char *opt_ssl_ca, *opt_ssl_capath, *opt_ssl_cert, *opt_ssl_cipher,
-            *opt_ssl_key, *opt_ssl_crl, *opt_ssl_crlpath;
+            *opt_ssl_key, *opt_ssl_crl, *opt_ssl_crlpath, *opt_tls_version;
 
 extern MYSQL_PLUGIN_IMPORT pthread_key(THD*, THR_THD);
 
@@ -699,6 +702,7 @@ enum options_mysqld
   OPT_SSL_CERT,
   OPT_SSL_CIPHER,
   OPT_SSL_KEY,
+  OPT_TLS_VERSION,
   OPT_THREAD_CONCURRENCY,
   OPT_UPDATE_LOG,
   OPT_WANT_CORE,
@@ -737,7 +741,13 @@ enum enum_query_type
   /// Don't print a database if it's equal to the connection's database
   QT_NO_DEFAULT_DB= (1 << 3),
   /// When printing a derived table, don't print its expression, only alias
-  QT_DERIVED_TABLE_ONLY_ALIAS= (1 << 4)
+  QT_DERIVED_TABLE_ONLY_ALIAS= (1 << 4),
+  /**
+    If an expression is constant, print the expression, not the value
+    it evaluates to. Should be used for error messages, so that they
+    don't reveal values.
+  */
+  QT_NO_DATA_EXPANSION= (1 << 9)
 };
 
 /* query_id */
@@ -745,10 +755,10 @@ typedef int64 query_id_t;
 extern query_id_t global_query_id;
 extern my_atomic_rwlock_t global_query_id_lock;
 
-void unireg_end(void) __attribute__((noreturn));
+void unireg_end(void) MY_ATTRIBUTE((noreturn));
 
 /* increment query_id and return it.  */
-inline __attribute__((warn_unused_result)) query_id_t next_query_id()
+inline MY_ATTRIBUTE((warn_unused_result)) query_id_t next_query_id()
 {
   query_id_t id;
   my_atomic_rwlock_wrlock(&global_query_id_lock);
@@ -772,7 +782,7 @@ void free_global_thread_stats(void);
   TODO: Replace this with an inline function.
  */
 #ifndef EMBEDDED_LIBRARY
-extern "C" void unireg_abort(int exit_code) __attribute__((noreturn));
+extern "C" void unireg_abort(int exit_code) MY_ATTRIBUTE((noreturn));
 #else
 extern "C" void unireg_clear(int exit_code);
 #define unireg_abort(exit_code) do { unireg_clear(exit_code); DBUG_RETURN(exit_code); } while(0)

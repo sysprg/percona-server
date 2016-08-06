@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2013, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -547,12 +547,12 @@ struct st_replace *glob_replace= 0;
 void replace_strings_append(struct st_replace *rep, DYNAMIC_STRING* ds,
 const char *from, int len);
 
-static void cleanup_and_exit(int exit_code) __attribute__((noreturn));
+static void cleanup_and_exit(int exit_code) MY_ATTRIBUTE((noreturn));
 
 void die(const char *fmt, ...)
-  ATTRIBUTE_FORMAT(printf, 1, 2) __attribute__((noreturn));
+  ATTRIBUTE_FORMAT(printf, 1, 2) MY_ATTRIBUTE((noreturn));
 void abort_not_supported_test(const char *fmt, ...)
-  ATTRIBUTE_FORMAT(printf, 1, 2) __attribute__((noreturn));
+  ATTRIBUTE_FORMAT(printf, 1, 2) MY_ATTRIBUTE((noreturn));
 void verbose_msg(const char *fmt, ...)
   ATTRIBUTE_FORMAT(printf, 1, 2);
 void log_msg(const char *fmt, ...)
@@ -2121,7 +2121,7 @@ static void strip_parentheses(struct st_command *command)
 C_MODE_START
 
 static uchar *get_var_key(const uchar* var, size_t *len,
-                          my_bool __attribute__((unused)) t)
+                          my_bool MY_ATTRIBUTE((unused)) t)
 {
   register char* key;
   key = ((VAR*)var)->name;
@@ -2712,6 +2712,7 @@ void var_set_query_get_value(struct st_command *command, VAR *var)
                   mysql_sqlstate(mysql), &ds_res);
     /* If error was acceptable, return empty string */
     dynstr_free(&ds_query);
+    dynstr_free(&ds_col);
     eval_expr(var, "", 0);
     DBUG_VOID_RETURN;
   }
@@ -4323,7 +4324,7 @@ int do_echo(struct st_command *command)
 }
 
 
-void do_wait_for_slave_to_stop(struct st_command *c __attribute__((unused)))
+void do_wait_for_slave_to_stop(struct st_command *c MY_ATTRIBUTE((unused)))
 {
   static int SLAVE_POLL_INTERVAL= 300000;
   MYSQL* mysql = &cur_con->mysql;
@@ -4846,6 +4847,7 @@ void do_shutdown_server(struct st_command *command)
     die("mysql_shutdown failed");
 
   /* Check that server dies */
+  long orig_timeout= timeout;
   while(timeout--){
     if (my_kill(pid, 0) < 0){
       DBUG_PRINT("info", ("Process %d does not exist anymore", pid));
@@ -4857,6 +4859,11 @@ void do_shutdown_server(struct st_command *command)
 
   /* Kill the server */
   DBUG_PRINT("info", ("Killing server, pid: %d", pid));
+  if (orig_timeout != 0)
+  {
+    log_msg("shutdown_server timeout %ld exceeded, SIGKILL sent to the server",
+            orig_timeout);
+  }
   (void)my_kill(pid, 9);
 
   DBUG_VOID_RETURN;
@@ -4944,7 +4951,7 @@ void do_get_errcodes(struct st_command *command)
     /* code to handle variables passed to mysqltest */
      if( *p == '$')
      {
-        const char* fin;
+        const char* fin= NULL;
         VAR *var = var_get(p,&fin,0,0);
         p=var->str_val;
         end=p+var->str_val_len;
@@ -5224,6 +5231,7 @@ void do_close_connection(struct st_command *command)
     {
       vio_delete(con->mysql.net.vio);
       con->mysql.net.vio = 0;
+      end_server(&con->mysql);
     }
   }
 #else
@@ -5318,8 +5326,9 @@ void safe_connect(MYSQL* mysql, const char *name, const char *host,
                  "program_name", "mysqltest");
   mysql_options(mysql, MYSQL_OPT_CAN_HANDLE_EXPIRED_PASSWORDS,
                 &can_handle_expired_passwords);
-  while(!mysql_real_connect(mysql, host,user, pass, db, port, sock,
-                            CLIENT_MULTI_STATEMENTS | CLIENT_REMEMBER_OPTIONS))
+  while(!mysql_connect_ssl_check(mysql, host,user, pass, db, port, sock,
+                                 CLIENT_MULTI_STATEMENTS | CLIENT_REMEMBER_OPTIONS,
+                                 opt_ssl_required))
   {
     /*
       Connect failed
@@ -5423,8 +5432,9 @@ int connect_n_handle_errors(struct st_command *command,
   mysql_options4(con, MYSQL_OPT_CONNECT_ATTR_ADD, "program_name", "mysqltest");
   mysql_options(con, MYSQL_OPT_CAN_HANDLE_EXPIRED_PASSWORDS,
                 &can_handle_expired_passwords);
-  while (!mysql_real_connect(con, host, user, pass, db, port, sock ? sock: 0,
-                          CLIENT_MULTI_STATEMENTS))
+  while (!mysql_connect_ssl_check(con, host, user, pass, db, port,
+                                  sock ? sock: 0, CLIENT_MULTI_STATEMENTS,
+                                  opt_ssl_required))
   {
     /*
       If we have used up all our connections check whether this
@@ -5724,6 +5734,7 @@ void do_connect(struct st_command *command)
   {
     DBUG_PRINT("info", ("Inserting connection %s in connection pool",
                         ds_connection_name.str));
+    my_free(con_slot->name);
     if (!(con_slot->name= my_strdup(ds_connection_name.str, MYF(MY_WME))))
       die("Out of memory");
     con_slot->name_len= strlen(con_slot->name);
@@ -7578,7 +7589,17 @@ void handle_error(struct st_command *command,
   }
 
   if (command->abort_on_error)
+  {
+    if (err_errno == ER_NO_SUCH_THREAD)
+    {
+      /* No such thread id, let's dump the available ones */
+      fprintf(stderr, "mysqltest: query '%s returned ER_NO_SUCH_THREAD, "
+              "dumping processlist\n", command->query);
+      show_query(&cur_con->mysql, "SHOW PROCESSLIST");
+    }
+
     die("query '%s' failed: %d: %s", command->query, err_errno, err_error);
+  }
 
   DBUG_PRINT("info", ("expected_errors.count: %d",
                       command->expected_errors.count));
@@ -7624,9 +7645,18 @@ void handle_error(struct st_command *command,
   if (command->expected_errors.count > 0)
   {
     if (command->expected_errors.err[0].type == ERR_ERRNO)
+    {
+      if (err_errno == ER_NO_SUCH_THREAD)
+      {
+        /* No such thread id, let's dump the available ones */
+        fprintf(stderr, "mysqltest: query '%s returned ER_NO_SUCH_THREAD, "
+                "dumping processlist\n", command->query);
+        show_query(&cur_con->mysql, "SHOW PROCESSLIST");
+      }
       die("query '%s' failed with wrong errno %d: '%s', instead of %d...",
           command->query, err_errno, err_error,
           command->expected_errors.err[0].code.errnum);
+    }
     else
       die("query '%s' failed with wrong sqlstate %s: '%s', instead of %s...",
           command->query, err_sqlstate, err_error,
@@ -8395,6 +8425,13 @@ void get_command_type(struct st_command* command)
           "use # if you intended to write a comment");
     }
   }
+  DBUG_VOID_RETURN;
+}
+
+
+void update_expected_errors(struct st_command* command)
+{
+  DBUG_ENTER("update_expected_errors");
 
   /* Set expected error on command */
   memcpy(&command->expected_errors, &saved_expected_errors,
@@ -8412,7 +8449,7 @@ void get_command_type(struct st_command* command)
 
 */
 
-void mark_progress(struct st_command* command __attribute__((unused)),
+void mark_progress(struct st_command* command MY_ATTRIBUTE((unused)),
                    int line)
 {
   static ulonglong progress_start= 0; // < Beware
@@ -8773,6 +8810,9 @@ int main(int argc, char **argv)
     int current_line_inc = 1, processed = 0;
     if (command->type == Q_UNKNOWN || command->type == Q_COMMENT_WITH_COMMAND)
       get_command_type(command);
+
+    if(saved_expected_errors.count > 0)
+      update_expected_errors(command);
 
     if (parsing_disabled &&
         command->type != Q_ENABLE_PARSING &&
@@ -9456,7 +9496,7 @@ typedef struct st_replace_found {
 
 void replace_strings_append(REPLACE *rep, DYNAMIC_STRING* ds,
                             const char *str,
-                            int len __attribute__((unused)))
+                            int len MY_ATTRIBUTE((unused)))
 {
   reg1 REPLACE *rep_pos;
   reg2 REPLACE_STRING *rep_str;
@@ -9636,6 +9676,7 @@ struct st_replace_regex* init_replace_regex(char* expr)
   return res;
 
 err:
+  delete_dynamic(&res->regex_arr);
   my_free(res);
   die("Error parsing replace_regex \"%s\"", expr);
   return 0;

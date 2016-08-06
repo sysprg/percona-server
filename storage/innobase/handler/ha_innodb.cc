@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 2000, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 2000, 2016, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, 2009 Google Inc.
 Copyright (c) 2009, Percona Inc.
 Copyright (c) 2012, Facebook Inc.
@@ -564,6 +564,108 @@ innodb_stopword_table_validate(
 						for update function */
 	struct st_mysql_value*		value);	/*!< in: incoming string */
 
+/** Validate passed-in "value" is a valid directory name.
+This function is registered as a callback with MySQL.
+@param[in,out]	thd	thread handle
+@param[in]	var	pointer to system variable
+@param[out]	save	immediate result for update
+@param[in]	value	incoming string
+@return 0 for valid name */
+static
+int
+innodb_tmpdir_validate(
+	THD*				thd,
+	struct st_mysql_sys_var*	var,
+	void*				save,
+	struct st_mysql_value*		value)
+{
+
+	char*	alter_tmp_dir;
+	char*	innodb_tmp_dir;
+	char	buff[OS_FILE_MAX_PATH];
+	int	len = sizeof(buff);
+	char	tmp_abs_path[FN_REFLEN + 2];
+
+	ut_ad(save != NULL);
+	ut_ad(value != NULL);
+
+	if (check_global_access(thd, FILE_ACL)) {
+		push_warning_printf(
+			thd, Sql_condition::WARN_LEVEL_WARN,
+			ER_WRONG_ARGUMENTS,
+			"InnoDB: FILE Permissions required");
+		*static_cast<const char**>(save) = NULL;
+		return(1);
+	}
+
+	alter_tmp_dir = (char*) value->val_str(value, buff, &len);
+
+	if (!alter_tmp_dir) {
+		*static_cast<const char**>(save) = alter_tmp_dir;
+		return(0);
+	}
+
+	if (strlen(alter_tmp_dir) > FN_REFLEN) {
+		push_warning_printf(
+			thd, Sql_condition::WARN_LEVEL_WARN,
+			ER_WRONG_ARGUMENTS,
+			"Path length should not exceed %d bytes", FN_REFLEN);
+		*static_cast<const char**>(save) = NULL;
+		return(1);
+	}
+
+	my_realpath(tmp_abs_path, alter_tmp_dir, 0);
+	size_t	tmp_abs_len = strlen(tmp_abs_path);
+
+	if (my_access(tmp_abs_path, F_OK)) {
+
+		push_warning_printf(
+			thd, Sql_condition::WARN_LEVEL_WARN,
+			ER_WRONG_ARGUMENTS,
+			"InnoDB: Path doesn't exist.");
+		*static_cast<const char**>(save) = NULL;
+		return(1);
+	} else if (my_access(tmp_abs_path, R_OK | W_OK)) {
+		push_warning_printf(
+			thd, Sql_condition::WARN_LEVEL_WARN,
+			ER_WRONG_ARGUMENTS,
+			"InnoDB: Server doesn't have permission in "
+			"the given location.");
+		*static_cast<const char**>(save) = NULL;
+		return(1);
+	}
+
+	MY_STAT stat_info_dir;
+
+	if (my_stat(tmp_abs_path, &stat_info_dir, MYF(0))) {
+		if ((stat_info_dir.st_mode & S_IFDIR) != S_IFDIR) {
+
+			push_warning_printf(
+				thd, Sql_condition::WARN_LEVEL_WARN,
+				ER_WRONG_ARGUMENTS,
+				"Given path is not a directory. ");
+			*static_cast<const char**>(save) = NULL;
+			return(1);
+		}
+	}
+
+	if (!is_mysql_datadir_path(tmp_abs_path)) {
+
+		push_warning_printf(
+			thd, Sql_condition::WARN_LEVEL_WARN,
+			ER_WRONG_ARGUMENTS,
+			"InnoDB: Path Location should not be same as "
+			"mysql data directory location.");
+		*static_cast<const char**>(save) = NULL;
+		return(1);
+	}
+
+	innodb_tmp_dir = static_cast<char*>(
+		thd_memdup(thd, tmp_abs_path, tmp_abs_len + 1));
+	*static_cast<const char**>(save) = innodb_tmp_dir;
+	return(0);
+}
+
 /** "GEN_CLUST_INDEX" is the name reserved for InnoDB default
 system clustered index when there is no primary key. */
 const char innobase_index_reserve_name[] = "GEN_CLUST_INDEX";
@@ -599,6 +701,19 @@ innobase_is_fake_change(
 	THD*		thd);	/*!< in: MySQL thread handle of the user for
 				  whom the transaction is being committed */
 
+/** Get the list of foreign keys referencing a specified table
+table.
+@param thd		The thread handle
+@param path		Path to the table
+@param f_key_list[out]	The list of foreign keys
+
+@return error code or zero for success */
+static
+int
+innobase_get_parent_fk_list(
+	THD*			thd,
+	const char*		path,
+	List<FOREIGN_KEY_INFO>*	f_key_list);
 
 /******************************************************************//**
 Maps a MySQL trx isolation level code to the InnoDB isolation level code
@@ -651,6 +766,10 @@ static MYSQL_THDVAR_BOOL(fake_changes, PLUGIN_VAR_OPCMDARG,
   "This is to cause replication prefetch IO. ATTENTION: the transaction started after enabled is affected.",
   NULL, NULL, FALSE);
 
+static MYSQL_THDVAR_STR(tmpdir,
+  PLUGIN_VAR_OPCMDARG|PLUGIN_VAR_MEMALLOC,
+  "Directory for temporary non-tablespace files.",
+  innodb_tmpdir_validate, NULL, NULL);
 
 static SHOW_VAR innodb_status_variables[]= {
   {"buffer_pool_dump_status",
@@ -1542,6 +1661,26 @@ thd_supports_xa(
 	return(THDVAR(thd, support_xa));
 }
 
+/** Get the value of innodb_tmpdir.
+@param[in]	thd	thread handle, or NULL to query
+			the global innodb_tmpdir.
+@retval NULL if innodb_tmpdir="" */
+UNIV_INTERN
+const char*
+thd_innodb_tmpdir(
+	THD*	thd)
+{
+#ifdef UNIV_SYNC_DEBUG
+	ut_ad(!sync_thread_levels_nonempty_trx(false));
+#endif /* UNIV_SYNC_DEBUG */
+
+	const char*	tmp_dir = THDVAR(thd, tmpdir);
+	if (tmp_dir != NULL && *tmp_dir == '\0') {
+		tmp_dir = NULL;
+	}
+
+	return(tmp_dir);
+}
 /******************************************************************//**
 Check the status of fake changes mode (innodb_fake_changes)
 @return	true	if fake change mode is enabled. */
@@ -1611,7 +1750,7 @@ thd_expand_fast_index_creation(
 /********************************************************************//**
 Obtain the InnoDB transaction of a MySQL thread.
 @return	reference to transaction pointer */
-__attribute__((warn_unused_result, nonnull))
+MY_ATTRIBUTE((warn_unused_result, nonnull))
 static inline
 trx_t*&
 thd_to_trx(
@@ -1637,8 +1776,8 @@ static
 int
 innobase_release_temporary_latches(
 /*===============================*/
-	handlerton*	hton __attribute__((unused)),	/*!< in: handlerton */
-	THD*		thd __attribute__((unused)))	/*!< in: MySQL thread */
+	handlerton*	hton MY_ATTRIBUTE((unused)),	/*!< in: handlerton */
+	THD*		thd MY_ATTRIBUTE((unused)))	/*!< in: MySQL thread */
 {
 #ifdef UNIV_DEBUG
 	DBUG_ASSERT(hton == innodb_hton_ptr);
@@ -2118,13 +2257,14 @@ innobase_get_lower_case_table_names(void)
 	return(lower_case_table_names);
 }
 
-/*********************************************************************//**
-Creates a temporary file.
+/** Create a temporary file in the location specified by the parameter
+path. If the path is null, then it will be created in tmpdir.
+@param[in]	path	location for creating temporary file
 @return	temporary file descriptor, or < 0 on error */
 UNIV_INTERN
 int
-innobase_mysql_tmpfile(void)
-/*========================*/
+innobase_mysql_tmpfile(
+	const char*	path)
 {
 	int	fd2 = -1;
 	File	fd;
@@ -2134,7 +2274,11 @@ innobase_mysql_tmpfile(void)
 		return(-1);
 	);
 
-	fd = mysql_tmpfile("ib");
+	if (path == NULL) {
+		fd = mysql_tmpfile("ib");
+	} else {
+		fd = mysql_tmpfile_path(path, "ib");
+	}
 
 	if (fd >= 0) {
 		/* Copy the file descriptor, so that the additional resources
@@ -3132,6 +3276,13 @@ ha_innobase::reset_template(void)
 	ut_ad(prebuilt->magic_n == ROW_PREBUILT_ALLOCATED);
 	ut_ad(prebuilt->magic_n2 == prebuilt->magic_n);
 
+	/* Force table to be freed in close_thread_table(). */
+	DBUG_EXECUTE_IF("free_table_in_fts_query",
+		if (prebuilt->in_fts_query) {
+			table->m_needs_reopen = true;
+		}
+	);
+
 	prebuilt->keep_other_fields_on_keyread = 0;
 	prebuilt->read_just_key = 0;
 	prebuilt->in_fts_query = 0;
@@ -3267,6 +3418,7 @@ innobase_init(
 	innobase_hton->purge_changed_page_bitmaps
 		= innobase_purge_changed_page_bitmaps;
 	innobase_hton->is_fake_change = innobase_is_fake_change;
+	innobase_hton->get_parent_fk_list = innobase_get_parent_fk_list;
 
 	innobase_hton->kill_connection = innobase_kill_connection;
 
@@ -3675,6 +3827,16 @@ innobase_change_buffering_inited_ok:
 			innobase_open_files = table_cache_size;
 		}
 	}
+
+	if (innobase_open_files > (long) open_files_limit) {
+		fprintf(stderr,
+                       "innodb_open_files should not be greater"
+                       " than the open_files_limit.\n");
+		if (innobase_open_files > (long) table_cache_size) {
+			innobase_open_files = table_cache_size;
+		}
+	}
+
 	srv_max_n_open_files = (ulint) innobase_open_files;
 	srv_innodb_status = (ibool) innobase_create_status_file;
 
@@ -3858,7 +4020,7 @@ int
 innobase_end(
 /*=========*/
 	handlerton*		hton,	/*!< in/out: InnoDB handlerton */
-	ha_panic_function	type __attribute__((unused)))
+	ha_panic_function	type MY_ATTRIBUTE((unused)))
 					/*!< in: ha_panic() parameter */
 {
 	int	err= 0;
@@ -3945,7 +4107,7 @@ static
 my_bool
 innobase_is_fake_change(
 /*====================*/
-	handlerton	*hton __attribute__((unused)),
+	handlerton	*hton MY_ATTRIBUTE((unused)),
 				/*!< in: InnoDB handlerton */
 	THD*		thd)	/*!< in: MySQL thread handle of the user for
 				whom the transaction is being committed */
@@ -7146,6 +7308,7 @@ dberr_t
 ha_innobase::innobase_lock_autoinc(void)
 /*====================================*/
 {
+	DBUG_ENTER("ha_innobase::innobase_lock_autoinc");
 	dberr_t		error = DB_SUCCESS;
 
 	ut_ad(!srv_read_only_mode);
@@ -7180,6 +7343,8 @@ ha_innobase::innobase_lock_autoinc(void)
 		/* Fall through to old style locking. */
 
 	case AUTOINC_OLD_STYLE_LOCKING:
+		DBUG_EXECUTE_IF("die_if_autoinc_old_lock_style_used",
+				ut_ad(0););
 		error = row_lock_table_autoinc_for_mysql(prebuilt);
 
 		if (error == DB_SUCCESS) {
@@ -7193,7 +7358,7 @@ ha_innobase::innobase_lock_autoinc(void)
 		ut_error;
 	}
 
-	return(error);
+	DBUG_RETURN(error);
 }
 
 /********************************************************************//**
@@ -9308,7 +9473,7 @@ create_table_check_doc_id_col(
 
 /*****************************************************************//**
 Creates a table definition to an InnoDB database. */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 int
 create_table_def(
 /*=============*/
@@ -10765,6 +10930,25 @@ ha_innobase::discard_or_import_tablespace(
 	/* Commit the transaction in order to release the table lock. */
 	trx_commit_for_mysql(prebuilt->trx);
 
+	if (err == DB_SUCCESS && !discard
+	    && dict_stats_is_persistent_enabled(dict_table)) {
+		dberr_t		ret;
+
+		/* Adjust the persistent statistics. */
+		ret = dict_stats_update(dict_table,
+					DICT_STATS_RECALC_PERSISTENT);
+
+		if (ret != DB_SUCCESS) {
+			push_warning_printf(
+				ha_thd(),
+				Sql_condition::WARN_LEVEL_WARN,
+				ER_ALTER_INFO,
+				"Error updating stats for table '%s'"
+				" after table rebuild: %s",
+				dict_table->name, ut_strerr(ret));
+		}
+	}
+
 	DBUG_RETURN(convert_error_code_to_mysql(err, dict_table->flags, NULL));
 }
 
@@ -11040,7 +11224,7 @@ innobase_drop_database(
 /*********************************************************************//**
 Renames an InnoDB table.
 @return DB_SUCCESS or error code */
-static __attribute__((nonnull, warn_unused_result))
+static MY_ATTRIBUTE((nonnull, warn_unused_result))
 dberr_t
 innobase_rename_table(
 /*==================*/
@@ -12120,7 +12304,7 @@ ha_innobase::optimize(
 	if (innodb_optimize_fulltext_only) {
 		if (prebuilt->table->fts && prebuilt->table->fts->cache
 		    && !dict_table_is_discarded(prebuilt->table)) {
-			fts_sync_table(prebuilt->table);
+			fts_sync_table(prebuilt->table, false, true, false);
 			fts_optimize_table(prebuilt->table);
 		}
 		return(HA_ADMIN_OK);
@@ -12287,7 +12471,14 @@ ha_innobase::check(
 
 		prebuilt->select_lock_type = LOCK_NONE;
 
-		if (!row_check_index_for_mysql(prebuilt, index, &n_rows)) {
+		bool check_result
+			= row_check_index_for_mysql(prebuilt, index, &n_rows);
+		DBUG_EXECUTE_IF(
+				"dict_set_index_corrupted",
+				if (!(index->type & DICT_CLUSTERED)) {
+					check_result = false;
+				});
+		if (!check_result) {
 			innobase_format_name(
 				index_name, sizeof index_name,
 				index->name, TRUE);
@@ -12640,6 +12831,75 @@ get_foreign_key_info(
 	return(pf_key_info);
 }
 
+/** Get the list of foreign keys referencing a specified table
+table.
+@param thd		The thread handle
+@param path		Path to the table
+@param f_key_list[out]	The list of foreign keys */
+static
+void
+fill_foreign_key_list(THD* thd,
+		      const dict_table_t* table,
+		      List<FOREIGN_KEY_INFO>* f_key_list)
+{
+	ut_ad(mutex_own(&dict_sys->mutex));
+
+	for (dict_foreign_set::iterator it = table->referenced_set.begin();
+	     it != table->referenced_set.end(); ++it) {
+
+		dict_foreign_t* foreign = *it;
+
+		FOREIGN_KEY_INFO* pf_key_info
+			= get_foreign_key_info(thd, foreign);
+		if (pf_key_info) {
+			f_key_list->push_back(pf_key_info);
+		}
+	}
+}
+
+/** Get the list of foreign keys referencing a specified table
+table.
+@param thd		The thread handle
+@param path		Path to the table
+@param f_key_list[out]	The list of foreign keys
+
+@return error code or zero for success */
+static
+int
+innobase_get_parent_fk_list(
+	THD*			thd,
+	const char*		path,
+	List<FOREIGN_KEY_INFO>*	f_key_list)
+{
+	ut_a(strlen(path) <= FN_REFLEN);
+	char	norm_name[FN_REFLEN + 1];
+	normalize_table_name(norm_name, path);
+
+	trx_t*	parent_trx = check_trx_exists(thd);
+	parent_trx->op_info = "getting list of referencing foreign keys";
+	trx_search_latch_release_if_reserved(parent_trx);
+
+	mutex_enter(&dict_sys->mutex);
+
+	dict_table_t*	table
+		= dict_table_open_on_name(norm_name, TRUE, FALSE,
+					  static_cast<dict_err_ignore_t>(
+						  DICT_ERR_IGNORE_INDEX_ROOT
+						  | DICT_ERR_IGNORE_CORRUPT));
+	if (!table) {
+		mutex_exit(&dict_sys->mutex);
+		return(HA_ERR_NO_SUCH_TABLE);
+	}
+
+	fill_foreign_key_list(thd, table, f_key_list);
+
+	dict_table_close(table, TRUE, FALSE);
+
+	mutex_exit(&dict_sys->mutex);
+	parent_trx->op_info = "";
+	return(0);
+}
+
 /*******************************************************************//**
 Gets the list of foreign keys in this table.
 @return always 0, that is, always succeeds */
@@ -12692,9 +12952,6 @@ ha_innobase::get_parent_foreign_key_list(
 	THD*			thd,		/*!< in: user thread handle */
 	List<FOREIGN_KEY_INFO>*	f_key_list)	/*!< out: foreign key list */
 {
-	FOREIGN_KEY_INFO*	pf_key_info;
-	dict_foreign_t*		foreign;
-
 	ut_a(prebuilt != NULL);
 	update_thd(ha_thd());
 
@@ -12703,20 +12960,7 @@ ha_innobase::get_parent_foreign_key_list(
 	trx_search_latch_release_if_reserved(prebuilt->trx);
 
 	mutex_enter(&(dict_sys->mutex));
-
-	for (dict_foreign_set::iterator it
-		= prebuilt->table->referenced_set.begin();
-	     it != prebuilt->table->referenced_set.end();
-	     ++it) {
-
-		foreign = *it;
-
-		pf_key_info = get_foreign_key_info(thd, foreign);
-		if (pf_key_info) {
-			f_key_list->push_back(pf_key_info);
-		}
-	}
-
+	fill_foreign_key_list(thd, prebuilt->table, f_key_list);
 	mutex_exit(&(dict_sys->mutex));
 
 	prebuilt->trx->op_info = "";
@@ -16044,7 +16288,7 @@ static char* srv_buffer_pool_evict;
 Evict all uncompressed pages of compressed tables from the buffer pool.
 Keep the compressed pages in the buffer pool.
 @return whether all uncompressed pages were evicted */
-static __attribute__((warn_unused_result))
+static MY_ATTRIBUTE((warn_unused_result))
 bool
 innodb_buffer_pool_evict_uncompressed(void)
 /*=======================================*/
@@ -16430,7 +16674,6 @@ innodb_track_changed_pages_validate(
 						for update function */
 	struct st_mysql_value*		value)	/*!< in: incoming bool */
 {
-	static bool     enabled_on_startup = false;
 	long long	intbuf = 0;
 
 	if (value->val_int(value, &intbuf)) {
@@ -16438,8 +16681,7 @@ innodb_track_changed_pages_validate(
 		return 1;
 	}
 
-	if (srv_track_changed_pages || enabled_on_startup) {
-		enabled_on_startup = true;
+	if (srv_redo_log_thread_started) {
 		*reinterpret_cast<ulong*>(save)
 			= static_cast<ulong>(intbuf);
 		return 0;
@@ -16577,8 +16819,6 @@ innobase_fts_close_ranking(
 {
 	fts_result_t*	result;
 
-	((NEW_FT_INFO*) fts_hdl)->ft_prebuilt->in_fts_query = false;
-
 	result = ((NEW_FT_INFO*) fts_hdl)->ft_result;
 
 	fts_query_free_result(result);
@@ -16639,13 +16879,13 @@ void
 purge_run_now_set(
 /*==============*/
 	THD*				thd	/*!< in: thread handle */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						variable */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						string goes */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						check function */
 {
@@ -16662,13 +16902,13 @@ void
 purge_stop_now_set(
 /*===============*/
 	THD*				thd	/*!< in: thread handle */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						variable */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						string goes */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						check function */
 {
@@ -16684,13 +16924,13 @@ void
 checkpoint_now_set(
 /*===============*/
 	THD*				thd	/*!< in: thread handle */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						variable */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						string goes */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						check function */
 {
@@ -16711,13 +16951,13 @@ void
 buf_flush_list_now_set(
 /*===================*/
 	THD*				thd	/*!< in: thread handle */
-	__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
-						  variable */
-	__attribute__((unused)),
+						variable */
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
-						  string goes */
-	__attribute__((unused)),
+						string goes */
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						  check function */
 {
@@ -16734,13 +16974,13 @@ void
 track_redo_log_now_set(
 /*===================*/
 	THD*				thd	/*!< in: thread handle */
-	__attribute__((unused)),
+	MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						  variable */
-	__attribute__((unused)),
+	MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						  string goes */
-	__attribute__((unused)),
+	MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						  check function */
 {
@@ -16849,13 +17089,13 @@ void
 buffer_pool_dump_now(
 /*=================*/
 	THD*				thd	/*!< in: thread handle */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						variable */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						string goes */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						check function */
 {
@@ -16872,13 +17112,13 @@ void
 buffer_pool_load_now(
 /*=================*/
 	THD*				thd	/*!< in: thread handle */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						variable */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						string goes */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						check function */
 {
@@ -16895,13 +17135,13 @@ void
 buffer_pool_load_abort(
 /*===================*/
 	THD*				thd	/*!< in: thread handle */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	struct st_mysql_sys_var*	var	/*!< in: pointer to system
 						variable */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	void*				var_ptr	/*!< out: where the formal
 						string goes */
-					__attribute__((unused)),
+					MY_ATTRIBUTE((unused)),
 	const void*			save)	/*!< in: immediate result from
 						check function */
 {
@@ -16919,10 +17159,10 @@ which control InnoDB "status monitor" output to the error log.
 static
 void
 innodb_status_output_update(
-	THD*				thd __attribute__((unused)),
-	struct st_mysql_sys_var*	var __attribute__((unused)),
-	void*				var_ptr __attribute__((unused)),
-	const void*			save __attribute__((unused)))
+	THD*				thd MY_ATTRIBUTE((unused)),
+	struct st_mysql_sys_var*	var MY_ATTRIBUTE((unused)),
+	void*				var_ptr MY_ATTRIBUTE((unused)),
+	const void*			save MY_ATTRIBUTE((unused)))
 {
 	*static_cast<my_bool*>(var_ptr) = *static_cast<const my_bool*>(save);
 	/* The lock timeout monitor thread also takes care of this
@@ -18296,6 +18536,7 @@ static struct st_mysql_sys_var* innobase_system_variables[]= {
   MYSQL_SYSVAR(corrupt_table_action),
   MYSQL_SYSVAR(fake_changes),
   MYSQL_SYSVAR(locking_fake_changes),
+  MYSQL_SYSVAR(tmpdir),
   NULL
 };
 

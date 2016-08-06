@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights
+/* Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights
    reserved.
 
    This program is free software; you can redistribute it and/or modify
@@ -2458,9 +2458,11 @@ public:
 
   /*** Following methods used in slow_extended.patch ***/
   void clear_slow_extended();
+private:
   void reset_sub_statement_state_slow_extended(Sub_statement_state *backup);
   void restore_sub_statement_state_slow_extended(const Sub_statement_state *backup);
   /*** The methods above used in slow_extended.patch ***/
+public:
 
   /* <> 0 if we are inside of trigger or stored function. */
   uint in_sub_stmt;
@@ -2553,6 +2555,9 @@ public:
                 current_stmt_binlog_format == BINLOG_FORMAT_ROW);
     return current_stmt_binlog_format == BINLOG_FORMAT_ROW;
   }
+
+  bool is_current_stmt_binlog_disabled() const;
+
   /** Tells whether the given optimizer_switch flag is on */
   inline bool optimizer_switch_flag(ulonglong flag) const
   {
@@ -3256,7 +3261,6 @@ public:
 
   /// @todo: slave_thread is completely redundant, we should use 'system_thread' instead /sven
   bool       slave_thread, one_shot_set;
-  bool       extra_port;                        /* If extra connection */
 
   bool	     no_errors;
   uchar      password;
@@ -4424,11 +4428,12 @@ private:
 public:
   /**
     This is only used by master dump threads.
-    When the master receives a new connection from a slave with a UUID that
-    is already connected, it will set this flag TRUE before killing the old
-    slave connection.
+    When the master receives a new connection from a slave with a
+    UUID (for slave versions >= 5.6)/server_id(for slave versions < 5.6)
+    that is already connected, it will set this flag TRUE
+    before killing the old slave connection.
   */
-  bool duplicate_slave_uuid;
+  bool duplicate_slave_id;
 };
 
 /* Returns string as 'IP' for the client-side of the connection represented by
@@ -5650,5 +5655,21 @@ inline bool add_group_to_list(THD *thd, Item *item, bool asc)
 extern pthread_attr_t *get_connection_attrib(void);
 
 #endif /* MYSQL_SERVER */
+
+/**
+  Create a temporary file.
+
+  @details
+  The temporary file is created in a location specified by the parameter
+  path. if path is null, then it will be created on the location given
+  by the mysql server configuration (--tmpdir option).  The caller
+  does not need to delete the file, it will be deleted automatically.
+
+  @param path	location for creating temporary file
+  @param prefix	prefix for temporary file name
+  @retval -1	error
+  @retval >= 0	a file handle that can be passed to dup or my_close
+*/
+int mysql_tmpfile_path(const char* path, const char* prefix);
 
 #endif /* SQL_CLASS_INCLUDED */

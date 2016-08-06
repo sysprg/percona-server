@@ -1,4 +1,4 @@
-/* Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -1270,6 +1270,8 @@ binlog_cache_data::flush(THD *thd, my_off_t *bytes_written, bool *wrote_xid)
      */
     if (!(error= gtid_before_write_cache(thd, this)))
       error= mysql_bin_log.write_cache(thd, this);
+    else
+      thd->commit_error= THD::CE_FLUSH_ERROR;
 
     if (flags.with_xid && error == 0)
       *wrote_xid= true;
@@ -2121,17 +2123,16 @@ trans_has_updated_trans_table(const THD* thd)
   This function checks if a transactional table was updated by the
   current statement.
 
-  @param thd The client thread that executed the current statement.
+  @param ha_list Registered storage engine handler list.
   @return
     @c true if a transactional table was updated, @c false otherwise.
 */
 bool
-stmt_has_updated_trans_table(const THD *thd)
+stmt_has_updated_trans_table(Ha_trx_info* ha_list)
 {
   Ha_trx_info *ha_info;
 
-  for (ha_info= thd->transaction.stmt.ha_list; ha_info;
-       ha_info= ha_info->next())
+  for (ha_info= ha_list; ha_info; ha_info= ha_info->next())
   {
     if (ha_info->is_trx_read_write() && ha_info->ht() != binlog_hton)
       return (TRUE);
@@ -3555,23 +3556,48 @@ int MYSQL_BIN_LOG::move_crash_safe_index_file_to_index_file(bool need_lock_index
     if (mysql_file_close(index_file.file, MYF(0)) < 0)
     {
       error= -1;
-      sql_print_error("MYSQL_BIN_LOG::move_crash_safe_index_file_to_index_file "
-                      "failed to close the index file.");
-      goto err;
+      sql_print_error("While rebuilding index file %s: "
+                      "Failed to close the index file.", index_file_name);
+      /*
+        Delete Crash safe index file here and recover the binlog.index
+        state(index_file io_cache) from old binlog.index content.
+       */
+      mysql_file_delete(key_file_binlog_index, crash_safe_index_file_name,
+                        MYF(0));
+
+      goto recoverable_err;
     }
-    mysql_file_delete(key_file_binlog_index, index_file_name, MYF(MY_WME));
+    if (DBUG_EVALUATE_IF("force_index_file_delete_failure", 1, 0) ||
+        mysql_file_delete(key_file_binlog_index, index_file_name, MYF(MY_WME)))
+    {
+      error= -1;
+      sql_print_error("While rebuilding index file %s: "
+                      "Failed to delete the existing index file. It could be "
+                      "that file is being used by some other process.",
+                      index_file_name);
+      /*
+        Delete Crash safe file index file here and recover the binlog.index
+        state(index_file io_cache) from old binlog.index content.
+       */
+      mysql_file_delete(key_file_binlog_index, crash_safe_index_file_name,
+                        MYF(0));
+
+      goto recoverable_err;
+    }
   }
 
   DBUG_EXECUTE_IF("crash_create_before_rename_index_file", DBUG_SUICIDE(););
   if (my_rename(crash_safe_index_file_name, index_file_name, MYF(MY_WME)))
   {
     error= -1;
-    sql_print_error("MYSQL_BIN_LOG::move_crash_safe_index_file_to_index_file "
-                    "failed to move crash_safe_index_file to index file.");
-    goto err;
+    sql_print_error("While rebuilding index file %s: "
+                    "Failed to rename the new index file to the existing "
+                    "index file.", index_file_name);
+    goto fatal_err;
   }
   DBUG_EXECUTE_IF("crash_create_after_rename_index_file", DBUG_SUICIDE(););
 
+recoverable_err:
   if ((fd= mysql_file_open(key_file_binlog_index,
                            index_file_name,
                            O_RDWR | O_CREAT | O_BINARY,
@@ -3581,15 +3607,31 @@ int MYSQL_BIN_LOG::move_crash_safe_index_file_to_index_file(bool need_lock_index
                          mysql_file_seek(fd, 0L, MY_SEEK_END, MYF(0)),
                                          0, MYF(MY_WME | MY_WAIT_IF_FULL)))
   {
-    error= -1;
-    sql_print_error("MYSQL_BIN_LOG::move_crash_safe_index_file_to_index_file "
-                    "failed to open the index file.");
-    goto err;
+    sql_print_error("After rebuilding the index file %s: "
+                    "Failed to open the index file.", index_file_name);
+    goto fatal_err;
   }
 
-err:
   if (need_lock_index)
     mysql_mutex_unlock(&LOCK_index);
+  DBUG_RETURN(error);
+
+fatal_err:
+  /*
+    This situation is very very rare to happen (unless there is some serious
+    memory related issues like OOM) and should be treated as fatal error.
+    Hence it is better to bring down the server without respecting
+    'binlog_error_action' value here.
+  */
+  exec_binlog_error_action_abort("MySQL server failed to update the "
+                                 "binlog.index file's content properly. "
+                                 "It might not be in sync with available "
+                                 "binlogs and the binlog.index file state is in "
+                                 "unrecoverable state. Aborting the server.");
+  /*
+    Server is aborted in the above function.
+    This is dead code to make compiler happy.
+   */
   DBUG_RETURN(error);
 }
 
@@ -4493,7 +4535,7 @@ err:
 
   int error_index= 0, close_error_index= 0;
   /* Read each entry from purge_index_file and delete the file. */
-  if (is_inited_purge_index_file() &&
+  if (!error && is_inited_purge_index_file() &&
       (error_index= purge_index_entry(thd, decrease_log_space, false/*need_lock_index=false*/)))
     sql_print_error("MYSQL_BIN_LOG::purge_logs failed to process registered files"
                     " that would be purged.");
@@ -5101,7 +5143,10 @@ int MYSQL_BIN_LOG::new_file_impl(bool need_lock_log, Format_description_log_even
       written to the binary log.
    */
   while (get_prep_xids() > 0)
+  {
+    DEBUG_SYNC(current_thd, "before_rotate_binlog_file");
     mysql_cond_wait(&m_prep_xids_cond, &LOCK_xids);
+  }
   mysql_mutex_unlock(&LOCK_xids);
 
   mysql_mutex_lock(&LOCK_index);
@@ -5176,6 +5221,7 @@ int MYSQL_BIN_LOG::new_file_impl(bool need_lock_log, Format_description_log_even
      Note that at this point, log_state != LOG_CLOSED (important for is_open()).
   */
 
+  DEBUG_SYNC(current_thd, "before_rotate_binlog_file");
   /*
      new_file() is only used for rotation (in FLUSH LOGS or because size >
      max_binlog_size or max_relay_log_size).
@@ -5660,7 +5706,8 @@ int MYSQL_BIN_LOG::rotate(bool force_rotate, bool* check_purge)
 
   *check_purge= false;
 
-  if (force_rotate || (my_b_tell(&log_file) >= (my_off_t) max_size))
+  if (DBUG_EVALUATE_IF("force_rotate", 1, 0) || force_rotate ||
+      (my_b_tell(&log_file) >= (my_off_t) max_size))
   {
     error= new_file_without_locking(NULL);
     *check_purge= true;
@@ -7093,8 +7140,24 @@ MYSQL_BIN_LOG::sync_binlog_file(bool force)
   if (force || (sync_period && ++sync_counter >= sync_period))
   {
     sync_counter= 0;
+
+    /**
+      On *pure non-transactional* workloads there is a small window
+      in time where a concurrent rotate might be able to close
+      the file before the sync is actually done. In that case,
+      ignore the bad file descriptor errors.
+
+      Transactional workloads (InnoDB) are not affected since the
+      the rotation will not happen until all transactions have
+      committed to the storage engine, thence decreased the XID
+      counters.
+
+      TODO: fix this properly even for non-transactional storage
+            engines.
+     */
     if (DBUG_EVALUATE_IF("simulate_error_during_sync_binlog_file", 1,
-                         mysql_file_sync(log_file.file, MYF(MY_WME))))
+                         mysql_file_sync(log_file.file,
+                                         MYF(MY_WME | MY_IGNORE_BADFD))))
     {
       THD *thd= current_thd;
       thd->commit_error= THD::CE_SYNC_ERROR;
@@ -7231,8 +7294,9 @@ void MYSQL_BIN_LOG::handle_binlog_flush_or_sync_error(THD *thd,
           binlog_error_action == ABORT_SERVER ? "ABORT_SERVER" : "IGNORE_ERROR");
   if (binlog_error_action == ABORT_SERVER)
   {
-    sprintf(errmsg, "%s Hence aborting the server.", errmsg);
-    exec_binlog_error_action_abort(errmsg);
+    char err_buff[MYSQL_ERRMSG_SIZE];
+    sprintf(err_buff, "%s Hence aborting the server.", errmsg);
+    exec_binlog_error_action_abort(err_buff);
   }
   else
   {
@@ -7510,7 +7574,8 @@ commit_stage:
     If we need to rotate, we do it without commit error.
     Otherwise the thd->commit_error will be possibly reset.
    */
-  if (do_rotate && thd->commit_error == THD::CE_NONE)
+  if (DBUG_EVALUATE_IF("force_rotate", 1, 0) ||
+      (do_rotate && thd->commit_error == THD::CE_NONE))
   {
     /*
       Do not force the rotate as several consecutive groups may
@@ -8124,6 +8189,94 @@ THD::add_to_binlog_accessed_dbs(const char *db_param)
     binlog_accessed_db_names->push_back(after_db, db_mem_root);
 }
 
+/*
+  Tells if two (or more) tables have auto_increment columns and we want to
+  lock those tables with a write lock.
+
+  SYNOPSIS
+    has_two_write_locked_tables_with_auto_increment
+      tables        Table list
+
+  NOTES:
+    Call this function only when you have established the list of all tables
+    which you'll want to update (including stored functions, triggers, views
+    inside your statement).
+*/
+
+static bool
+has_write_table_with_auto_increment(TABLE_LIST *tables)
+{
+  for (TABLE_LIST *table= tables; table; table= table->next_global)
+  {
+    /* we must do preliminary checks as table->table may be NULL */
+    if (!table->placeholder() &&
+        table->table->found_next_number_field &&
+        (table->lock_type >= TL_WRITE_ALLOW_WRITE))
+      return 1;
+  }
+
+  return 0;
+}
+
+/*
+   checks if we have select tables in the table list and write tables
+   with auto-increment column.
+
+  SYNOPSIS
+   has_two_write_locked_tables_with_auto_increment_and_select
+      tables        Table list
+
+  RETURN VALUES
+
+   -true if the table list has atleast one table with auto-increment column
+
+
+         and atleast one table to select from.
+   -false otherwise
+*/
+
+static bool
+has_write_table_with_auto_increment_and_select(TABLE_LIST *tables)
+{
+  bool has_select= false;
+  bool has_auto_increment_tables = has_write_table_with_auto_increment(tables);
+  for(TABLE_LIST *table= tables; table; table= table->next_global)
+  {
+     if (!table->placeholder() &&
+        (table->lock_type <= TL_READ_NO_INSERT))
+      {
+        has_select= true;
+        break;
+      }
+  }
+  return(has_select && has_auto_increment_tables);
+}
+
+/*
+  Tells if there is a table whose auto_increment column is a part
+  of a compound primary key while is not the first column in
+  the table definition.
+
+  @param tables Table list
+
+  @return true if the table exists, fais if does not.
+*/
+
+static bool
+has_write_table_auto_increment_not_first_in_pk(TABLE_LIST *tables)
+{
+  for (TABLE_LIST *table= tables; table; table= table->next_global)
+  {
+    /* we must do preliminary checks as table->table may be NULL */
+    if (!table->placeholder() &&
+        table->table->found_next_number_field &&
+        (table->lock_type >= TL_WRITE_ALLOW_WRITE)
+        && table->table->s->next_number_keypart != 0)
+      return 1;
+  }
+
+  return 0;
+}
 
 /**
   Decide on logging format to use for the statement and issue errors
@@ -8319,14 +8472,40 @@ int THD::decide_logging_format(TABLE_LIST *tables)
 #ifndef DBUG_OFF
     {
       static const char *prelocked_mode_name[] = {
-        "NON_PRELOCKED",
-        "PRELOCKED",
-        "PRELOCKED_UNDER_LOCK_TABLES",
+        "LTM_NONE",
+        "LTM_LOCK_TABLES",
+        "LTM_PRELOCKED",
+        "LTM_PRELOCKED_UNDER_LOCK_TABLES"
       };
       DBUG_PRINT("debug", ("prelocked_mode: %s",
                            prelocked_mode_name[locked_tables_mode]));
     }
 #endif
+
+    if (variables.binlog_format != BINLOG_FORMAT_ROW && tables)
+    {
+      /*
+        DML statements that modify a table with an auto_increment column based on
+        rows selected from a table are unsafe as the order in which the rows are
+        fetched fron the select tables cannot be determined and may differ on
+        master and slave.
+       */
+      if (has_write_table_with_auto_increment_and_select(tables))
+        lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_WRITE_AUTOINC_SELECT);
+
+      if (has_write_table_auto_increment_not_first_in_pk(tables))
+        lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_AUTOINC_NOT_FIRST);
+
+      /*
+        A query that modifies autoinc column in sub-statement can make the
+        master and slave inconsistent.
+        We can solve these problems in mixed mode by switching to binlogging
+        if at least one updated table is used by sub-statement
+       */
+      if (lex->requires_prelocking() &&
+          has_write_table_with_auto_increment(lex->first_not_own_table()))
+        lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_AUTOINC_COLUMNS);
+    }
 
     /*
       Get the capabilities vector for all involved storage engines and
@@ -8423,6 +8602,27 @@ int THD::decide_logging_format(TABLE_LIST *tables)
         is_write= TRUE;
 
         prev_write_table= table->table;
+
+        /*
+          INSERT...ON DUPLICATE KEY UPDATE on a table with more than one unique keys
+          can be unsafe. Check for it if the flag is already not marked for the
+          given statement.
+        */
+        if (!lex->is_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_INSERT_TWO_KEYS) &&
+            lex->sql_command == SQLCOM_INSERT &&
+            /* Duplicate key update is not supported by INSERT DELAYED */
+            get_command() != COM_DELAYED_INSERT && lex->duplicates == DUP_UPDATE)
+        {
+          uint keys= table->table->s->keys, i= 0, unique_keys= 0;
+          for (KEY* keyinfo= table->table->s->key_info;
+               i < keys && unique_keys <= 1; i++, keyinfo++)
+          {
+            if (keyinfo->flags & HA_NOSAME)
+              unique_keys++;
+          }
+          if (unique_keys > 1 )
+            lex->set_stmt_unsafe(LEX::BINLOG_STMT_UNSAFE_INSERT_TWO_KEYS);
+        }
       }
       flags_access_some_set |= flags;
 
@@ -8504,7 +8704,7 @@ int THD::decide_logging_format(TABLE_LIST *tables)
         my_error((error= ER_BINLOG_ROW_INJECTION_AND_STMT_ENGINE), MYF(0));
       }
       else if (variables.binlog_format == BINLOG_FORMAT_ROW &&
-               sqlcom_can_generate_row_events(this))
+               sqlcom_can_generate_row_events(this->lex->sql_command))
       {
         /*
           2. Error: Cannot modify table that uses a storage engine
@@ -8543,7 +8743,7 @@ int THD::decide_logging_format(TABLE_LIST *tables)
           my_error((error= ER_BINLOG_ROW_INJECTION_AND_STMT_MODE), MYF(0));
         }
         else if ((flags_write_all_set & HA_BINLOG_STMT_CAPABLE) == 0 &&
-                 sqlcom_can_generate_row_events(this))
+                 sqlcom_can_generate_row_events(this->lex->sql_command))
         {
           /*
             5. Error: Cannot modify table that uses a storage engine
@@ -8739,8 +8939,9 @@ bool THD::is_ddl_gtid_compatible() const
       inside a transaction because the table will stay and the
       transaction will be written to the slave's binary log with the
       GTID even if the transaction is rolled back.
+      This includes the execution inside Functions and Triggers.
     */
-    if (in_multi_stmt_transaction_mode())
+    if (in_multi_stmt_transaction_mode() || in_sub_stmt)
     {
       my_error(ER_GTID_UNSAFE_CREATE_DROP_TEMPORARY_TABLE_IN_TRANSACTION,
                MYF(0));
@@ -8825,7 +9026,7 @@ template <class RowsEventT> Rows_log_event*
 THD::binlog_prepare_pending_rows_event(TABLE* table, uint32 serv_id,
                                        size_t needed,
                                        bool is_transactional,
-				       RowsEventT *hint __attribute__((unused)),
+				       RowsEventT *hint MY_ATTRIBUTE((unused)),
                                        const uchar* extra_row_info)
 {
   DBUG_ENTER("binlog_prepare_pending_rows_event");

@@ -11,7 +11,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,  USA */
 
 #define MYSQL_SERVER
 #include <sql_class.h>
@@ -161,7 +161,10 @@ static void query_response_time_audit_notify(MYSQL_THD thd,
         &thd->lex->prepared_stmt_name;
       Statement *stmt=
         (Statement *)thd->stmt_map.find_by_name(name);
-      sql_command= stmt->lex->sql_command;
+      /* In case of EXECUTE <non-existing-PS>, keep SQLCOM_EXECUTE as the
+      command. */
+      if (likely(stmt && stmt->lex))
+        sql_command= stmt->lex->sql_command;
     }
     QUERY_TYPE query_type=
       (sql_command_flags[sql_command] & CF_CHANGES_DATA) ? WRITE : READ;
@@ -169,7 +172,7 @@ static void query_response_time_audit_notify(MYSQL_THD thd,
     if (THDVAR(thd, exec_time_debug)) {
       ulonglong t = THDVAR(thd, exec_time_debug);
       if ((thd->lex->sql_command == SQLCOM_SET_OPTION) ||
-          (thd->lex->spname && thd->stmt_arena &&
+          (thd->sp_runtime_ctx && thd->lex->spname && thd->stmt_arena &&
               ((sp_lex_instr *)thd->stmt_arena)->get_command() ==
               SQLCOM_SET_OPTION )) {
           t = 0;

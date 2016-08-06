@@ -1,5 +1,5 @@
 /*
-   Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
+   Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -351,7 +351,7 @@ inline int idempotent_error_code(int err_code)
   Ignore error code specified on command line.
 */
 
-inline int ignored_error_code(int err_code)
+int ignored_error_code(int err_code)
 {
 #ifdef HAVE_NDB_BINLOG
   /*
@@ -1749,7 +1749,7 @@ Log_event* Log_event::read_log_event(const char* buf, uint event_len,
 
 void Log_event::print_header(IO_CACHE* file,
                              PRINT_EVENT_INFO* print_event_info,
-                             bool is_more __attribute__((unused)))
+                             bool is_more MY_ATTRIBUTE((unused)))
 {
   char llbuff[22];
   my_off_t hexdump_from= print_event_info->hexdump_from;
@@ -1871,17 +1871,16 @@ void Log_event::print_header(IO_CACHE* file,
   @param[in] file              IO cache
   @param[in] prt               Pointer to string
   @param[in] length            String length
-  @param[in] esc_all        Whether to escape all characters
 */
 
 static void
-my_b_write_quoted(IO_CACHE *file, const uchar *ptr, uint length, bool esc_all)
+my_b_write_quoted(IO_CACHE *file, const uchar *ptr, uint length)
 {
   const uchar *s;
   my_b_printf(file, "'");
   for (s= ptr; length > 0 ; s++, length--)
   {
-    if (*s > 0x1F && !esc_all)
+    if (*s > 0x1F && *s != '\'' && *s != '\\')
       my_b_write(file, s, 1);
     else
     {
@@ -1892,14 +1891,6 @@ my_b_write_quoted(IO_CACHE *file, const uchar *ptr, uint length, bool esc_all)
   }
   my_b_printf(file, "'");
 }
-
-
-static void
-my_b_write_quoted(IO_CACHE *file, const uchar *ptr, uint length)
-{
-  my_b_write_quoted(file, ptr, length, false);
-}
-
 
 /**
   Prints a bit string to io cache in format  b'1010'.
@@ -2742,7 +2733,7 @@ Slave_worker *Log_event::get_slave_worker(Relay_log_info *rli)
   {
     if (!rli->curr_group_seen_gtid && !rli->curr_group_seen_begin)
     {
-      ulong gaq_idx __attribute__((unused));
+      ulong gaq_idx MY_ATTRIBUTE((unused));
       rli->mts_groups_assigned++;
 
       rli->curr_group_isolated= FALSE;
@@ -3779,7 +3770,8 @@ Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg,
         cmd_can_generate_row_events= cmd_must_go_to_trx_cache= TRUE;
         break;
       default:
-        cmd_can_generate_row_events= sqlcom_can_generate_row_events(thd);
+        cmd_can_generate_row_events=
+          sqlcom_can_generate_row_events(thd->lex->sql_command);
         break;
     }
   }
@@ -3787,7 +3779,8 @@ Query_log_event::Query_log_event(THD* thd_arg, const char* query_arg,
   if (cmd_can_generate_row_events)
   {
     cmd_must_go_to_trx_cache= cmd_must_go_to_trx_cache || using_trans;
-    if (cmd_must_go_to_trx_cache || stmt_has_updated_trans_table(thd) ||
+    if (cmd_must_go_to_trx_cache ||
+        stmt_has_updated_trans_table(thd->transaction.stmt.ha_list) ||
         thd->lex->is_mixed_stmt_unsafe(thd->in_multi_stmt_transaction_mode(),
                                        thd->variables.binlog_direct_non_trans_update,
                                        trans_has_updated_trans_table(thd),
@@ -3960,7 +3953,7 @@ Query_log_event::Query_log_event(const char* buf, uint event_len,
   
   slave_proxy_id= thread_id = uint4korr(buf + Q_THREAD_ID_OFFSET);
   exec_time = uint4korr(buf + Q_EXEC_TIME_OFFSET);
-  db_len = (uint)buf[Q_DB_LEN_OFFSET]; // TODO: add a check of all *_len vars
+  db_len = (uchar)buf[Q_DB_LEN_OFFSET]; // TODO: add a check of all *_len vars
   error_code = uint2korr(buf + Q_ERR_CODE_OFFSET);
 
   /*
@@ -4635,32 +4628,9 @@ static bool is_silent_error(THD* thd)
 int Query_log_event::do_apply_event(Relay_log_info const *rli,
                                       const char *query_arg, uint32 q_len_arg)
 {
-  char* query_buf;
-  int query_buf_len;
+  DBUG_ENTER("Query_log_event::do_apply_event");
   int expected_error,actual_error= 0;
   HA_CREATE_INFO db_options;
-  DBUG_ENTER("Query_log_event::do_apply_event");
-
-  /*
-    We must allocate some extra memory for query cache
-    The query buffer layout is:
-       buffer :==
-         <statement>   The input statement(s)
-         '\0'          Terminating null char  (1 byte)
-         <length>      Length of following current database name (size_t)
-         <db_name>     Name of current database
-         <flags>       Flags struct
-  */
-  query_buf_len = q_len_arg + 1 + sizeof(size_t) + thd->db_length
-                  + QUERY_CACHE_FLAGS_SIZE + 1;
-  if ((query_buf= (char *) thd->alloc(query_buf_len)))
-  {
-    memcpy(query_buf, query_arg, q_len_arg);
-    query_buf[q_len_arg]= 0;
-    memcpy(query_buf+q_len_arg+1, (char *) &thd->db_length, sizeof(size_t));
-  }
-  else
-    goto end;
 
   /*
     Colleagues: please never free(thd->catalog) in MySQL. This would
@@ -4743,10 +4713,8 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
   */
   {
     thd->set_time(&when);
-
-    thd->set_query_and_id((char*) query_buf, q_len_arg,
+    thd->set_query_and_id((char*)query_arg, q_len_arg,
                           thd->charset(), next_query_id());
- 
     thd->variables.pseudo_thread_id= thread_id;		// for temp tables
     attach_temp_tables_worker(thd);
     DBUG_PRINT("query",("%s", thd->query()));
@@ -4811,7 +4779,7 @@ int Query_log_event::do_apply_event(Relay_log_info const *rli,
             result. This should be acceptable now. This is a reminder
             to fix this if any refactoring happens here sometime.
           */
-          thd->set_query((char*) query_buf, q_len_arg, thd->charset());
+          thd->set_query((char*) query_arg, q_len_arg, thd->charset());
         }
       }
       if (time_zone_len)
@@ -10041,15 +10009,36 @@ Rows_log_event::decide_row_lookup_algorithm_and_key()
   TABLE *table= this->m_table;
   uint event_type= this->get_general_type_code();
   MY_BITMAP *cols= &this->m_cols;
+  bool delete_update_lookup_condition= false;
   this->m_rows_lookup_algorithm= ROW_LOOKUP_NOT_NEEDED;
   this->m_key_index= MAX_KEY;
   this->m_key_info= NULL;
 
   // row lookup not needed
   if (event_type == WRITE_ROWS_EVENT ||
-     ((event_type == DELETE_ROWS_EVENT || event_type == UPDATE_ROWS_EVENT) &&
-      get_flags(COMPLETE_ROWS_F) && !m_table->file->rpl_lookup_rows()))
-    DBUG_VOID_RETURN;
+     (delete_update_lookup_condition= ((event_type == DELETE_ROWS_EVENT ||
+                                        event_type == UPDATE_ROWS_EVENT) &&
+                                      get_flags(COMPLETE_ROWS_F) &&
+                                      !m_table->file->rpl_lookup_rows())))
+  {
+    if (delete_update_lookup_condition &&
+        table->file->ht->db_type == DB_TYPE_TOKUDB &&
+        table->s->primary_key == MAX_KEY)
+    {
+        if (!table->s->rfr_lookup_warning)
+        {
+          sql_print_warning("Slave: read free replication is disabled "
+                            "for tokudb table `%s.%s` "
+                            "as it does not have implicit primary key, "
+                            "continue with rows lookup",
+                            print_slave_db_safe(table->s->db.str),
+                            m_table->s->table_name.str);
+          table->s->rfr_lookup_warning= true;
+        }
+    }
+    else
+      DBUG_VOID_RETURN;
+  }
 
   if (!(slave_rows_search_algorithms_options & SLAVE_ROWS_INDEX_SCAN))
     goto TABLE_OR_INDEX_HASH_SCAN;
@@ -11195,6 +11184,7 @@ end:
 int Rows_log_event::do_apply_event(Relay_log_info const *rli)
 {
   DBUG_ENTER("Rows_log_event::do_apply_event(Relay_log_info*)");
+  TABLE *table= NULL;
   int error= 0;
 
   if (opt_bin_log)
@@ -11272,28 +11262,33 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
       uint actual_error= thd->get_stmt_da()->sql_errno();
       if (thd->is_slave_error || thd->is_fatal_error)
       {
-        /*
-          Error reporting borrowed from Query_log_event with many excessive
-          simplifications. 
-          We should not honour --slave-skip-errors at this point as we are
-          having severe errors which should not be skiped.
-        */
-        rli->report(ERROR_LEVEL, actual_error,
-                    "Error executing row event: '%s'",
-                    (actual_error ? thd->get_stmt_da()->message() :
-                     "unexpected success or fatal error"));
-        thd->is_slave_error= 1;
+        if (ignored_error_code(actual_error))
+        {
+          if (log_warnings > 1)
+            rli->report(WARNING_LEVEL, actual_error,
+                        "Error executing row event: '%s'",
+                        (actual_error ? thd->get_stmt_da()->message() :
+                         "unexpected success or fatal error"));
+          thd->get_stmt_da()->clear_warning_info(thd->query_id);
+          clear_all_errors(thd, const_cast<Relay_log_info*>(rli));
+          error= 0;
+          goto end;
+        }
+        else
+        {
+          rli->report(ERROR_LEVEL, actual_error,
+                      "Error executing row event: '%s'",
+                      (actual_error ? thd->get_stmt_da()->message() :
+                       "unexpected success or fatal error"));
+          thd->is_slave_error= 1;
+          const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
+          DBUG_RETURN(actual_error);
+        }
       }
-      const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
-      DBUG_RETURN(actual_error);
     }
-
     /*
       When the open and locking succeeded, we check all tables to
       ensure that they still have the correct type.
-
-      We can use a down cast here since we know that every table added
-      to the tables_to_lock is a RPL_TABLE_LIST.
     */
 
     {
@@ -11312,10 +11307,37 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
         NOTE: The base tables are added here are removed when 
               close_thread_tables is called.
        */
-      RPL_TABLE_LIST *ptr= rli->tables_to_lock;
-      for (uint i= 0 ; ptr && (i < rli->tables_to_lock_count);
-           ptr= static_cast<RPL_TABLE_LIST*>(ptr->next_global), i++)
+      TABLE_LIST *table_list_ptr= rli->tables_to_lock;
+      for (uint i=0 ; table_list_ptr && (i < rli->tables_to_lock_count);
+           table_list_ptr= table_list_ptr->next_global, i++)
       {
+        /*
+          Below if condition takes care of skipping base tables that
+          make up the MERGE table (which are added by open_tables()
+          call). They are added next to the merge table in the list.
+          For eg: If RPL_TABLE_LIST is t3->t1->t2 (where t1 and t2
+          are base tables for merge table 't3'), open_tables will modify
+          the list by adding t1 and t2 again immediately after t3 in the
+          list (*not at the end of the list*). New table_to_lock list will
+          look like t3->t1'->t2'->t1->t2 (where t1' and t2' are TABLE_LIST
+          objects added by open_tables() call). There is no flag(or logic) in
+          open_tables() that can skip adding these base tables to the list.
+          So the logic here should take care of skipping them.
+
+          tables_to_lock_count logic will take care of skipping base tables
+          that are added at the end of the list.
+          For eg: If RPL_TABLE_LIST is t1->t2->t3, open_tables will modify
+          the list into t1->t2->t3->t1'->t2'. t1' and t2' will be skipped
+          because tables_to_lock_count logic in this for loop.
+        */
+        if (table_list_ptr->parent_l)
+          continue;
+        /*
+          We can use a down cast here since we know that every table added
+          to the tables_to_lock is a RPL_TABLE_LIST (or child table which is
+          skipped above).
+        */
+        RPL_TABLE_LIST *ptr= static_cast<RPL_TABLE_LIST*>(table_list_ptr);
         DBUG_ASSERT(ptr->m_tabledef_valid);
         TABLE *conv_table;
         if (!ptr->m_tabledef.compatible_with(thd, const_cast<Relay_log_info*>(rli),
@@ -11324,13 +11346,18 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
           DBUG_PRINT("debug", ("Table: %s.%s is not compatible with master",
                                ptr->table->s->db.str,
                                ptr->table->s->table_name.str));
-          /*
-            We should not honour --slave-skip-errors at this point as we are
-            having severe errors which should not be skiped.
-          */
-          thd->is_slave_error= 1;
-          const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
-          DBUG_RETURN(ERR_BAD_TABLE_DEF);
+          if (thd->is_slave_error)
+          {
+            const_cast<Relay_log_info*>(rli)->slave_close_thread_tables(thd);
+            DBUG_RETURN(ERR_BAD_TABLE_DEF);
+          }
+          else
+          {
+            thd->get_stmt_da()->clear_warning_info(thd->query_id);
+            clear_all_errors(thd, const_cast<Relay_log_info*>(rli));
+            error= 0;
+            goto end;
+          }
         }
         DBUG_PRINT("debug", ("Table: %s.%s is compatible with master"
                              " - conv_table: %p",
@@ -11356,15 +11383,22 @@ int Rows_log_event::do_apply_event(Relay_log_info const *rli)
      */
     TABLE_LIST *ptr= rli->tables_to_lock;
     for (uint i=0 ;  ptr && (i < rli->tables_to_lock_count); ptr= ptr->next_global, i++)
+    {
+      /*
+        Please see comment in above 'for' loop to know the reason
+        for this if condition
+      */
+      if (ptr->parent_l)
+        continue;
       const_cast<Relay_log_info*>(rli)->m_table_map.set_table(ptr->table_id, ptr->table);
+    }
 
 #ifdef HAVE_QUERY_CACHE
     query_cache.invalidate_locked_for_write(rli->tables_to_lock);
 #endif
   }
 
-  TABLE* 
-    table= 
+  table=
     m_table= const_cast<Relay_log_info*>(rli)->m_table_map.get_table(m_table_id);
 
   DBUG_PRINT("debug", ("m_table: 0x%lx, m_table_id: %llu", (ulong) m_table,
@@ -11599,16 +11633,29 @@ AFTER_MAIN_EXEC_ROW_LOOP:
     thd->is_slave_error= 1;
     DBUG_RETURN(error);
   }
-
+end:
   if (get_flags(STMT_END_F))
   {
    if((error= rows_event_stmt_cleanup(rli, thd)))
-    slave_rows_error_report(ERROR_LEVEL,
-                            thd->is_error() ? 0 : error,
-                            rli, thd, table,
-                            get_type_str(),
-                            const_cast<Relay_log_info*>(rli)->get_rpl_log_name(),
-                            (ulong) log_pos);
+   {
+     if (table)
+       slave_rows_error_report(ERROR_LEVEL,
+                               thd->is_error() ? 0 : error,
+                               rli, thd, table,
+                               get_type_str(),
+                               const_cast<Relay_log_info*>(rli)->get_rpl_log_name(),
+                               (ulong) log_pos);
+     else
+     {
+       rli->report(ERROR_LEVEL,
+                   thd->is_error() ? thd->get_stmt_da()->sql_errno() : error,
+                   "Error in cleaning up after an event of type:%s; %s; the group"
+                   " log file/position: %s %lu", get_type_str(),
+                   thd->is_error() ? thd->get_stmt_da()->message() : "unexpected error",
+                   const_cast<Relay_log_info*>(rli)->get_rpl_log_name(),
+                   (ulong) log_pos);
+     }
+   }
    /* We are at end of the statement (STMT_END_F flag), lets clean
      the memory which was used from thd's mem_root now.
      This needs to be done only if we are here in SQL thread context.
@@ -11650,6 +11697,11 @@ Rows_log_event::do_shall_skip(Relay_log_info *rli)
 
 static int rows_event_stmt_cleanup(Relay_log_info const *rli, THD * thd)
 {
+  DBUG_EXECUTE_IF("simulate_rows_event_cleanup_failure",
+                  {
+                    my_error(ER_ERROR_DURING_COMMIT, MYF(0), 1);
+                    return (1);
+                  });
   int error;
   {
     /*
@@ -11706,6 +11758,12 @@ static int rows_event_stmt_cleanup(Relay_log_info const *rli, THD * thd)
     thd->reset_current_stmt_binlog_format_row();
 
     const_cast<Relay_log_info*>(rli)->cleanup_context(thd, 0);
+
+    /*
+      Clean sql_command value
+    */
+    thd->lex->sql_command= SQLCOM_END;
+
   }
   return error;
 }
@@ -12645,6 +12703,16 @@ Write_rows_log_event::do_before_row_operations(const Slave_reporting_capability 
   if (get_flags(STMT_END_F))
     status_var_increment(thd->status_var.com_stat[SQLCOM_INSERT]);
 
+  /*
+    Let storage engines treat this event as an INSERT command.
+
+    Set 'sql_command' as SQLCOM_INSERT after the tables are locked.
+    When locking the tables, it should be SQLCOM_END.
+    THD::decide_binlog_format which is called from "lock tables"
+    assumes that row_events will have 'sql_command' as SQLCOM_END.
+  */
+  thd->lex->sql_command= SQLCOM_INSERT;
+
   /**
      todo: to introduce a property for the event (handler?) which forces
      applying the event in the replace (idempotent) fashion.
@@ -13151,6 +13219,17 @@ Delete_rows_log_event::do_before_row_operations(const Slave_reporting_capability
    */
   if (get_flags(STMT_END_F))
     status_var_increment(thd->status_var.com_stat[SQLCOM_DELETE]);  
+
+  /*
+    Let storage engines treat this event as a DELETE command.
+
+    Set 'sql_command' as SQLCOM_UPDATE after the tables are locked.
+    When locking the tables, it should be SQLCOM_END.
+    THD::decide_binlog_format which is called from "lock tables"
+    assumes that row_events will have 'sql_command' as SQLCOM_END.
+  */
+  thd->lex->sql_command= SQLCOM_DELETE;
+
   error= row_operations_scan_and_key_setup();
   DBUG_RETURN(error);
 
@@ -13267,6 +13346,17 @@ Update_rows_log_event::do_before_row_operations(const Slave_reporting_capability
   */
   if (get_flags(STMT_END_F))
     status_var_increment(thd->status_var.com_stat[SQLCOM_UPDATE]);
+
+  /*
+    Let storage engines treat this event as an UPDATE command.
+
+    Set 'sql_command' as SQLCOM_UPDATE after the tables are locked.
+    When locking the tables, it should be SQLCOM_END.
+    THD::decide_binlog_format which is called from "lock tables"
+    assumes that row_events will have 'sql_command' as SQLCOM_END.
+   */
+  thd->lex->sql_command= SQLCOM_UPDATE;
+
   error= row_operations_scan_and_key_setup();
   DBUG_RETURN(error);
 

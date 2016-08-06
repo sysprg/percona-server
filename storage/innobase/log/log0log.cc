@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2016, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2009, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -1050,8 +1050,7 @@ log_group_init(
 	ulint	space_id,		/*!< in: space id of the file space
 					which contains the log files of this
 					group */
-	ulint	archive_space_id __attribute__((unused)))
-					/*!< in: space id of the file space
+	ulint	archive_space_id)	/*!< in: space id of the file space
 					which contains some archived log
 					files for this group; currently, only
 					for the first log group this is
@@ -2469,7 +2468,7 @@ log_archived_file_name_gen(
 /*=======================*/
 	char*	buf,	/*!< in: buffer where to write */
 	ulint	buf_len,/*!< in: buffer length */
-	ulint	id __attribute__((unused)),
+	ulint	id MY_ATTRIBUTE((unused)),
 			/*!< in: group id;
 			currently we only archive the first group */
 	lsn_t	file_no)/*!< in: file number */
@@ -3128,10 +3127,9 @@ log_archive_close_groups(
 Writes the log contents to the archive up to the lsn when this function was
 called, and stops the archiving. When archiving is started again, the archived
 log file numbers start from 2 higher, so that the archiving will not write
-again to the archived log files which exist when this function returns.
-@return	DB_SUCCESS or DB_ERROR */
-UNIV_INTERN
-ulint
+again to the archived log files which exist when this function returns. */
+static
+void
 log_archive_stop(void)
 /*==================*/
 {
@@ -3139,13 +3137,7 @@ log_archive_stop(void)
 
 	mutex_enter(&(log_sys->mutex));
 
-	if (log_sys->archiving_state != LOG_ARCH_ON) {
-
-		mutex_exit(&(log_sys->mutex));
-
-		return(DB_ERROR);
-	}
-
+	ut_ad(log_sys->archiving_state == LOG_ARCH_ON);
 	log_sys->archiving_state = LOG_ARCH_STOPPING;
 
 	mutex_exit(&(log_sys->mutex));
@@ -3187,8 +3179,6 @@ log_archive_stop(void)
 	log_sys->archiving_state = LOG_ARCH_STOPPED;
 
 	mutex_exit(&(log_sys->mutex));
-
-	return(DB_SUCCESS);
 }
 
 /****************************************************************//**
@@ -3582,7 +3572,7 @@ loop:
 
 		/* Wake the log tracking thread which will then immediatelly
 		quit because of srv_shutdown_state value */
-		if (srv_track_changed_pages) {
+		if (srv_redo_log_thread_started) {
 			os_event_reset(srv_redo_log_tracked_event);
 			os_event_set(srv_checkpoint_completed_event);
 		}
@@ -3661,7 +3651,7 @@ loop:
 	srv_shutdown_state = SRV_SHUTDOWN_LAST_PHASE;
 
 	/* Signal the log following thread to quit */
-	if (srv_track_changed_pages) {
+	if (srv_redo_log_thread_started) {
 		os_event_reset(srv_redo_log_tracked_event);
 		os_event_set(srv_checkpoint_completed_event);
 	}
@@ -3930,6 +3920,7 @@ log_shutdown(void)
 	rw_lock_free(&log_sys->checkpoint_lock);
 
 	mutex_free(&log_sys->mutex);
+	mutex_free(&log_sys->log_flush_order_mutex);
 
 #ifdef UNIV_LOG_ARCHIVE
 	rw_lock_free(&log_sys->archive_lock);

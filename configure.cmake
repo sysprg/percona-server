@@ -1,4 +1,4 @@
-# Copyright (c) 2009, 2015, Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2009, 2016, Oracle and/or its affiliates. All rights reserved.
 # 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -67,17 +67,27 @@ SET(SIGNAL_WITH_VIO_SHUTDOWN 1)
 
 # The default C++ library for SunPro is really old, and not standards compliant.
 # http://www.oracle.com/technetwork/server-storage/solaris10/cmp-stlport-libcstd-142559.html
-# Use stlport rather than Rogue Wave.
+# Use stlport rather than Rogue Wave,
+#   unless otherwise specified on command line.
 IF(CMAKE_SYSTEM_NAME MATCHES "SunOS")
   IF(CMAKE_CXX_COMPILER_ID MATCHES "SunPro")
-    IF(SUNPRO_CXX_LIBRARY)
-      SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -library=${SUNPRO_CXX_LIBRARY}")
-      IF(SUNPRO_CXX_LIBRARY STREQUAL "stdcxx4")
-        ADD_DEFINITIONS(-D__MATHERR_RENAME_EXCEPTION)
-        SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -template=extdef")
-      ENDIF()
+    IF(CMAKE_CXX_FLAGS MATCHES "-std=")
+      ADD_DEFINITIONS(-D__MATHERR_RENAME_EXCEPTION)
+      SET(CMAKE_SHARED_LIBRARY_C_FLAGS
+        "${CMAKE_SHARED_LIBRARY_C_FLAGS} -lc")
+      SET(CMAKE_SHARED_LIBRARY_CXX_FLAGS
+        "${CMAKE_SHARED_LIBRARY_CXX_FLAGS} -lstdc++ -lgcc_s -lCrunG3 -lc")
+      SET(QUOTED_CMAKE_CXX_LINK_FLAGS "-lstdc++ -lgcc_s -lCrunG3 -lc")
     ELSE()
-      SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -library=stlport4")
+      IF(SUNPRO_CXX_LIBRARY)
+        SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -library=${SUNPRO_CXX_LIBRARY}")
+        IF(SUNPRO_CXX_LIBRARY STREQUAL "stdcxx4")
+          ADD_DEFINITIONS(-D__MATHERR_RENAME_EXCEPTION)
+          SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -template=extdef")
+        ENDIF()
+      ELSE()
+        SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -library=stlport4")
+      ENDIF()
     ENDIF()
   ENDIF()
 ENDIF()
@@ -759,7 +769,7 @@ MY_CHECK_TYPE_SIZE(char CHAR)
 MY_CHECK_TYPE_SIZE(short SHORT)
 MY_CHECK_TYPE_SIZE(int INT)
 MY_CHECK_TYPE_SIZE("long long" LONG_LONG)
-SET(CMAKE_EXTRA_INCLUDE_FILES stdio.h sys/types.h)
+SET(CMAKE_EXTRA_INCLUDE_FILES stdio.h sys/types.h time.h)
 MY_CHECK_TYPE_SIZE(off_t OFF_T)
 MY_CHECK_TYPE_SIZE(uchar UCHAR)
 MY_CHECK_TYPE_SIZE(uint UINT)
@@ -774,6 +784,7 @@ MY_CHECK_TYPE_SIZE(u_int32_t U_INT32_T)
 MY_CHECK_TYPE_SIZE(int64 INT64)
 MY_CHECK_TYPE_SIZE(uint64 UINT64)
 MY_CHECK_TYPE_SIZE(time_t TIME_T)
+MY_CHECK_TYPE_SIZE("struct timespec" STRUCT_TIMESPEC)
 SET (CMAKE_EXTRA_INCLUDE_FILES sys/types.h)
 MY_CHECK_TYPE_SIZE(bool  BOOL)
 SET(CMAKE_EXTRA_INCLUDE_FILES)

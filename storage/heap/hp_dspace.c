@@ -12,7 +12,7 @@
 
    You should have received a copy of the GNU General Public License
    along with this program; if not, write to the Free Software
-   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
+   Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA */
 
 /*
   Implements various base dataspace-related functions - allocate, free, clear
@@ -344,7 +344,7 @@ int hp_reallocate_chunkset(HP_DATASPACE *info, uint chunk_count, uchar *pos)
   {
     /* Update should never change chunk_count in fixed-size mode */
     my_errno= HA_ERR_WRONG_COMMAND;
-    return my_errno;
+    DBUG_RETURN(my_errno);
   }
 
   /* Reallocate never moves the first chunk */

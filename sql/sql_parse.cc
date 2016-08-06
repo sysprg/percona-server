@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights reserved.
+/* Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights reserved.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -609,12 +609,11 @@ void init_update_queries(void)
   sql_command_flags[SQLCOM_UNINSTALL_PLUGIN]|= CF_DISALLOW_IN_RO_TRANS;
 }
 
-bool sqlcom_can_generate_row_events(const THD *thd)
+bool sqlcom_can_generate_row_events(enum enum_sql_command command)
 {
-  return (sql_command_flags[thd->lex->sql_command] &
-          CF_CAN_GENERATE_ROW_EVENTS);
+  return (sql_command_flags[command] & CF_CAN_GENERATE_ROW_EVENTS);
 }
- 
+
 bool is_update_query(enum enum_sql_command command)
 {
   DBUG_ASSERT(command >= 0 && command <= SQLCOM_END);
@@ -1748,7 +1747,7 @@ bool dispatch_command(enum enum_server_command command, THD *thd,
   {
     STATUS_VAR current_global_status_var;
     ulong uptime;
-    uint length __attribute__((unused));
+    uint length MY_ATTRIBUTE((unused));
     ulonglong queries_per_second1000;
     char buff[250];
     uint buff_len= sizeof(buff);
@@ -1878,6 +1877,8 @@ done:
   log_slow_statement(thd);
 
   THD_STAGE_INFO(thd, stage_cleaning_up);
+  if (thd->lex->sql_command == SQLCOM_CREATE_TABLE)
+    DEBUG_SYNC(thd, "dispatch_create_table_command_before_thd_root_free");
 
   if (thd->killed == THD::KILL_QUERY ||
       thd->killed == THD::KILL_TIMEOUT ||
@@ -1902,7 +1903,7 @@ done:
   /* DTRACE instrumentation, end */
   if (MYSQL_QUERY_DONE_ENABLED() || MYSQL_COMMAND_DONE_ENABLED())
   {
-    int res __attribute__((unused));
+    int res MY_ATTRIBUTE((unused));
     res= (int) thd->is_error();
     if (command == COM_QUERY)
     {
@@ -2015,7 +2016,7 @@ bool log_slow_applicable(THD *thd)
   {
     if (thd->lex->sql_command == SQLCOM_CALL)
     {
-      if (thd->stmt_arena)
+      if (thd->sp_runtime_ctx && thd->stmt_arena)
       {
         int sql_command= ((sp_lex_instr *)thd->stmt_arena)->get_command();
         if (sql_command == SQLCOM_CALL || sql_command == -1)
@@ -2701,11 +2702,7 @@ mysql_execute_command(THD *thd)
         lex->sql_command != SQLCOM_ROLLBACK &&
         lex->sql_command != SQLCOM_ROLLBACK_TO_SAVEPOINT &&
         !rpl_filter->db_ok(thd->db))
-    {
-      /* we warn the slave SQL thread */
-      my_message(ER_SLAVE_IGNORED_TABLE, ER(ER_SLAVE_IGNORED_TABLE), MYF(0));
       DBUG_RETURN(0);
-    }
 
     if (lex->sql_command == SQLCOM_DROP_TRIGGER)
     {
@@ -6478,7 +6475,7 @@ long max_stack_used;
   - Passing to check_stack_overrun() prevents the compiler from removing it.
 */
 bool check_stack_overrun(THD *thd, long margin,
-			 uchar *buf __attribute__((unused)))
+			 uchar *buf MY_ATTRIBUTE((unused)))
 {
   long stack_used;
   DBUG_ASSERT(thd == current_thd);
@@ -6820,7 +6817,7 @@ void mysql_init_multi_delete(LEX *lex)
 void mysql_parse(THD *thd, char *rawbuf, uint length,
                  Parser_state *parser_state)
 {
-  int error __attribute__((unused));
+  int error MY_ATTRIBUTE((unused));
   DBUG_ENTER("mysql_parse");
 
   DBUG_EXECUTE_IF("parser_debug", turn_parser_debug_on(););

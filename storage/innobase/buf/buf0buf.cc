@@ -1,6 +1,6 @@
 /*****************************************************************************
 
-Copyright (c) 1995, 2015, Oracle and/or its affiliates. All Rights Reserved.
+Copyright (c) 1995, 2016, Oracle and/or its affiliates. All Rights Reserved.
 Copyright (c) 2008, Google Inc.
 
 Portions of this file contain modifications contributed and copyrighted by
@@ -1454,6 +1454,7 @@ buf_pool_free_instance(
 	buf_chunk_t*	chunk;
 	buf_chunk_t*	chunks;
 	buf_page_t*	bpage;
+	ulint		i;
 
 	bpage = UT_LIST_GET_LAST(buf_pool->LRU);
 	while (bpage != NULL) {
@@ -1477,10 +1478,29 @@ buf_pool_free_instance(
 	mem_free(buf_pool->watch);
 	buf_pool->watch = NULL;
 
+	for (i = BUF_FLUSH_LRU; i < BUF_FLUSH_N_TYPES; i++) {
+		os_event_free(buf_pool->no_flush[i]);
+	}
+	mutex_free(&buf_pool->LRU_list_mutex);
+	mutex_free(&buf_pool->free_list_mutex);
+	mutex_free(&buf_pool->zip_free_mutex);
+	mutex_free(&buf_pool->zip_hash_mutex);
+	mutex_free(&buf_pool->zip_mutex);
+	mutex_free(&buf_pool->flush_state_mutex);
+	mutex_free(&buf_pool->flush_list_mutex);
+
 	chunks = buf_pool->chunks;
 	chunk = chunks + buf_pool->n_chunks;
 
 	while (--chunk >= chunks) {
+		buf_block_t* block = chunk->blocks;
+		for (i = 0; i < chunk->size; i++, block++) {
+			mutex_free(&block->mutex);
+			rw_lock_free(&block->lock);
+#ifdef UNIV_SYNC_DEBUG
+			rw_lock_free(&block->debug_latch);
+#endif
+		}
 		os_mem_free_large(chunk->mem, chunk->mem_size);
 	}
 
@@ -3601,7 +3621,7 @@ buf_page_init_low(
 
 /********************************************************************//**
 Inits a page to the buffer buf_pool. */
-static __attribute__((nonnull))
+static MY_ATTRIBUTE((nonnull))
 void
 buf_page_init(
 /*==========*/

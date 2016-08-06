@@ -1,4 +1,4 @@
-/* Copyright (c) 2000, 2015, Oracle and/or its affiliates. All rights
+/* Copyright (c) 2000, 2016, Oracle and/or its affiliates. All rights
    reserved.
 
    This program is free software; you can redistribute it and/or modify
@@ -729,6 +729,7 @@ SHOW_COMP_OPTION have_profiling;
 SHOW_COMP_OPTION have_backup_locks;
 SHOW_COMP_OPTION have_backup_safe_binlog_info;
 SHOW_COMP_OPTION have_snapshot_cloning;
+SHOW_COMP_OPTION have_tlsv1_2;
 
 ulonglong opt_log_warnings_suppress= 0;
 
@@ -760,7 +761,7 @@ mysql_mutex_t
 mysql_mutex_t LOCK_sql_rand;
 
 mysql_mutex_t
-  LOCK_stats, LOCK_global_user_client_stats,
+  LOCK_global_user_client_stats,
   LOCK_global_table_stats, LOCK_global_index_stats;
 /**
   The below lock protects access to two global server variables:
@@ -1279,7 +1280,7 @@ HANDLE smem_event_connect_request= 0;
 my_bool opt_use_ssl  = 0;
 char *opt_ssl_ca= NULL, *opt_ssl_capath= NULL, *opt_ssl_cert= NULL,
      *opt_ssl_cipher= NULL, *opt_ssl_key= NULL, *opt_ssl_crl= NULL,
-     *opt_ssl_crlpath= NULL;
+     *opt_ssl_crlpath= NULL, *opt_tls_version;
 
 #ifdef HAVE_OPENSSL
 #include <openssl/crypto.h>
@@ -1307,6 +1308,7 @@ struct st_VioSSLFd *ssl_acceptor_fd;
   LOCK_connection_count.
 */
 uint connection_count= 0, extra_connection_count= 0;
+mysql_cond_t COND_connection_count;
 
 /* Function declarations */
 
@@ -1344,7 +1346,7 @@ static void close_server_sock();
 static void clean_up_mutexes(void);
 static void wait_for_signal_thread_to_end(void);
 static void create_pid_file();
-static void mysqld_exit(int exit_code) __attribute__((noreturn));
+static void mysqld_exit(int exit_code) MY_ATTRIBUTE((noreturn));
 #endif
 static void delete_pid_file(myf flags);
 static void end_ssl();
@@ -1592,6 +1594,17 @@ static void close_connections(void)
   }
   mysql_mutex_unlock(&LOCK_thread_count);
 
+  /*
+    Connection threads might take a little while to go down after removing from
+    global thread list. Give it some time.
+  */
+  mysql_mutex_lock(&LOCK_connection_count);
+  while (connection_count > 0 || extra_connection_count > 0)
+  {
+    mysql_cond_wait(&COND_connection_count, &LOCK_connection_count);
+  }
+  mysql_mutex_unlock(&LOCK_connection_count);
+
   close_active_mi();
   DBUG_PRINT("quit",("close_connections thread"));
   DBUG_VOID_RETURN;
@@ -1757,7 +1770,7 @@ static void __cdecl kill_server(int sig_ptr)
 
 
 #if defined(USE_ONE_SIGNAL_HAND)
-pthread_handler_t kill_server_thread(void *arg __attribute__((unused)))
+pthread_handler_t kill_server_thread(void *arg MY_ATTRIBUTE((unused)))
 {
   my_thread_init();       // Initialize new thread
   kill_server(0);
@@ -2089,11 +2102,11 @@ static void clean_up_mutexes()
   mysql_cond_destroy(&COND_thread_cache);
   mysql_cond_destroy(&COND_flush_thread_cache);
   mysql_cond_destroy(&COND_manager);
-  mysql_mutex_destroy(&LOCK_stats);
   mysql_mutex_destroy(&LOCK_global_user_client_stats);
   mysql_mutex_destroy(&LOCK_global_table_stats);
   mysql_mutex_destroy(&LOCK_global_index_stats);
   mysql_rwlock_destroy(&LOCK_consistent_snapshot);
+  mysql_cond_destroy(&COND_connection_count);
 }
 #endif /*EMBEDDED_LIBRARY*/
 
@@ -2887,7 +2900,7 @@ void close_connection(THD *thd, uint sql_errno)
 
 /** Called when a thread is aborted. */
 /* ARGSUSED */
-extern "C" sig_handler end_thread_signal(int sig __attribute__((unused)))
+extern "C" sig_handler end_thread_signal(int sig MY_ATTRIBUTE((unused)))
 {
   THD *thd=current_thd;
   my_safe_printf_stderr("end_thread_signal %p", thd);
@@ -2923,7 +2936,8 @@ void thd_release_resources(THD *thd)
 void dec_connection_count(THD *thd)
 {
   mysql_mutex_lock(&LOCK_connection_count);
-  (*thd->scheduler->connection_count)--;
+  if (--(*thd->scheduler->connection_count) == 0)
+    mysql_cond_signal(&COND_connection_count);
   mysql_mutex_unlock(&LOCK_connection_count);
 }
 
@@ -3031,9 +3045,8 @@ bool one_thread_per_connection_end(THD *thd, bool block_pthread)
   DBUG_PRINT("info", ("thd %p block_pthread %d", thd, (int) block_pthread));
 
   thd->release_resources();
-  dec_connection_count(thd);
-
   remove_global_thread(thd);
+  dec_connection_count(thd);
   if (kill_blocked_pthreads_flag)
   {
     // Do not block if we are about to shut down
@@ -3092,7 +3105,7 @@ void kill_blocked_pthreads()
   @todo
     One should have to fix that thr_alarm know about this thread too.
 */
-extern "C" sig_handler abort_thread(int sig __attribute__((unused)))
+extern "C" sig_handler abort_thread(int sig MY_ATTRIBUTE((unused)))
 {
   THD *thd=current_thd;
   DBUG_ENTER("abort_thread");
@@ -3403,7 +3416,7 @@ static void start_signal_handler(void)
 
 /** This threads handles all signals and alarms. */
 /* ARGSUSED */
-pthread_handler_t signal_hand(void *arg __attribute__((unused)))
+pthread_handler_t signal_hand(void *arg MY_ATTRIBUTE((unused)))
 {
   sigset_t set;
   int sig;
@@ -4537,13 +4550,13 @@ static int init_thread_environment()
   mysql_rwlock_init(key_rwlock_LOCK_consistent_snapshot,
                     &LOCK_consistent_snapshot);
   mysql_cond_init(key_COND_thread_count, &COND_thread_count, NULL);
+  mysql_cond_init(key_COND_connection_count, &COND_connection_count, NULL);
   mysql_cond_init(key_COND_thread_cache, &COND_thread_cache, NULL);
   mysql_cond_init(key_COND_flush_thread_cache, &COND_flush_thread_cache, NULL);
   mysql_cond_init(key_COND_manager, &COND_manager, NULL);
   mysql_mutex_init(key_LOCK_server_started,
                    &LOCK_server_started, MY_MUTEX_INIT_FAST);
   mysql_cond_init(key_COND_server_started, &COND_server_started, NULL);
-  mysql_mutex_init(key_LOCK_stats, &LOCK_stats, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_global_user_client_stats,
     &LOCK_global_user_client_stats, MY_MUTEX_INIT_FAST);
   mysql_mutex_init(key_LOCK_global_table_stats,
@@ -4651,11 +4664,14 @@ static int init_ssl()
   {
     enum enum_ssl_init_error error= SSL_INITERR_NOERROR;
 
+    long ssl_ctx_flags= process_tls_version(opt_tls_version);
+
     /* having ssl_acceptor_fd != 0 signals the use of SSL */
     ssl_acceptor_fd= new_VioSSLAcceptorFd(opt_ssl_key, opt_ssl_cert,
 					  opt_ssl_ca, opt_ssl_capath,
 					  opt_ssl_cipher, &error,
-                                          opt_ssl_crl, opt_ssl_crlpath);
+                                          opt_ssl_crl, opt_ssl_crlpath,
+                                          ssl_ctx_flags);
     DBUG_PRINT("info",("ssl_acceptor_fd: 0x%lx", (long) ssl_acceptor_fd));
     ERR_remove_state(0);
     if (!ssl_acceptor_fd)
@@ -4811,7 +4827,7 @@ static int init_server_auto_options()
   /* load_defaults require argv[0] is not null */
   char **argv= &name;
   int argc= 1;
-  if (!check_file_permissions(fname))
+  if (!check_file_permissions(fname, false))
   {
     /*
       Found a world writable file hence removing it as it is dangerous to write
@@ -4840,6 +4856,24 @@ static int init_server_auto_options()
     if (!Uuid::is_valid(uuid))
     {
       sql_print_error("The server_uuid stored in auto.cnf file is not a valid UUID.");
+      goto err;
+    }
+    /*
+      Uuid::is_valid() cannot do strict check on the length as it will be
+      called by GTID::is_valid() as well (GTID = UUID:seq_no). We should
+      explicitly add the *length check* here in this function.
+
+      If UUID length is less than '36' (UUID_LENGTH), that error case would have
+      got caught in above is_valid check. The below check is to make sure that
+      length is not greater than UUID_LENGTH i.e., there are no extra characters
+      (Garbage) at the end of the valid UUID.
+    */
+    if (strlen(uuid) > UUID_LENGTH)
+    {
+      sql_print_error("Garbage characters found at the end of the server_uuid "
+                      "value in auto.cnf file. It should be of length '%d' "
+                      "(UUID_LENGTH). Clear it and restart the server. ",
+                      UUID_LENGTH);
       goto err;
     }
     strcpy(server_uuid, uuid);
@@ -4982,9 +5016,10 @@ static int init_server_components()
 
   proc_info_hook= set_thd_stage_info;
 
-#ifdef WITH_PERFSCHEMA_STORAGE_ENGINE
   /*
-    Parsing the performance schema command line option may have reported
+    Parsing the performance schema command line option and
+    adjusting the values for options such as "open_files_limit",
+    "max_connections", and "table_cache_size" may have reported
     warnings/information messages.
     Now that the logger is finally available, and redirected
     to the proper file when the --log--error option is used,
@@ -4992,7 +5027,6 @@ static int init_server_components()
   */
   buffered_logs.print();
   buffered_logs.cleanup();
-#endif /* WITH_PERFSCHEMA_STORAGE_ENGINE */
 
   /*
     Now that the logger is available, redirect character set
@@ -6460,7 +6494,8 @@ void create_thread_to_handle_connection(THD *thd)
       mysql_mutex_unlock(&LOCK_thread_count);
 
       mysql_mutex_lock(&LOCK_connection_count);
-      --connection_count;
+      if (--(*thd->scheduler->connection_count) == 0)
+        mysql_cond_signal(&COND_connection_count);
       mysql_mutex_unlock(&LOCK_connection_count);
 
       statistic_increment(aborted_connects,&LOCK_status);
@@ -6588,9 +6623,9 @@ void handle_connections_sockets()
   uint error_count=0;
   THD *thd;
   struct sockaddr_storage cAddr;
-  int ip_flags __attribute__((unused))=0;
-  int socket_flags __attribute__((unused))= 0;
-  int extra_ip_flags __attribute__((unused))=0;
+  int ip_flags MY_ATTRIBUTE((unused))=0;
+  int socket_flags MY_ATTRIBUTE((unused))= 0;
+  int extra_ip_flags MY_ATTRIBUTE((unused))=0;
   int flags=0,retval;
   st_vio *vio_tmp;
 #ifdef HAVE_POLL
@@ -6840,10 +6875,7 @@ void handle_connections_sockets()
       thd->security_ctx->set_host((char*) my_localhost);
 
     if (mysql_socket_getfd(sock) == mysql_socket_getfd(extra_ip_sock))
-    {
-      thd->extra_port= 1;
       thd->scheduler= extra_thread_scheduler;
-    }
     create_new_thread(thd);
   }
   DBUG_VOID_RETURN;
@@ -8738,6 +8770,13 @@ static int mysql_init_variables(void)
 #else
   have_ssl=SHOW_OPTION_NO;
 #endif
+
+#ifdef SSL_OP_NO_TLSv1_2
+  have_tlsv1_2= SHOW_OPTION_YES;
+#else
+  have_tlsv1_2= SHOW_OPTION_NO;
+#endif
+
 #ifdef HAVE_BROKEN_REALPATH
   have_symlink=SHOW_OPTION_NO;
 #else
@@ -8819,7 +8858,7 @@ static int mysql_init_variables(void)
 
 my_bool
 mysqld_get_one_option(int optid,
-                      const struct my_option *opt __attribute__((unused)),
+                      const struct my_option *opt MY_ATTRIBUTE((unused)),
                       char *argument)
 {
   switch(optid) {
@@ -9630,6 +9669,40 @@ bool is_secure_file_path(char *path)
 }
 
 
+/**
+  Test a file path whether it is same as mysql data directory path.
+
+  @param path null terminated character string
+
+  @return
+    @retval TRUE The path is different from mysql data directory.
+    @retval FALSE The path is same as mysql data directory.
+*/
+bool is_mysql_datadir_path(const char *path)
+{
+  if (path == NULL)
+    return false;
+
+  char mysql_data_dir[FN_REFLEN], path_dir[FN_REFLEN];
+  convert_dirname(path_dir, path, NullS);
+  convert_dirname(mysql_data_dir, mysql_unpacked_real_data_home, NullS);
+  size_t mysql_data_home_len= dirname_length(mysql_data_dir);
+  size_t path_len = dirname_length(path_dir);
+
+  if (path_len < mysql_data_home_len)
+    return true;
+
+  if (!lower_case_file_system)
+    return(memcmp(mysql_data_dir, path_dir, mysql_data_home_len));
+
+  return(files_charset_info->coll->strnncoll(files_charset_info,
+                                            (uchar *) path_dir, path_len,
+                                            (uchar *) mysql_data_dir,
+                                            mysql_data_home_len,
+                                            TRUE));
+
+}
+
 static int fix_paths(void)
 {
   char buff[FN_REFLEN],*pos;
@@ -9872,7 +9945,7 @@ PSI_mutex_key
   key_delayed_insert_mutex, key_hash_filo_lock, key_LOCK_active_mi,
   key_LOCK_connection_count, key_LOCK_crypt, key_LOCK_delayed_create,
   key_LOCK_delayed_insert, key_LOCK_delayed_status, key_LOCK_error_log,
-  key_LOCK_stats, key_LOCK_global_user_client_stats,
+  key_LOCK_global_user_client_stats,
   key_LOCK_global_table_stats, key_LOCK_global_index_stats,
   key_LOCK_gdl, key_LOCK_global_system_variables,
   key_LOCK_manager,
@@ -9947,7 +10020,6 @@ static PSI_mutex_info all_server_mutexes[]=
   { &key_LOCK_delayed_insert, "LOCK_delayed_insert", PSI_FLAG_GLOBAL},
   { &key_LOCK_delayed_status, "LOCK_delayed_status", PSI_FLAG_GLOBAL},
   { &key_LOCK_error_log, "LOCK_error_log", PSI_FLAG_GLOBAL},
-  { &key_LOCK_stats, "LOCK_stats", PSI_FLAG_GLOBAL},
   { &key_LOCK_global_user_client_stats,
     "LOCK_global_user_client_stats", PSI_FLAG_GLOBAL},
   { &key_LOCK_global_table_stats,
@@ -10042,7 +10114,8 @@ PSI_cond_key key_BINLOG_update_cond,
   key_relay_log_info_sleep_cond, key_cond_slave_parallel_pend_jobs,
   key_cond_slave_parallel_worker,
   key_TABLE_SHARE_cond, key_user_level_lock_cond,
-  key_COND_thread_count, key_COND_thread_cache, key_COND_flush_thread_cache;
+  key_COND_thread_count, key_COND_thread_cache, key_COND_flush_thread_cache,
+  key_COND_connection_count;
 PSI_cond_key key_RELAYLOG_update_cond;
 PSI_cond_key key_BINLOG_COND_done;
 PSI_cond_key key_RELAYLOG_COND_done;
@@ -10088,7 +10161,8 @@ static PSI_cond_info all_server_conds[]=
   { &key_COND_thread_count, "COND_thread_count", PSI_FLAG_GLOBAL},
   { &key_COND_thread_cache, "COND_thread_cache", PSI_FLAG_GLOBAL},
   { &key_COND_flush_thread_cache, "COND_flush_thread_cache", PSI_FLAG_GLOBAL},
-  { &key_gtid_ensure_index_cond, "Gtid_state", PSI_FLAG_GLOBAL}
+  { &key_gtid_ensure_index_cond, "Gtid_state", PSI_FLAG_GLOBAL},
+  { &key_COND_connection_count, "COND_connection_count", PSI_FLAG_GLOBAL}
 };
 
 PSI_thread_key key_thread_bootstrap, key_thread_delayed_insert,

@@ -278,7 +278,6 @@ static int tokudb_init_func(void *p) {
     db_env = NULL;
     tokudb_hton = (handlerton *) p;
 
-#if TOKUDB_CHECK_JEMALLOC
     if (tokudb::sysvars::check_jemalloc) {
         typedef int (*mallctl_type)(
             const char*,
@@ -305,7 +304,6 @@ static int tokudb_init_func(void *p) {
             goto error;
         }
     }
-#endif
 
     r = tokudb_set_product_name();
     if (r) {
@@ -405,6 +403,16 @@ static int tokudb_init_func(void *p) {
     // config error handling
     db_env->set_errcall(db_env, tokudb_print_error);
     db_env->set_errpfx(db_env, tokudb_hton_name);
+
+    // Handle deprecated options
+    if (tokudb::sysvars::pk_insert_mode(NULL) != 1) {
+        TOKUDB_TRACE("Using tokudb_pk_insert_mode is deprecated and the "
+            "parameter may be removed in future releases. "
+            "tokudb_pk_insert_mode=0 is now forbidden. "
+            "See documentation and release notes for details");
+        if (tokudb::sysvars::pk_insert_mode(NULL) < 1)
+           tokudb::sysvars::set_pk_insert_mode(NULL, 1);
+    }
 
     //
     // set default comparison functions
@@ -539,6 +547,8 @@ static int tokudb_init_func(void *p) {
     db_env->set_loader_memory_size(
         db_env,
         tokudb_get_loader_memory_size_callback);
+
+    db_env->set_check_thp(db_env, tokudb::sysvars::check_jemalloc);
 
     r = db_env->open(
         db_env,
