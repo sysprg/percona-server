@@ -5453,6 +5453,14 @@ bool check_stack_overrun(THD *thd, long margin,
   return 0;
 }
 
+extern "C"
+{
+int check_stack_overrun_c(long margin, uchar *buf)
+{
+  return check_stack_overrun(current_thd, margin, buf);
+}
+}
+
 
 #define MY_YACC_INIT 1000			// Start with big alloc
 #define MY_YACC_MAX  32000			// Because of 'short'

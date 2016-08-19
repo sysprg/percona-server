@@ -243,6 +243,8 @@ void json_escape(const char *in, size_t *inlen, char *out, size_t *outlen)
   escape_buf(in, inlen, out, outlen, rules);
 }
 
+int check_stack_overrun_c(long margin, uchar *buf);
+
 static
 void csv_escape(const char *in, size_t *inlen, char *out, size_t *outlen)
 {
@@ -307,6 +309,8 @@ char *escape_string(const char *in, size_t inlen,
                     char *out, size_t outlen,
                     char **endptr, size_t *full_outlen)
 {
+  int dummy;
+  check_stack_overrun_c(1024, (uchar *)&dummy);
   if (outlen == 0)
   {
     if (endptr)
