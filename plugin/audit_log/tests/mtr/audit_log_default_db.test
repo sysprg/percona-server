@@ -30,26 +30,31 @@ GRANT ALL PRIVILEGES ON ąžąžąžą.* TO 'user1'@'%';
 GRANT ALL PRIVILEGES ON ąžąžąžą.* TO 'user2'@'%';
 
 # truncate audit log
+SELECT * FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE 'audit_log';
 UNINSTALL PLUGIN audit_log;
+let $wait_condition=
+    SELECT count(*) = 0 FROM INFORMATION_SCHEMA.PLUGINS WHERE PLUGIN_NAME LIKE 'audit_log';
+--source include/wait_condition.inc
 --remove_file $log_file
 
-connect (test,localhost,user1,111,db2,);
+connect (test,localhost,user1,111,db2,); # 2 connections: test, default
 connection test;
 SELECT * FROM t;
 
---source include/count_sessions.inc
-connect (root,localhost,root,,,);
+--source include/count_sessions.inc      # count_sessions = 2
+connect (root,localhost,root,,,);        # 3 connections: test, default, root
 connection root;
 INSTALL PLUGIN audit_log SONAME 'audit_log.so';
-disconnect root;
+disconnect root;                         # 2 connections: test, default
 connection test;
 --source include/wait_until_count_sessions.inc
 
 SELECT * FROM t;
 use 	`db1`;
+dec $count_sessions;                     # count_sessions = 1
 --error ER_DBACCESS_DENIED_ERROR
 change_user user2,111,db1,do_not_reconnect_on_fail;
-disconnect test;
+disconnect test;                         # 1 connection: default
 connection default;
 --source include/wait_until_count_sessions.inc
 --replace_result $MASTER_MYPORT MASTER_MYPORT $MASTER_MYSOCK MASTER_MYSOCK
@@ -83,12 +88,18 @@ use ąžąžąžą;
 SELECT * FROM t;
 disconnect test;
 connection default;
-
 --source include/wait_until_count_sessions.inc
+
+--echo $count_sessions
+SHOW STATUS LIKE 'Threads_connected';
+
 --exec $MYSQL --user=user1 --password=111 test -e "use db1; SELECT * FROM t;"
 --source include/wait_until_count_sessions.inc
 
---source audit_log_echo.inc
+--echo $count_sessions
+SHOW STATUS LIKE 'Threads_connected';
+
+  --source audit_log_echo.inc
 
 DROP DATABASE db1;
 DROP DATABASE db2;
