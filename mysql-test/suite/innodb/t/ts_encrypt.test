@@ -1,0 +1,174 @@
+# InnoDB general tablespace encryption
+
+call mtr.add_suppression("Partition.*does not exist in the InnoDB internal data dictionary though");
+
+--source include/have_innodb.inc
+--source include/not_embedded.inc
+
+let $innodb_file_per_table = `SELECT @@innodb_file_per_table`;
+let $innodb_strict_mode = `SELECT @@innodb_strict_mode`;
+
+CREATE TABLESPACE ts_encrypted ADD DATAFILE 'ts_encrypted.ibd' ENCRYPTION="Y" ENGINE="InnoDB";
+CREATE TABLESPACE ts_unencrypted ADD DATAFILE 'ts_unencrypted.ibd' ENGINE="InnoDB";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE t1 (a TEXT) TABLESPACE ts_encrypted ENGINE="InnoDB";
+
+CREATE TABLE t2 (a TEXT) TABLESPACE ts_unencrypted ENGINE="InnoDB";
+INSERT INTO t2 (a) VALUES ('ONE'), ('TWO'), ('THREE');
+
+CREATE TABLE t3 (a TEXT) TABLESPACE ts_encrypted ENCRYPTION="Y" ENGINE="InnoDB";
+INSERT INTO t3 (a) VALUES ('ONE'), ('TWO'), ('THREE');
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE t4 (a TEXT) TABLESPACE ts_unencrypted ENCRYPTION="Y" ENGINE="InnoDB";
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE t5 (a TEXT) TABLESPACE ts_encrypted ENCRYPTION="N" ENGINE="InnoDB";
+
+CREATE TABLE t6 (a TEXT) TABLESPACE ts_unencrypted ENCRYPTION="N" ENGINE="InnoDB";
+INSERT INTO t6 (a) VALUES ('ONE'), ('TWO'), ('THREE');
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t2 ENCRYPTION='Y';
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 ENCRYPTION='N';
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t6 ENCRYPTION='Y';
+
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t2 TABLESPACE ts_encrypted;
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 TABLESPACE ts_unencrypted;
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t6 TABLESPACE ts_encrypted;
+
+CREATE TABLESPACE ts_encrypted_new ADD DATAFILE 'ts_encrypted_new.ibd' ENCRYPTION="Y" ENGINE="InnoDB";
+CREATE TABLESPACE ts_unencrypted_new ADD DATAFILE 'ts_unencrypted_new.ibd' ENGINE="InnoDB";
+
+ALTER TABLE t2 TABLESPACE ts_unencrypted_new;
+ALTER TABLE t3 TABLESPACE ts_encrypted_new;
+ALTER TABLE t6 TABLESPACE ts_unencrypted_new;
+
+CREATE TABLE p1 (a TEXT) TABLESPACE=innodb_system ENGINE="InnoDB";
+CREATE TABLE p2 (a TEXT) TABLESPACE=innodb_system ENCRYPTION="N" ENGINE="InnoDB";
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE p3 (a TEXT) TABLESPACE=innodb_system ENCRYPTION="Y" ENGINE="InnoDB";
+
+ALTER TABLE t2 TABLESPACE innodb_system;
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE t3 TABLESPACE innodb_system;
+ALTER TABLE t6 TABLESPACE innodb_system;
+
+SET GLOBAL innodb_file_per_table=0;
+CREATE TABLE t7 (a TEXT) ENGINE='InnoDB';
+--error ER_ILLEGAL_HA_CREATE_OPTION
+CREATE TABLE t8 (a TEXT) ENCRYPTION='y' ENGINE='InnoDB';
+CREATE TABLE t9 (a TEXT) ENCRYPTION='n' ENGINE='InnoDB';
+
+SET GLOBAL innodb_file_per_table=1;
+CREATE TABLE t10 (a TEXT) ENGINE='InnoDB';
+CREATE TABLE t11 (a TEXT) ENCRYPTION='y' ENGINE='InnoDB';
+CREATE TABLE t12 (a TEXT) ENCRYPTION='n' ENGINE='InnoDB';
+
+CREATE TABLE pt1 (a INT NOT NULL, PRIMARY KEY(a))
+	ENGINE=InnoDB TABLESPACE ts_unencrypted
+	PARTITION BY RANGE (a) PARTITIONS 3 (
+		PARTITION p1 VALUES LESS THAN (2),
+		PARTITION p2 VALUES LESS THAN (4) TABLESPACE innodb_file_per_table,
+		PARTITION p3 VALUES LESS THAN (6) TABLESPACE innodb_system);
+
+CREATE TABLE pt2 (a INT NOT NULL, PRIMARY KEY(a))
+	ENGINE=InnoDB TABLESPACE ts_encrypted ENCRYPTION='y'
+	PARTITION BY RANGE (a) PARTITIONS 3 (
+		PARTITION p1 VALUES LESS THAN (2),
+		PARTITION p2 VALUES LESS THAN (4) TABLESPACE innodb_file_per_table,
+		PARTITION p3 VALUES LESS THAN (6) TABLESPACE ts_encrypted_new);
+
+ALTER TABLE pt1 ADD PARTITION (PARTITION p4 VALUES LESS THAN (8) TABLESPACE ts_unencrypted_new);
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE pt1 ADD PARTITION (PARTITION p5 VALUES LESS THAN (10) TABLESPACE ts_encrypted);
+ALTER TABLE pt1 ADD PARTITION (PARTITION p6 VALUES LESS THAN (12) TABLESPACE innodb_system);
+
+ALTER TABLE pt2 ADD PARTITION (PARTITION p4 VALUES LESS THAN (8) TABLESPACE ts_encrypted_new);
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE pt2 ADD PARTITION (PARTITION p5 VALUES LESS THAN (10) TABLESPACE ts_unencrypted);
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE pt2 ADD PARTITION (PARTITION p6 VALUES LESS THAN (12) TABLESPACE innodb_system);
+
+# see bug https://bugs.mysql.com/bug.php?id=86809
+
+# --error ER_ILLEGAL_HA_CREATE_OPTION
+# CREATE TABLE pt3 (a INT NOT NULL, PRIMARY KEY(a))
+# 	ENGINE=InnoDB TABLESPACE ts_encrypted ENCRYPTION='y'
+# 	PARTITION BY RANGE (a) PARTITIONS 3 (
+# 		PARTITION p1 VALUES LESS THAN (2),
+# 		PARTITION p2 VALUES LESS THAN (4) TABLESPACE innodb_file_per_table,
+# 		PARTITION p3 VALUES LESS THAN (6) TABLESPACE innodb_system);
+
+# --error ER_ILLEGAL_HA_CREATE_OPTION
+# CREATE TABLE pt4 (a INT NOT NULL, PRIMARY KEY(a))
+# 	ENGINE=InnoDB TABLESPACE ts_encrypted ENCRYPTION='y'
+# 	PARTITION BY RANGE (a) PARTITIONS 3 (
+# 		PARTITION p1 VALUES LESS THAN (2),
+# 		PARTITION p2 VALUES LESS THAN (4) TABLESPACE innodb_file_per_table,
+# 		PARTITION p3 VALUES LESS THAN (6) TABLESPACE ts_unencrypted);
+
+# --error ER_ILLEGAL_HA_CREATE_OPTION
+# CREATE TABLE pt5 (a INT NOT NULL, PRIMARY KEY(a))
+# 	ENGINE=InnoDB TABLESPACE ts_unencrypted ENCRYPTION='y'
+# 	PARTITION BY RANGE (a) PARTITIONS 3 (
+# 		PARTITION p1 VALUES LESS THAN (2),
+# 		PARTITION p2 VALUES LESS THAN (4) TABLESPACE innodb_file_per_table,
+# 		PARTITION p3 VALUES LESS THAN (6) TABLESPACE ts_encrypted);
+
+# SELECT FILE_ID, FILE_NAME FROM INFORMATION_SCHEMA.FILES
+# WHERE FILE_TYPE = 'TABLESPACE' ORDER BY FILE_ID;
+
+# SELECT NAME, FLAG, SPACE_TYPE FROM INFORMATION_SCHEMA.INNODB_SYS_TABLESPACES;
+
+
+# Make sure that innodb_strict_mode doesn't matter
+SET GLOBAL innodb_file_per_table=OFF;
+SET GLOBAL innodb_strict_mode=OFF;
+
+# innodb_strict_mode change to take effect
+disconnect default;
+connect(default,localhost,root,,test);
+
+CREATE TABLE q1 (c1 int);
+
+--error ER_ILLEGAL_HA_CREATE_OPTION
+ALTER TABLE q1 ENCRYPTION='Y',ALGORITHM=COPY;
+
+eval SET GLOBAL innodb_file_per_table=$innodb_file_per_table;
+eval SET GLOBAL innodb_strict_mode=$innodb_strict_mode;
+
+# innodb_strict_mode change to take effect
+disconnect default;
+connect(default,localhost,root,,test);
+
+# cleanup
+DROP TABLE t2;
+DROP TABLE t3;
+DROP TABLE t6;
+DROP TABLE t7;
+DROP TABLE t9;
+DROP TABLE t10;
+DROP TABLE t11;
+DROP TABLE t12;
+DROP TABLE q1;
+DROP TABLE p1;
+DROP TABLE p2;
+
+DROP TABLE pt1;
+DROP TABLE pt2;
+
+SELECT TABLE_NAME, PARTITION_NAME, SUBPARTITION_NAME, TABLESPACE_NAME
+FROM INFORMATION_SCHEMA.PARTITIONS WHERE TABLESPACE_NAME='ts_encrypted';
+
+DROP TABLESPACE ts_encrypted;
+DROP TABLESPACE ts_encrypted_new;
+DROP TABLESPACE ts_unencrypted;
+DROP TABLESPACE ts_unencrypted_new;
