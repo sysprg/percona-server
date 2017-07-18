@@ -289,7 +289,7 @@ int logger_write(LOGGER_HANDLE *log, const char *buffer, size_t size,
 
   result= my_write(log->file, (uchar *) buffer, size, MYF(0));
 
-  if (state == LOG_RECORD_COMPLETE && log->rotations > 0)
+  if (state == LOG_RECORD_COMPLETE && log->rotations > 0 && log->size_limit > 0)
   {
     if ((filesize= my_tell(log->file, MYF(0))) == (my_off_t) -1 ||
         ((unsigned long long)filesize >= log->size_limit &&

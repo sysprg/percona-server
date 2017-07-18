@@ -204,10 +204,10 @@ void audit_handler_file_set_option(audit_handler_t *handler,
   switch (opt)
   {
   case OPT_ROTATIONS:
-    logger_set_size_limit(data->logger, *(ulonglong*)(val));
+    logger_set_rotations(data->logger, *(ulonglong*)(val));
     break;
   case OPT_ROTATE_ON_SIZE:
-    logger_set_rotations(data->logger, *(ulonglong*)(val));
+    logger_set_size_limit(data->logger, *(ulonglong*)(val));
     break;
   }
 }
