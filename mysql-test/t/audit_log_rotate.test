@@ -27,3 +27,14 @@ EOF
 --remove_files_wildcard $MYSQLD_DATADIR test_audit.log*
 
 --echo success
+
+SET @rotate_size = @@audit_log_rotate_on_size;
+SET @rotate_count = @@audit_log_rotations;
+
+SET GLOBAL audit_log_rotate_on_size=0;
+SET GLOBAL audit_log_rotations=0;
+SET GLOBAL audit_log_rotate_on_size=524288000;
+SET GLOBAL audit_log_flush = ON;
+
+SET GLOBAL audit_log_rotate_on_size = @rotate_size;
+SET GLOBAL audit_log_rotations = @rotate_count;
